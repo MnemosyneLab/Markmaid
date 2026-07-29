@@ -30,21 +30,21 @@ pnpm install
 pnpm tauri dev
 ```
 
-Build the frontend and run Rust checks:
+Run the complete local quality gate:
 
 ```sh
-pnpm test
-pnpm build
-cargo test --manifest-path src-tauri/Cargo.toml
-cargo fmt --manifest-path src-tauri/Cargo.toml --check
-cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+pnpm check
 ```
 
-Create the macOS ARM application and disk image:
+Create the macOS ARM application, DMG, app ZIP, and checksums:
 
 ```sh
-pnpm tauri build --target aarch64-apple-darwin --bundles app,dmg
+pnpm release:build
 ```
+
+For version preparation and uploading local artifacts to GitHub Release, see
+[docs/RELEASING.md](docs/RELEASING.md). Releases are intentionally built on a
+local Apple Silicon Mac; this repository does not require GitHub Actions.
 
 ## Structure
 
@@ -54,3 +54,4 @@ pnpm tauri build --target aarch64-apple-darwin --bundles app,dmg
 - `src-tauri/src/lib.rs`: menus, plugins, single-instance, and macOS open events
 - `src-tauri/capabilities/`: Tauri permission capabilities
 - `src-tauri/tauri.conf.json`: window, bundle, and build configuration
+- `scripts/`: local quality, versioning, release build, and publishing tools

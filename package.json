@@ -2,13 +2,20 @@
   "name": "markmaid",
   "private": true,
   "version": "0.1.0",
+  "description": "A focused, read-only Markdown reader for macOS",
+  "author": "Walt Wang",
+  "packageManager": "pnpm@11.17.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "check": "./scripts/check.sh",
     "test": "vitest run",
     "test:watch": "vitest",
     "preview": "vite preview",
+    "release:prepare": "./scripts/prepare-release.sh",
+    "release:build": "./scripts/build-release.sh",
+    "release:publish": "./scripts/publish-release.sh",
     "tauri": "tauri"
   },
   "dependencies": {

@@ -1,7 +1,7 @@
 [package]
 name = "markmaid"
 version = "0.1.0"
-description = "A native macOS Markdown and Mermaid preview app"
+description = "A native macOS Markdown reader"
 authors = ["Walt Wang"]
 edition = "2024"
 
