@@ -4,6 +4,15 @@
   "version": "0.1.0",
   "description": "A focused, read-only Markdown reader for macOS",
   "author": "Walt Wang",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Weichen-LF/Markmaid.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Weichen-LF/Markmaid/issues"
+  },
+  "homepage": "https://github.com/Weichen-LF/Markmaid#readme",
   "packageManager": "pnpm@11.17.0",
   "type": "module",
   "scripts": {

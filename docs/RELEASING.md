@@ -15,7 +15,7 @@ gh auth login
 Configure the GitHub repository as `origin` if it is not already present:
 
 ```sh
-git remote add origin git@github.com:<owner>/MarkMaid.git
+git remote add origin git@github.com:Weichen-LF/Markmaid.git
 ```
 
 The release scripts also require the development tools listed in the main
@@ -109,10 +109,16 @@ GitHub prereleases.
 ## Signing and notarization
 
 By default, `release:build` applies an ad-hoc signature (`-`). This avoids an
-unsigned Apple Silicon executable, but downloaded builds may still require the
-user to approve MarkMaid in macOS Privacy & Security.
+unsigned Apple Silicon executable, but Gatekeeper may still block downloaded
+builds until quarantine attributes are cleared.
 
-For a public release without that warning, configure a Developer ID Application
+Interim workaround for installers and testers:
+
+```sh
+xattr -cr /Applications/MarkMaid.app
+```
+
+For a public release without that step, configure a Developer ID Application
 certificate and Apple notarization credentials before running the same build
 script. An explicit `APPLE_SIGNING_IDENTITY` overrides the ad-hoc default, and
 Tauri recognizes its standard Apple notarization environment variables.

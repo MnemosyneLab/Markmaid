@@ -3,6 +3,9 @@ name = "markmaid"
 version = "0.1.0"
 description = "A native macOS Markdown reader"
 authors = ["Walt Wang"]
+license = "MIT"
+repository = "https://github.com/Weichen-LF/Markmaid"
+homepage = "https://github.com/Weichen-LF/Markmaid"
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

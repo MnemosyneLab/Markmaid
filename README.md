@@ -17,6 +17,21 @@ The MVP includes:
 
 Mermaid rendering and automatic file watching are intentionally deferred.
 
+## Install
+
+Download the latest Apple Silicon build from
+[Releases](https://github.com/Weichen-LF/Markmaid/releases).
+
+Current releases are ad-hoc signed (not Developer ID / notarized). After
+installing the app to `/Applications`, clear the quarantine flag:
+
+```sh
+xattr -cr /Applications/MarkMaid.app
+```
+
+If you open the `.app` from a DMG or an extracted ZIP without copying it first,
+run the same command against that `.app` path instead.
+
 ## Requirements
 
 - macOS 26 on Apple Silicon with Xcode Command Line Tools
@@ -55,3 +70,7 @@ local Apple Silicon Mac; this repository does not require GitHub Actions.
 - `src-tauri/capabilities/`: Tauri permission capabilities
 - `src-tauri/tauri.conf.json`: window, bundle, and build configuration
 - `scripts/`: local quality, versioning, release build, and publishing tools
+
+## License
+
+MIT. See [LICENSE](LICENSE).
