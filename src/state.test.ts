@@ -2,11 +2,15 @@ import { describe, expect, it } from "vitest";
 
 import {
   addDocumentResults,
+  clampSidebarWidth,
   closeTab,
   cycleTab,
+  DEFAULT_SIDEBAR_WIDTH,
+  DEFAULT_STATE,
   fromPersistedSession,
   loadingTab,
   openSettings,
+  setPreferences,
   toPersistedSession,
 } from "./state";
 import type { AppState, DocumentLoadResult } from "./types";
@@ -24,14 +28,13 @@ const ready = (
   imageAssets: [],
 });
 
+function baseState(overrides: Partial<AppState> = {}): AppState {
+  return { ...DEFAULT_STATE, ...overrides };
+}
+
 describe("tab state", () => {
   it("deduplicates canonical document paths and focuses the existing tab", () => {
-    let state: AppState = {
-      tabs: [],
-      activeTabKey: null,
-      theme: "system",
-      tabPlacement: "top",
-    };
+    let state = baseState();
     state = addDocumentResults(state, [
       ready("/docs/../README.md", "/README.md"),
     ]);
@@ -42,15 +45,13 @@ describe("tab state", () => {
   });
 
   it("removes multiple loading aliases that resolve to one canonical path", () => {
-    const state: AppState = {
+    const state = baseState({
       tabs: [
         loadingTab("/docs/readme.md"),
         loadingTab("/docs/readme-link.md"),
       ],
       activeTabKey: "document:/docs/readme-link.md",
-      theme: "system",
-      tabPlacement: "top",
-    };
+    });
 
     const resolved = addDocumentResults(state, [
       ready("/docs/readme.md", "/real/README.md"),
@@ -66,15 +67,10 @@ describe("tab state", () => {
   });
 
   it("keeps settings as a singleton and selects a neighbor on close", () => {
-    let state: AppState = addDocumentResults(
-      {
-        tabs: [],
-        activeTabKey: null,
-        theme: "system",
-        tabPlacement: "top",
-      },
-      [ready("/one.md"), ready("/two.md")],
-    );
+    let state = addDocumentResults(baseState(), [
+      ready("/one.md"),
+      ready("/two.md"),
+    ]);
     state = openSettings(openSettings(state));
     expect(state.tabs).toHaveLength(3);
     expect(state.activeTabKey).toBe("settings");
@@ -84,28 +80,18 @@ describe("tab state", () => {
   });
 
   it("cycles tabs in both directions", () => {
-    let state: AppState = addDocumentResults(
-      {
-        tabs: [],
-        activeTabKey: null,
-        theme: "system",
-        tabPlacement: "top",
-      },
-      [ready("/one.md"), ready("/two.md")],
-    );
+    let state = addDocumentResults(baseState(), [
+      ready("/one.md"),
+      ready("/two.md"),
+    ]);
     expect(cycleTab(state, 1).activeTabKey).toBe("document:/one.md");
     state = cycleTab(state, -1);
     expect(state.activeTabKey).toBe("document:/one.md");
   });
 
   it("round-trips session preferences, tab order, and scroll positions", () => {
-    let state: AppState = addDocumentResults(
-      {
-        tabs: [],
-        activeTabKey: null,
-        theme: "dark",
-        tabPlacement: "left",
-      },
+    let state = addDocumentResults(
+      baseState({ theme: "dark", tabPlacement: "left", sidebarWidth: 300 }),
       [ready("/one.md")],
     );
     const tab = state.tabs[0];
@@ -115,6 +101,7 @@ describe("tab state", () => {
     const restored = fromPersistedSession(toPersistedSession(state));
     expect(restored.theme).toBe("dark");
     expect(restored.tabPlacement).toBe("left");
+    expect(restored.sidebarWidth).toBe(300);
     expect(restored.tabs.map((item) => item.kind)).toEqual([
       "document",
       "settings",
@@ -122,12 +109,27 @@ describe("tab state", () => {
     expect(restored.tabs[0]).toMatchObject({ scrollTop: 480 });
   });
 
+  it("defaults missing sidebar width and clamps invalid values", () => {
+    expect(
+      fromPersistedSession({
+        version: 1,
+        tabs: [],
+        activeTabKey: null,
+        theme: "system",
+        tabPlacement: "top",
+      }).sidebarWidth,
+    ).toBe(DEFAULT_SIDEBAR_WIDTH);
+
+    expect(
+      setPreferences(baseState(), { sidebarWidth: 90 }).sidebarWidth,
+    ).toBe(160);
+    expect(
+      setPreferences(baseState(), { sidebarWidth: 900 }).sidebarWidth,
+    ).toBe(420);
+    expect(clampSidebarWidth(Number.NaN)).toBe(DEFAULT_SIDEBAR_WIDTH);
+  });
+
   it("falls back safely for invalid persisted state", () => {
-    expect(fromPersistedSession({ version: 99 })).toEqual({
-      tabs: [],
-      activeTabKey: null,
-      theme: "system",
-      tabPlacement: "top",
-    });
+    expect(fromPersistedSession({ version: 99 })).toEqual(DEFAULT_STATE);
   });
 });

@@ -66,6 +66,7 @@ export interface AppState {
   activeTabKey: string | null;
   theme: ThemeMode;
   tabPlacement: TabPlacement;
+  sidebarWidth: number;
 }
 
 export type PersistedTab =
@@ -78,4 +79,5 @@ export interface PersistedSessionV1 {
   activeTabKey: string | null;
   theme: ThemeMode;
   tabPlacement: TabPlacement;
+  sidebarWidth?: number;
 }

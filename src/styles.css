@@ -104,17 +104,25 @@ a:focus-visible {
 }
 
 .app-frame {
+  --sidebar-width: 232px;
   height: 100%;
   display: grid;
-  grid-template-rows: 52px minmax(0, 1fr);
   background: var(--window);
+}
+
+.app-frame.placement-top {
+  grid-template-rows: 38px 36px minmax(0, 1fr);
+}
+
+.app-frame.placement-left {
+  grid-template-rows: 38px minmax(0, 1fr);
 }
 
 .titlebar {
   position: relative;
   display: flex;
   min-width: 0;
-  align-items: stretch;
+  align-items: center;
   border-bottom: 1px solid var(--border);
   background: var(--chrome);
   backdrop-filter: blur(24px) saturate(125%);
@@ -129,30 +137,34 @@ a:focus-visible {
 }
 
 .brand,
-.tab-list,
-.titlebar-actions {
+.titlebar-title,
+.titlebar-actions,
+.tab-strip,
+.tab-list {
   position: relative;
   z-index: 1;
 }
 
 .brand {
   min-width: 164px;
+  max-width: 220px;
   padding: 0 16px 0 82px;
   display: flex;
   align-items: center;
   gap: 9px;
+  flex: 0 1 auto;
 }
 
 .brand-mark {
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   display: grid;
   place-items: center;
   flex: 0 0 auto;
   border-radius: 6px;
   color: #f5f9fc;
   background: var(--accent-strong);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 750;
   letter-spacing: -0.04em;
   box-shadow: inset 0 1px rgb(255 255 255 / 20%);
@@ -168,19 +180,44 @@ a:focus-visible {
   white-space: nowrap;
 }
 
-.placement-top .titlebar > .tab-list {
+.titlebar-title {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  max-width: min(42vw, 360px);
+  overflow: hidden;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-strip {
+  min-width: 0;
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--border);
+  background: var(--chrome);
+}
+
+.tab-strip .tab-list {
   min-width: 0;
   flex: 1 1 auto;
   display: flex;
-  align-items: end;
-  gap: 1px;
-  padding: 7px 0 0;
+  align-items: stretch;
+  gap: 0;
+  padding: 0 8px;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
 }
 
-.placement-top .titlebar > .tab-list::-webkit-scrollbar {
+.tab-strip .tab-list::-webkit-scrollbar {
   display: none;
 }
 
@@ -188,23 +225,31 @@ a:focus-visible {
   min-width: 0;
   display: flex;
   align-items: center;
-  border-radius: var(--radius) var(--radius) 0 0;
   color: var(--text-secondary);
 }
 
-.placement-top .tab {
-  width: min(210px, 22vw);
-  min-width: 108px;
-  height: 44px;
-  border: 1px solid transparent;
-  border-bottom: 0;
+.tab-strip .tab {
+  width: min(200px, 24vw);
+  min-width: 96px;
+  height: 100%;
+  border-right: 1px solid transparent;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
 }
 
-.placement-top .tab.is-active {
-  border-color: var(--border);
-  background: var(--surface);
+.tab-strip .tab + .tab {
+  border-left: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+}
+
+.tab-strip .tab:hover {
   color: var(--text);
-  box-shadow: 0 -4px 14px rgb(31 39 48 / 4%);
+  background: color-mix(in srgb, var(--surface-hover) 70%, transparent);
+}
+
+.tab-strip .tab.is-active {
+  color: var(--text);
+  border-bottom-color: var(--accent-strong);
+  background: var(--surface);
 }
 
 .tab-select {
@@ -266,10 +311,12 @@ a:focus-visible {
 }
 
 .titlebar-actions {
+  margin-left: auto;
   padding: 0 12px;
   display: flex;
   align-items: center;
   gap: 6px;
+  flex: 0 0 auto;
 }
 
 .icon-button,
@@ -326,13 +373,50 @@ a:focus-visible {
 }
 
 .sidebar {
-  width: 232px;
-  min-width: 180px;
-  max-width: 290px;
+  position: relative;
+  width: var(--sidebar-width);
+  flex: 0 0 var(--sidebar-width);
+  min-width: 0;
+  max-width: none;
   padding: 10px 8px;
   overflow: hidden;
   border-right: 1px solid var(--border);
   background: var(--sidebar);
+}
+
+.sidebar-resize {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 6px;
+  height: 100%;
+  z-index: 3;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.sidebar-resize::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 2px;
+  border-radius: 1px;
+  background: transparent;
+  transition: background 120ms ease;
+}
+
+.sidebar-resize:hover::after,
+.sidebar-resize:focus-visible::after,
+html.is-resizing-sidebar .sidebar-resize::after {
+  background: color-mix(in srgb, var(--accent-strong) 55%, transparent);
+}
+
+html.is-resizing-sidebar,
+html.is-resizing-sidebar * {
+  cursor: col-resize !important;
+  user-select: none !important;
 }
 
 .sidebar .tab-list {
@@ -964,7 +1048,7 @@ a:focus-visible {
     display: none;
   }
 
-  .placement-top .tab {
+  .tab-strip .tab {
     width: 150px;
   }
 

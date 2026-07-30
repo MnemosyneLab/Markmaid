@@ -8,8 +8,10 @@ import { load, type Store } from "@tauri-apps/plugin-store";
 import {
   activeTab,
   addDocumentResults,
+  clampSidebarWidth,
   closeTab,
   cycleTab,
+  DEFAULT_SIDEBAR_WIDTH,
   DEFAULT_STATE,
   fromPersistedSession,
   hydrateRestoredTabs,
@@ -49,6 +51,11 @@ let state: AppState = { ...DEFAULT_STATE };
 let stateStore: Store | null = null;
 let persistTimer: number | null = null;
 let pendingAnchor: string | null = null;
+let sidebarResizeSession: {
+  pointerId: number;
+  startX: number;
+  startWidth: number;
+} | null = null;
 const colorScheme = window.matchMedia("(prefers-color-scheme: dark)");
 
 void bootstrap();
@@ -240,16 +247,21 @@ function render(): void {
     state.tabPlacement === "top" ? renderTabList(state.tabs) : "";
   const sideTabs =
     state.tabPlacement === "left" ? renderTabList(state.tabs) : "";
+  const title = escapeHtml(windowTitle(current));
+  const sidebarWidth = clampSidebarWidth(state.sidebarWidth);
 
   root.innerHTML = `
-    <div class="app-frame placement-${state.tabPlacement}">
+    <div
+      class="app-frame placement-${state.tabPlacement}"
+      style="--sidebar-width: ${sidebarWidth}px"
+    >
       <header class="titlebar">
         <div class="window-drag-region" data-tauri-drag-region></div>
         <div class="brand" aria-label="MarkMaid">
           <span class="brand-mark">M</span>
           <span class="brand-name">MarkMaid</span>
         </div>
-        ${topTabs}
+        <div class="titlebar-title" title="${escapeAttribute(windowTitle(current))}">${title}</div>
         <nav class="titlebar-actions" aria-label="Application actions">
           <button class="icon-button" type="button" data-action="open" title="Open Markdown (⌘O)">
             <span aria-hidden="true">+</span>
@@ -258,10 +270,18 @@ function render(): void {
           <button class="text-button" type="button" data-action="settings">Settings</button>
         </nav>
       </header>
+      ${
+        state.tabPlacement === "top"
+          ? `<div class="tab-strip" aria-label="Document tabs">${topTabs}</div>`
+          : ""
+      }
       <div class="workspace">
         ${
           state.tabPlacement === "left"
-            ? `<aside class="sidebar" aria-label="Open tabs">${sideTabs}</aside>`
+            ? `<aside class="sidebar" aria-label="Open tabs">
+                ${sideTabs}
+                <div class="sidebar-resize" role="separator" aria-orientation="vertical" aria-label="Resize tab rail" tabindex="0"></div>
+              </aside>`
             : ""
         }
         <main class="content-stage" id="content-stage" aria-live="polite"></main>
@@ -345,6 +365,77 @@ function bindShellInteractions(): void {
   root
     .querySelector<HTMLElement>('[data-action="settings"]')
     ?.addEventListener("click", showSettings);
+
+  bindSidebarResize();
+}
+
+function bindSidebarResize(): void {
+  const handle = root.querySelector<HTMLElement>(".sidebar-resize");
+  const frame = root.querySelector<HTMLElement>(".app-frame");
+  if (!handle || !frame) return;
+
+  const applyWidth = (width: number): void => {
+    frame.style.setProperty("--sidebar-width", `${width}px`);
+  };
+
+  handle.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    handle.setPointerCapture(event.pointerId);
+    sidebarResizeSession = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startWidth: clampSidebarWidth(state.sidebarWidth),
+    };
+    document.documentElement.classList.add("is-resizing-sidebar");
+  });
+
+  handle.addEventListener("pointermove", (event) => {
+    if (
+      !sidebarResizeSession ||
+      event.pointerId !== sidebarResizeSession.pointerId
+    ) {
+      return;
+    }
+    const next = clampSidebarWidth(
+      sidebarResizeSession.startWidth +
+        (event.clientX - sidebarResizeSession.startX),
+    );
+    applyWidth(next);
+  });
+
+  const finishResize = (event: PointerEvent): void => {
+    if (
+      !sidebarResizeSession ||
+      event.pointerId !== sidebarResizeSession.pointerId
+    ) {
+      return;
+    }
+    const next = clampSidebarWidth(
+      sidebarResizeSession.startWidth +
+        (event.clientX - sidebarResizeSession.startX),
+    );
+    sidebarResizeSession = null;
+    document.documentElement.classList.remove("is-resizing-sidebar");
+    if (handle.hasPointerCapture(event.pointerId)) {
+      handle.releasePointerCapture(event.pointerId);
+    }
+    applyWidth(next);
+    if (next === state.sidebarWidth) return;
+    state = setPreferences(state, { sidebarWidth: next });
+    schedulePersist();
+  };
+
+  handle.addEventListener("pointerup", finishResize);
+  handle.addEventListener("pointercancel", finishResize);
+  handle.addEventListener("dblclick", () => {
+    sidebarResizeSession = null;
+    document.documentElement.classList.remove("is-resizing-sidebar");
+    applyWidth(DEFAULT_SIDEBAR_WIDTH);
+    if (state.sidebarWidth === DEFAULT_SIDEBAR_WIDTH) return;
+    state = setPreferences(state, { sidebarWidth: DEFAULT_SIDEBAR_WIDTH });
+    schedulePersist();
+  });
 }
 
 function renderContent(
@@ -572,7 +663,7 @@ function renderSettings(container: HTMLElement): void {
       <div class="setting-group">
         <div class="setting-copy">
           <h2>Tab position</h2>
-          <p>Keep document tabs across the titlebar or move them to a left rail.</p>
+          <p>Keep document tabs in a strip under the title bar or move them to a left rail.</p>
         </div>
         <div class="segmented-control" role="group" aria-label="Tab position">
           ${settingButton("placement", "top", "Top", state.tabPlacement)}
@@ -696,6 +787,10 @@ function isMarkdownPath(path: string): boolean {
 
 function tabLabel(tab: AppTab): string {
   return tab.kind === "settings" ? "Settings" : tab.displayName;
+}
+
+function windowTitle(tab: AppTab | null): string {
+  return tab ? tabLabel(tab) : "MarkMaid";
 }
 
 function tabTitle(tab: AppTab): string {

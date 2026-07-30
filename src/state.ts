@@ -12,12 +12,25 @@ import type {
   ThemeMode,
 } from "./types";
 
+export const DEFAULT_SIDEBAR_WIDTH = 232;
+export const MIN_SIDEBAR_WIDTH = 160;
+export const MAX_SIDEBAR_WIDTH = 420;
+
 export const DEFAULT_STATE: AppState = {
   tabs: [],
   activeTabKey: null,
   theme: "system",
   tabPlacement: "top",
+  sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
 };
+
+export function clampSidebarWidth(width: number): number {
+  if (!Number.isFinite(width)) return DEFAULT_SIDEBAR_WIDTH;
+  return Math.min(
+    MAX_SIDEBAR_WIDTH,
+    Math.max(MIN_SIDEBAR_WIDTH, Math.round(width)),
+  );
+}
 
 export function documentKey(path: string): string {
   return `document:${path}`;
@@ -191,9 +204,14 @@ export function setPreferences(
   preferences: {
     theme?: ThemeMode;
     tabPlacement?: TabPlacement;
+    sidebarWidth?: number;
   },
 ): AppState {
-  return { ...state, ...preferences };
+  const next = { ...state, ...preferences };
+  if (preferences.sidebarWidth !== undefined) {
+    next.sidebarWidth = clampSidebarWidth(preferences.sidebarWidth);
+  }
+  return next;
 }
 
 export function toPersistedSession(state: AppState): PersistedSessionV1 {
@@ -216,6 +234,7 @@ export function toPersistedSession(state: AppState): PersistedSessionV1 {
     activeTabKey: state.activeTabKey,
     theme: state.theme,
     tabPlacement: state.tabPlacement,
+    sidebarWidth: clampSidebarWidth(state.sidebarWidth),
   };
 }
 
@@ -230,6 +249,11 @@ export function fromPersistedSession(value: unknown): AppState {
     activeTabKey: value.activeTabKey,
     theme: value.theme,
     tabPlacement: value.tabPlacement,
+    sidebarWidth: clampSidebarWidth(
+      typeof value.sidebarWidth === "number"
+        ? value.sidebarWidth
+        : DEFAULT_SIDEBAR_WIDTH,
+    ),
   };
 }
 
