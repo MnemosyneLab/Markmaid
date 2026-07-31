@@ -7,7 +7,7 @@ use std::{
 };
 
 use comrak::{Arena, Options, format_html, nodes::NodeValue, parse_document};
-use merman::render::{HeadlessRenderer, HostThemeProfile};
+use merman::{MermaidConfig, render::HeadlessRenderer};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use url::Url;
@@ -15,28 +15,51 @@ use url::Url;
 const MARKDOWN_EXTENSIONS: &[&str] = &["md", "markdown", "mdown", "mkd"];
 const MERMAID_PLACEHOLDER_LANGUAGE: &str = "markmaid-mermaid-placeholder";
 const MERMAID_EXPAND_ICON: &str = r#"<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false"><path fill="currentColor" d="M12 5c-5.2 0-9.5 3.3-11 7.5C2.5 16.7 6.8 20 12 20s9.5-3.3 11-7.5C21.5 8.3 17.2 5 12 5zm0 12.5c-2.8 0-5-2.2-5-5s2.2-5 5-5 5 2.2 5 5-2.2 5-5 5zm0-8a3 3 0 1 0 .001 6.001A3 3 0 0 0 12 9.5z"/></svg>"#;
+const MERMAID_SOURCE_ICON: &str = r#"<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8.7 6.3a1 1 0 0 1 0 1.4L4.4 12l4.3 4.3a1 1 0 1 1-1.4 1.4l-5-5a1 1 0 0 1 0-1.4l5-5a1 1 0 0 1 1.4 0Zm6.6 0a1 1 0 0 1 1.4 0l5 5a1 1 0 0 1 0 1.4l-5 5a1 1 0 1 1-1.4-1.4l4.3-4.3-4.3-4.3a1 1 0 0 1 0-1.4ZM13.6 3.2a1 1 0 0 1 .7 1.2l-4 15a1 1 0 1 1-1.9-.5l4-15a1 1 0 0 1 1.2-.7Z"/></svg>"#;
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "kebab-case")]
 pub enum MermaidTheme {
     #[default]
-    Light,
+    Default,
+    Base,
+    Forest,
+    Neutral,
+    Neo,
+    Redux,
+    ReduxColor,
     Dark,
+    NeoDark,
+    ReduxDark,
+    ReduxDarkColor,
 }
 
 impl MermaidTheme {
     fn as_str(self) -> &'static str {
         match self {
-            Self::Light => "light",
+            Self::Default => "default",
+            Self::Base => "base",
+            Self::Forest => "forest",
+            Self::Neutral => "neutral",
+            Self::Neo => "neo",
+            Self::Redux => "redux",
+            Self::ReduxColor => "redux-color",
             Self::Dark => "dark",
+            Self::NeoDark => "neo-dark",
+            Self::ReduxDark => "redux-dark",
+            Self::ReduxDarkColor => "redux-dark-color",
         }
     }
 
-    fn host_profile(self) -> HostThemeProfile {
+    fn appearance(self) -> &'static str {
         match self {
-            Self::Light => HostThemeProfile::editor_light(),
-            Self::Dark => HostThemeProfile::editor_dark(),
+            Self::Dark | Self::NeoDark | Self::ReduxDark | Self::ReduxDarkColor => "dark",
+            _ => "light",
         }
+    }
+
+    fn config(self) -> MermaidConfig {
+        MermaidConfig::from_value(serde_json::json!({ "theme": self.as_str() }))
     }
 }
 
@@ -296,7 +319,7 @@ fn render_markdown(
     let mut image_assets = Vec::new();
     let mut mermaid_replacements = Vec::new();
     let renderer = HeadlessRenderer::new()
-        .with_host_theme(&mermaid_theme.host_profile())
+        .with_site_config(mermaid_theme.config())
         .with_vendored_text_measurer();
     let document_id = document_id(document_path);
 
@@ -375,8 +398,9 @@ fn render_mermaid_figure(
         .render_svg_sync(source)
     {
         Ok(Some(svg)) => format!(
-            r#"<figure class="mermaid-figure" data-mermaid-theme="{}"><div class="mermaid-toolbar"><button class="mermaid-expand" type="button" title="View diagram fullscreen" aria-label="View diagram fullscreen">{MERMAID_EXPAND_ICON}</button></div><div class="mermaid-stage is-ready">{svg}</div></figure>"#,
-            theme.as_str(),
+            r#"<figure class="mermaid-figure" data-mermaid-theme="{}"><div class="mermaid-toolbar"><button class="mermaid-expand" type="button" title="View diagram fullscreen" aria-label="View diagram fullscreen">{MERMAID_EXPAND_ICON}</button><button class="mermaid-show-source" type="button" title="Show Mermaid source" aria-label="Show Mermaid source">{MERMAID_SOURCE_ICON}</button></div><div class="mermaid-stage is-ready">{svg}</div><template class="mermaid-source-template">{}</template></figure>"#,
+            theme.appearance(),
+            escape_html(source),
         ),
         Ok(None) => mermaid_error_figure(
             theme,
@@ -389,7 +413,7 @@ fn render_mermaid_figure(
 fn mermaid_error_figure(theme: MermaidTheme, message: &str) -> String {
     format!(
         r#"<figure class="mermaid-figure" data-mermaid-theme="{}"><div class="mermaid-stage"><div class="mermaid-error" role="alert"><strong>Mermaid render failed</strong><span>{}</span></div></div></figure>"#,
-        theme.as_str(),
+        theme.appearance(),
         escape_html(message),
     )
 }
@@ -487,11 +511,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn accepts_every_configurable_mermaid_theme() {
+        for (name, appearance) in [
+            ("default", "light"),
+            ("base", "light"),
+            ("forest", "light"),
+            ("neutral", "light"),
+            ("neo", "light"),
+            ("redux", "light"),
+            ("redux-color", "light"),
+            ("dark", "dark"),
+            ("neo-dark", "dark"),
+            ("redux-dark", "dark"),
+            ("redux-dark-color", "dark"),
+        ] {
+            let theme = serde_json::from_str::<MermaidTheme>(&format!("\"{name}\""))
+                .expect("configured Mermaid theme should deserialize");
+            assert_eq!(theme.as_str(), name);
+            assert_eq!(theme.appearance(), appearance);
+        }
+    }
+
+    #[test]
     fn renders_gfm_and_heading_anchors() {
         let rendered = render_markdown(
             "# Heading\n\n~~gone~~\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\n- [x] done",
             Path::new("/tmp/readme.md"),
-            MermaidTheme::Light,
+            MermaidTheme::Default,
         )
         .unwrap();
 
@@ -507,7 +553,7 @@ mod tests {
         let rendered = render_markdown(
             "<script>alert('no')</script>\n\n[bad](javascript:alert(1))",
             Path::new("/tmp/readme.md"),
-            MermaidTheme::Light,
+            MermaidTheme::Default,
         )
         .unwrap();
 
@@ -532,7 +578,7 @@ mod tests {
         let rendered = render_markdown(
             "![alt](../assets/image%20one.png)",
             &document,
-            MermaidTheme::Light,
+            MermaidTheme::Default,
         )
         .unwrap();
 
@@ -556,7 +602,7 @@ mod tests {
 
         let results = [valid, invalid, unsupported]
             .iter()
-            .map(|path| load_document_data(path.to_str().unwrap(), MermaidTheme::Light))
+            .map(|path| load_document_data(path.to_str().unwrap(), MermaidTheme::Default))
             .collect::<Vec<_>>();
 
         assert!(matches!(results[0], DocumentLoadResult::Ready { .. }));
@@ -575,14 +621,16 @@ mod tests {
         let rendered = render_markdown(
             "# Diagram\n\n```mermaid\nflowchart TD\n  A --> B\n```\n",
             Path::new("/tmp/diagram.md"),
-            MermaidTheme::Light,
+            MermaidTheme::Default,
         )
         .unwrap();
 
         assert!(rendered.html.contains("<figure class=\"mermaid-figure\""));
         assert!(rendered.html.contains("data-mermaid-theme=\"light\""));
         assert!(rendered.html.contains("<svg"));
-        assert!(!rendered.html.contains("<foreignObject"));
+        assert!(rendered.html.contains("mermaid-show-source"));
+        assert!(rendered.html.contains("mermaid-source-template"));
+        assert!(rendered.html.contains("flowchart TD"));
         assert!(!rendered.html.contains("language-mermaid"));
         assert!(!rendered.html.contains("MARKMAID_MERMAN_SVG"));
     }
@@ -607,11 +655,33 @@ mod tests {
         let rendered = render_markdown(
             "```mermaid\nflowchart TD\n  A[Open]\n  click A \"javascript:alert(1)\"\n```",
             Path::new("/tmp/diagram.md"),
-            MermaidTheme::Light,
+            MermaidTheme::Default,
         )
         .unwrap();
 
         assert!(rendered.html.contains("<svg"));
-        assert!(!rendered.html.to_ascii_lowercase().contains("javascript:"));
+        assert!(
+            !rendered
+                .html
+                .to_ascii_lowercase()
+                .contains("href=\"javascript:")
+        );
+    }
+
+    #[test]
+    fn escapes_mermaid_source_before_embedding_it_in_the_preview() {
+        let rendered = render_markdown(
+            "```mermaid\nflowchart TD\n  A[<unsafe>] --> B[& value]\n```",
+            Path::new("/tmp/diagram.md"),
+            MermaidTheme::Default,
+        )
+        .unwrap();
+
+        assert!(
+            rendered
+                .html
+                .contains("A[&lt;unsafe&gt;] --&gt; B[&amp; value]")
+        );
+        assert!(!rendered.html.contains("<unsafe>"));
     }
 }

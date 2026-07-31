@@ -1,7 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 
-import type { MermaidTheme } from "./types";
+import { enhanceCodeBlock } from "./code-block";
+
+type MermaidAppearance = "light" | "dark";
+const ZOOM_LEVELS = [50, 75, 100, 125, 150, 175, 200] as const;
 
 const CLOSE_ICON = `
   <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
@@ -15,6 +18,24 @@ const CLOSE_ICON = `
 const EXPORT_ICON = `
   <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
     <path fill="currentColor" d="M11 3a1 1 0 0 1 2 0v9.6l3.3-3.3a1 1 0 1 1 1.4 1.4l-5 5a1 1 0 0 1-1.4 0l-5-5a1 1 0 0 1 1.4-1.4l3.3 3.3V3ZM5 19a1 1 0 0 1 1-1h12a1 1 0 1 1 0 2H6a1 1 0 0 1-1-1Z" />
+  </svg>
+`;
+
+const ZOOM_OUT_ICON = `
+  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+    <path fill="currentColor" d="M10.5 3a7.5 7.5 0 1 0 4.72 13.33l4.72 4.72a1 1 0 0 0 1.42-1.42l-4.72-4.72A7.5 7.5 0 0 0 10.5 3Zm0 2a5.5 5.5 0 1 1 0 11 5.5 5.5 0 0 1 0-11Zm-3 4.5a1 1 0 0 0 0 2h6a1 1 0 1 0 0-2h-6Z" />
+  </svg>
+`;
+
+const ZOOM_IN_ICON = `
+  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+    <path fill="currentColor" d="M10.5 3a7.5 7.5 0 1 0 4.72 13.33l4.72 4.72a1 1 0 0 0 1.42-1.42l-4.72-4.72A7.5 7.5 0 0 0 10.5 3Zm0 2a5.5 5.5 0 1 1 0 11 5.5 5.5 0 0 1 0-11Zm-1 2.5a1 1 0 0 0-1 1v1h-1a1 1 0 1 0 0 2h1v1a1 1 0 1 0 2 0v-1h1a1 1 0 1 0 0-2h-1v-1a1 1 0 0 0-1-1Z" />
+  </svg>
+`;
+
+const PREVIEW_ICON = `
+  <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false">
+    <path fill="currentColor" d="M5 3a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2H5Zm0 2h14v14H5V5Zm3 2.5a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm8.6 3.2a1 1 0 0 0-1.4 0l-2.7 2.7-1.2-1.2a1 1 0 0 0-1.4 0L7 16h10l-3-3 2.6-2.3Z" />
   </svg>
 `;
 
@@ -34,11 +55,63 @@ export function enhanceDiagramViewers(article: HTMLElement): void {
       }
       expand.addEventListener("click", () => openDiagramViewer(stage, theme));
     });
+
+  article
+    .querySelectorAll<HTMLButtonElement>(".mermaid-figure .mermaid-show-source")
+    .forEach((showSource) => {
+      const figure = showSource.closest<HTMLElement>(".mermaid-figure");
+      const stage = figure?.querySelector<HTMLElement>(".mermaid-stage");
+      const template = figure?.querySelector<HTMLTemplateElement>(
+        ".mermaid-source-template",
+      );
+      if (!figure || !stage || !template) {
+        showSource.remove();
+        return;
+      }
+      showSource.addEventListener("click", () => {
+        showMermaidSource(figure, stage, template.content.textContent ?? "");
+      });
+    });
+}
+
+function showMermaidSource(
+  figure: HTMLElement,
+  stage: HTMLElement,
+  source: string,
+): void {
+  const preview = document.createDocumentFragment();
+  while (stage.firstChild) preview.append(stage.firstChild);
+
+  const pre = document.createElement("pre");
+  const code = document.createElement("code");
+  code.className = "language-mermaid";
+  code.textContent = source;
+  pre.append(code);
+  stage.replaceChildren(pre);
+  figure.dataset.mermaidView = "source";
+
+  const codeBlock = enhanceCodeBlock(pre, {
+    language: "mermaid",
+    embedded: true,
+  });
+  if (!codeBlock) return;
+
+  const previewButton = document.createElement("button");
+  previewButton.className = "code-preview";
+  previewButton.type = "button";
+  previewButton.title = "Show diagram preview";
+  previewButton.setAttribute("aria-label", "Show diagram preview");
+  previewButton.innerHTML = PREVIEW_ICON;
+  previewButton.addEventListener("click", () => {
+    stage.replaceChildren(preview);
+    delete figure.dataset.mermaidView;
+  });
+  codeBlock.toolbar.append(previewButton);
 }
 
 function openDiagramViewer(
   stage: HTMLElement,
-  theme: MermaidTheme,
+  theme: MermaidAppearance,
 ): void {
   const svg = stage.querySelector("svg");
   if (!svg) return;
@@ -61,12 +134,14 @@ function openDiagramViewer(
       aria-label="Close diagram viewer"
     >${CLOSE_ICON}</button>
     <div class="mermaid-viewer-hint">Scroll to zoom · drag to pan · Esc to close</div>
-    <button
-      class="mermaid-viewer-export"
-      type="button"
-      title="Export SVG"
-      aria-label="Export SVG"
-    >${EXPORT_ICON}</button>
+    <div class="mermaid-viewer-controls" aria-label="Diagram controls">
+      <button class="mermaid-viewer-zoom" type="button" data-zoom="out" title="Zoom out" aria-label="Zoom out">${ZOOM_OUT_ICON}</button>
+      <select class="mermaid-viewer-zoom-select" aria-label="Zoom level">
+        ${ZOOM_LEVELS.map((level) => `<option value="${level}"${level === 100 ? " selected" : ""}>${level}%</option>`).join("")}
+      </select>
+      <button class="mermaid-viewer-zoom" type="button" data-zoom="in" title="Zoom in" aria-label="Zoom in">${ZOOM_IN_ICON}</button>
+      <button class="mermaid-viewer-export" type="button" title="Export SVG" aria-label="Export SVG">${EXPORT_ICON}</button>
+    </div>
     <div class="mermaid-viewer-canvas">
       <div class="mermaid-viewer-world"></div>
     </div>
@@ -86,7 +161,7 @@ function openDiagramViewer(
   const initialBounds = svg.getBoundingClientRect();
   const baseWidth = initialBounds.width;
 
-  let scale = 1;
+  let zoomIndex = ZOOM_LEVELS.indexOf(100);
   let translateX = 0;
   let translateY = 0;
   let dragging = false;
@@ -95,8 +170,17 @@ function openDiagramViewer(
   let lastY = 0;
 
   const applyTransform = (): void => {
-    clone.style.width = `${baseWidth * scale}px`;
+    clone.style.width = `${baseWidth * (ZOOM_LEVELS[zoomIndex] / 100)}px`;
     world.style.transform = `translate(${translateX}px, ${translateY}px)`;
+  };
+
+  const setZoomIndex = (nextIndex: number): void => {
+    zoomIndex = Math.max(0, Math.min(ZOOM_LEVELS.length - 1, nextIndex));
+    const select = overlay.querySelector<HTMLSelectElement>(
+      ".mermaid-viewer-zoom-select",
+    );
+    if (select) select.value = String(ZOOM_LEVELS[zoomIndex]);
+    applyTransform();
   };
 
   const canvas = overlay.querySelector<HTMLElement>(".mermaid-viewer-canvas");
@@ -104,9 +188,7 @@ function openDiagramViewer(
     "wheel",
     (event) => {
       event.preventDefault();
-      const delta = event.deltaY > 0 ? 0.9 : 1.1;
-      scale = Math.min(8, Math.max(0.25, scale * delta));
-      applyTransform();
+      setZoomIndex(zoomIndex + (event.deltaY > 0 ? -1 : 1));
     },
     { passive: false },
   );
@@ -159,6 +241,18 @@ function openDiagramViewer(
   overlay
     .querySelector<HTMLButtonElement>(".mermaid-viewer-export")
     ?.addEventListener("click", () => void exportDiagram(svg));
+  overlay.querySelectorAll<HTMLButtonElement>("[data-zoom]").forEach((button) => {
+    button.addEventListener("click", () => {
+      setZoomIndex(zoomIndex + (button.dataset.zoom === "in" ? 1 : -1));
+    });
+  });
+  overlay
+    .querySelector<HTMLSelectElement>(".mermaid-viewer-zoom-select")
+    ?.addEventListener("change", (event) => {
+      const nextLevel = Number((event.currentTarget as HTMLSelectElement).value);
+      const nextIndex = ZOOM_LEVELS.indexOf(nextLevel as (typeof ZOOM_LEVELS)[number]);
+      if (nextIndex >= 0) setZoomIndex(nextIndex);
+    });
 
   document.addEventListener("keydown", onKeyDown);
   document.body.append(overlay);

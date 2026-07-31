@@ -5,7 +5,8 @@ import type {
   DocumentTab,
   ErrorDocumentTab,
   LoadingDocumentTab,
-  MermaidTheme,
+  MermaidDarkTheme,
+  MermaidLightTheme,
   PersistedSessionV1,
   ReadyDocumentTab,
   SettingsTab,
@@ -16,6 +17,7 @@ import type {
 export const DEFAULT_SIDEBAR_WIDTH = 232;
 export const MIN_SIDEBAR_WIDTH = 160;
 export const MAX_SIDEBAR_WIDTH = 420;
+export const MAX_RECENT_DOCUMENTS = 10;
 
 export const DEFAULT_STATE: AppState = {
   tabs: [],
@@ -23,7 +25,9 @@ export const DEFAULT_STATE: AppState = {
   theme: "system",
   tabPlacement: "top",
   sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
-  mermaidTheme: "light",
+  mermaidLightTheme: "default",
+  mermaidDarkTheme: "dark",
+  recentDocuments: [],
 };
 
 export function clampSidebarWidth(width: number): number {
@@ -207,7 +211,8 @@ export function setPreferences(
     theme?: ThemeMode;
     tabPlacement?: TabPlacement;
     sidebarWidth?: number;
-    mermaidTheme?: MermaidTheme;
+    mermaidLightTheme?: MermaidLightTheme;
+    mermaidDarkTheme?: MermaidDarkTheme;
   },
 ): AppState {
   const next = { ...state, ...preferences };
@@ -215,6 +220,18 @@ export function setPreferences(
     next.sidebarWidth = clampSidebarWidth(preferences.sidebarWidth);
   }
   return next;
+}
+
+export function addRecentDocuments(state: AppState, paths: string[]): AppState {
+  const recentDocuments = normalizeRecentDocuments([
+    ...paths.filter((path) => path.trim().length > 0),
+    ...state.recentDocuments,
+  ]);
+  return { ...state, recentDocuments };
+}
+
+export function clearRecentDocuments(state: AppState): AppState {
+  return state.recentDocuments.length === 0 ? state : { ...state, recentDocuments: [] };
 }
 
 export function toPersistedSession(state: AppState): PersistedSessionV1 {
@@ -238,7 +255,9 @@ export function toPersistedSession(state: AppState): PersistedSessionV1 {
     theme: state.theme,
     tabPlacement: state.tabPlacement,
     sidebarWidth: clampSidebarWidth(state.sidebarWidth),
-    mermaidTheme: state.mermaidTheme,
+    mermaidLightTheme: state.mermaidLightTheme,
+    mermaidDarkTheme: state.mermaidDarkTheme,
+    recentDocuments: state.recentDocuments,
   };
 }
 
@@ -258,11 +277,36 @@ export function fromPersistedSession(value: unknown): AppState {
         ? value.sidebarWidth
         : DEFAULT_SIDEBAR_WIDTH,
     ),
-    mermaidTheme:
-      value.mermaidTheme === "dark" || value.mermaidTheme === "light"
-        ? value.mermaidTheme
-        : DEFAULT_STATE.mermaidTheme,
+    mermaidLightTheme: isMermaidLightTheme(value.mermaidLightTheme)
+      ? value.mermaidLightTheme
+      : DEFAULT_STATE.mermaidLightTheme,
+    mermaidDarkTheme: isMermaidDarkTheme(value.mermaidDarkTheme)
+      ? value.mermaidDarkTheme
+      : DEFAULT_STATE.mermaidDarkTheme,
+    recentDocuments: normalizeRecentDocuments(value.recentDocuments),
   };
+}
+
+function isMermaidLightTheme(value: unknown): value is MermaidLightTheme {
+  return ["default", "base", "forest", "neutral", "neo", "redux", "redux-color"].includes(
+    value as string,
+  );
+}
+
+function isMermaidDarkTheme(value: unknown): value is MermaidDarkTheme {
+  return ["dark", "neo-dark", "redux-dark", "redux-dark-color"].includes(
+    value as string,
+  );
+}
+
+function normalizeRecentDocuments(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  return value.filter((path): path is string => {
+    if (typeof path !== "string" || !path.trim() || seen.has(path)) return false;
+    seen.add(path);
+    return true;
+  }).slice(0, MAX_RECENT_DOCUMENTS);
 }
 
 function deduplicateDocuments(state: AppState): AppState {

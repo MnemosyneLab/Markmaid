@@ -1,6 +1,19 @@
 export type ThemeMode = "system" | "light" | "dark";
 export type TabPlacement = "top" | "left";
-export type MermaidTheme = "light" | "dark";
+export type MermaidLightTheme =
+  | "default"
+  | "base"
+  | "forest"
+  | "neutral"
+  | "neo"
+  | "redux"
+  | "redux-color";
+export type MermaidDarkTheme =
+  | "dark"
+  | "neo-dark"
+  | "redux-dark"
+  | "redux-dark-color";
+export type MermaidTheme = MermaidLightTheme | MermaidDarkTheme;
 
 export interface ImageAsset {
   token: string;
@@ -68,7 +81,9 @@ export interface AppState {
   theme: ThemeMode;
   tabPlacement: TabPlacement;
   sidebarWidth: number;
-  mermaidTheme: MermaidTheme;
+  mermaidLightTheme: MermaidLightTheme;
+  mermaidDarkTheme: MermaidDarkTheme;
+  recentDocuments: string[];
 }
 
 export type PersistedTab =
@@ -82,5 +97,9 @@ export interface PersistedSessionV1 {
   theme: ThemeMode;
   tabPlacement: TabPlacement;
   sidebarWidth?: number;
-  mermaidTheme?: MermaidTheme;
+  mermaidLightTheme?: MermaidLightTheme;
+  mermaidDarkTheme?: MermaidDarkTheme;
+  recentDocuments?: string[];
+  // Kept for one-time migration from the earlier light/dark selector.
+  mermaidTheme?: "light" | "dark";
 }

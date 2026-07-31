@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   addDocumentResults,
+  addRecentDocuments,
   clampSidebarWidth,
+  clearRecentDocuments,
   closeTab,
   cycleTab,
   DEFAULT_SIDEBAR_WIDTH,
@@ -95,7 +97,8 @@ describe("tab state", () => {
         theme: "dark",
         tabPlacement: "left",
         sidebarWidth: 300,
-        mermaidTheme: "dark",
+        mermaidLightTheme: "forest",
+        mermaidDarkTheme: "redux-dark-color",
       }),
       [ready("/one.md")],
     );
@@ -107,7 +110,9 @@ describe("tab state", () => {
     expect(restored.theme).toBe("dark");
     expect(restored.tabPlacement).toBe("left");
     expect(restored.sidebarWidth).toBe(300);
-    expect(restored.mermaidTheme).toBe("dark");
+    expect(restored.mermaidLightTheme).toBe("forest");
+    expect(restored.mermaidDarkTheme).toBe("redux-dark-color");
+    expect(restored.recentDocuments).toEqual([]);
     expect(restored.tabs.map((item) => item.kind)).toEqual([
       "document",
       "settings",
@@ -132,8 +137,17 @@ describe("tab state", () => {
         activeTabKey: null,
         theme: "system",
         tabPlacement: "top",
-      }).mermaidTheme,
-    ).toBe("light");
+      }).mermaidLightTheme,
+    ).toBe("default");
+    expect(
+      fromPersistedSession({
+        version: 1,
+        tabs: [],
+        activeTabKey: null,
+        theme: "system",
+        tabPlacement: "top",
+      }).mermaidDarkTheme,
+    ).toBe("dark");
 
     expect(
       setPreferences(baseState(), { sidebarWidth: 90 }).sidebarWidth,
@@ -146,5 +160,16 @@ describe("tab state", () => {
 
   it("falls back safely for invalid persisted state", () => {
     expect(fromPersistedSession({ version: 99 })).toEqual(DEFAULT_STATE);
+  });
+
+  it("keeps ten unique recent documents and can clear them", () => {
+    const paths = Array.from({ length: 12 }, (_, index) => `/docs/${index}.md`);
+    let state = addRecentDocuments(baseState(), paths);
+    state = addRecentDocuments(state, ["/docs/3.md"]);
+
+    expect(state.recentDocuments).toHaveLength(10);
+    expect(state.recentDocuments[0]).toBe("/docs/3.md");
+    expect(state.recentDocuments.filter((path) => path === "/docs/3.md")).toHaveLength(1);
+    expect(clearRecentDocuments(state).recentDocuments).toEqual([]);
   });
 });

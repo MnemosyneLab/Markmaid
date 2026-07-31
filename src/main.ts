@@ -5,11 +5,14 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import { load, type Store } from "@tauri-apps/plugin-store";
 
+import { enhanceCodeBlocks } from "./code-block";
 import { enhanceDiagramViewers } from "./diagram-viewer";
 import {
   activeTab,
   addDocumentResults,
+  addRecentDocuments,
   clampSidebarWidth,
+  clearRecentDocuments,
   closeTab,
   cycleTab,
   DEFAULT_SIDEBAR_WIDTH,
@@ -29,6 +32,8 @@ import type {
   AppTab,
   DocumentLoadResult,
   DocumentTab,
+  MermaidDarkTheme,
+  MermaidLightTheme,
   MermaidTheme,
   ReadyDocumentTab,
   TabPlacement,
@@ -42,8 +47,24 @@ const MENU_RELOAD_EVENT = "markmaid://menu-reload";
 const MENU_SETTINGS_EVENT = "markmaid://menu-settings";
 const MENU_NEXT_TAB_EVENT = "markmaid://menu-next-tab";
 const MENU_PREVIOUS_TAB_EVENT = "markmaid://menu-previous-tab";
+const MENU_CLEAR_RECENT_EVENT = "markmaid://menu-clear-recent";
 const SESSION_KEY = "session";
 const MARKDOWN_EXTENSIONS = new Set(["md", "markdown", "mdown", "mkd"]);
+const LIGHT_MERMAID_THEMES: ReadonlyArray<MermaidLightTheme> = [
+  "default",
+  "base",
+  "forest",
+  "neutral",
+  "neo",
+  "redux",
+  "redux-color",
+];
+const DARK_MERMAID_THEMES: ReadonlyArray<MermaidDarkTheme> = [
+  "dark",
+  "neo-dark",
+  "redux-dark",
+  "redux-dark-color",
+];
 
 const rootElement = document.querySelector<HTMLElement>("#app");
 if (!rootElement) throw new Error("MarkMaid app root is missing.");
@@ -54,6 +75,7 @@ let stateStore: Store | null = null;
 let persistTimer: number | null = null;
 let pendingAnchor: string | null = null;
 let mermaidThemeReloadSequence = 0;
+let appliedAppearance: MermaidAppearance | null = null;
 let sidebarResizeSession: {
   pointerId: number;
   startX: number;
@@ -71,6 +93,7 @@ async function bootstrap(): Promise<void> {
   applyTheme();
   render();
   await registerNativeListeners();
+  await syncRecentDocuments();
 
   const restoredPaths = state.tabs
     .filter(
@@ -82,7 +105,7 @@ async function bootstrap(): Promise<void> {
   if (restoredPaths.length > 0) {
     const results = await invoke<DocumentLoadResult[]>("load_documents", {
       paths: restoredPaths,
-      mermaidTheme: state.mermaidTheme,
+      mermaidTheme: activeMermaidTheme(),
     });
     state = hydrateRestoredTabs(state, results);
     applyTheme();
@@ -107,6 +130,10 @@ async function registerNativeListeners(): Promise<void> {
     listen(MENU_SETTINGS_EVENT, () => showSettings()),
     listen(MENU_NEXT_TAB_EVENT, () => selectRelativeTab(1)),
     listen(MENU_PREVIOUS_TAB_EVENT, () => selectRelativeTab(-1)),
+    listen(MENU_CLEAR_RECENT_EVENT, () => {
+      state = clearRecentDocuments(state);
+      schedulePersist();
+    }),
     getCurrentWebview().onDragDropEvent((event) => {
       if (event.payload.type === "over") {
         root.classList.add("is-dragging");
@@ -147,15 +174,23 @@ async function openDocumentPaths(
   if (uniquePaths.length === 0) return;
 
   captureActiveScroll();
+  const existingPaths: string[] = [];
   for (const path of uniquePaths) {
     const existing = state.tabs.find(
-      (tab) =>
+      (tab): tab is DocumentTab =>
         tab.kind === "document" &&
         (tab.requestedPath === path ||
           (tab.status !== "loading" && tab.canonicalPath === path)),
     );
     if (existing) {
       state = { ...state, activeTabKey: existing.key };
+      existingPaths.push(
+        existing.status === "ready"
+          ? existing.canonicalPath
+          : existing.status === "error"
+            ? (existing.canonicalPath ?? existing.requestedPath)
+            : existing.requestedPath,
+      );
       continue;
     }
     const placeholder = loadingTab(path);
@@ -165,16 +200,27 @@ async function openDocumentPaths(
       activeTabKey: placeholder.key,
     };
   }
+  if (existingPaths.length > 0) {
+    state = addRecentDocuments(state, existingPaths);
+    void syncRecentDocuments();
+  }
   pendingAnchor = anchor;
   render();
 
   const results = await invoke<DocumentLoadResult[]>("load_documents", {
     paths: uniquePaths,
-    mermaidTheme: state.mermaidTheme,
+    mermaidTheme: activeMermaidTheme(),
   });
   state = addDocumentResults(state, results);
+  state = addRecentDocuments(
+    state,
+    results.flatMap((result) =>
+      result.status === "ready" ? [result.canonicalPath] : [],
+    ),
+  );
   render();
   schedulePersist();
+  void syncRecentDocuments();
 }
 
 async function reloadActiveDocument(): Promise<void> {
@@ -190,7 +236,7 @@ async function reloadActiveDocument(): Promise<void> {
         : current.requestedPath;
   const result = await invoke<DocumentLoadResult>("reload_document", {
     path,
-    mermaidTheme: state.mermaidTheme,
+    mermaidTheme: activeMermaidTheme(),
   });
 
   if (current.status === "ready" && result.status === "error") {
@@ -544,6 +590,7 @@ function renderDocument(
   article.className = "markdown-body";
   article.innerHTML = tab.html;
   prepareDocumentContent(article, tab);
+  enhanceCodeBlocks(article);
   enhanceDiagramViewers(article);
 
   if (tab.reloadError) {
@@ -678,15 +725,20 @@ function renderSettings(container: HTMLElement): void {
         </div>
       </div>
 
-      <div class="setting-group">
+      <div class="setting-group mermaid-theme-group">
         <div class="setting-copy">
-          <h2>Mermaid theme</h2>
-          <p>Choose the light or dark palette used for diagram previews.</p>
+          <h2>Mermaid light theme</h2>
+          <p>Used whenever the app appearance is light.</p>
         </div>
-        <div class="segmented-control" role="group" aria-label="Mermaid theme">
-          ${settingButton("mermaid", "light", "Light", state.mermaidTheme)}
-          ${settingButton("mermaid", "dark", "Dark", state.mermaidTheme)}
+        ${settingSelect("mermaid-light", LIGHT_MERMAID_THEMES, state.mermaidLightTheme)}
+      </div>
+
+      <div class="setting-group mermaid-theme-group">
+        <div class="setting-copy">
+          <h2>Mermaid dark theme</h2>
+          <p>Used whenever the app appearance is dark.</p>
         </div>
+        ${settingSelect("mermaid-dark", DARK_MERMAID_THEMES, state.mermaidDarkTheme)}
       </div>
 
       <footer class="settings-note">
@@ -697,12 +749,17 @@ function renderSettings(container: HTMLElement): void {
 
   container.querySelectorAll<HTMLElement>("[data-theme]").forEach((button) => {
     button.addEventListener("click", () => {
+      const previousMermaidTheme = activeMermaidTheme();
       captureActiveScroll();
       state = setPreferences(state, {
         theme: button.dataset.theme as ThemeMode,
       });
       render();
       schedulePersist();
+      const nextMermaidTheme = activeMermaidTheme();
+      if (nextMermaidTheme !== previousMermaidTheme) {
+        void rerenderDocumentsForMermaidTheme(nextMermaidTheme);
+      }
     });
   });
   container
@@ -717,16 +774,33 @@ function renderSettings(container: HTMLElement): void {
       });
     });
   container
-    .querySelectorAll<HTMLElement>("[data-mermaid]")
+    .querySelectorAll<HTMLSelectElement>("[data-mermaid-light]")
     .forEach((button) => {
-      button.addEventListener("click", () => {
-        const mermaidTheme = button.dataset.mermaid as MermaidTheme;
-        if (mermaidTheme === state.mermaidTheme) return;
+      button.addEventListener("change", () => {
+        const mermaidLightTheme = button.value as MermaidLightTheme;
+        if (mermaidLightTheme === state.mermaidLightTheme) return;
         captureActiveScroll();
-        state = setPreferences(state, { mermaidTheme });
+        state = setPreferences(state, { mermaidLightTheme });
         render();
         schedulePersist();
-        void rerenderDocumentsForMermaidTheme(mermaidTheme);
+        if (resolvedAppearance() === "light") {
+          void rerenderDocumentsForMermaidTheme(mermaidLightTheme);
+        }
+      });
+    });
+  container
+    .querySelectorAll<HTMLSelectElement>("[data-mermaid-dark]")
+    .forEach((button) => {
+      button.addEventListener("change", () => {
+        const mermaidDarkTheme = button.value as MermaidDarkTheme;
+        if (mermaidDarkTheme === state.mermaidDarkTheme) return;
+        captureActiveScroll();
+        state = setPreferences(state, { mermaidDarkTheme });
+        render();
+        schedulePersist();
+        if (resolvedAppearance() === "dark") {
+          void rerenderDocumentsForMermaidTheme(mermaidDarkTheme);
+        }
       });
     });
 }
@@ -754,7 +828,7 @@ async function rerenderDocumentsForMermaidTheme(
   });
   if (
     sequence !== mermaidThemeReloadSequence ||
-    state.mermaidTheme !== mermaidTheme
+    activeMermaidTheme() !== mermaidTheme
   ) {
     return;
   }
@@ -780,7 +854,7 @@ async function rerenderDocumentsForMermaidTheme(
 }
 
 function settingButton(
-  kind: "theme" | "placement" | "mermaid",
+  kind: "theme" | "placement",
   value: string,
   label: string,
   selected: string,
@@ -795,20 +869,59 @@ function settingButton(
   `;
 }
 
+function settingSelect<T extends MermaidTheme>(
+  kind: "mermaid-light" | "mermaid-dark",
+  themes: ReadonlyArray<T>,
+  selected: T,
+): string {
+  const label = kind === "mermaid-light" ? "Mermaid light theme" : "Mermaid dark theme";
+  return `
+    <select class="mermaid-theme-select" data-${kind} aria-label="${label}">
+      ${themes
+        .map(
+          (theme) =>
+            `<option value="${theme}"${theme === selected ? " selected" : ""}>${theme}</option>`,
+        )
+        .join("")}
+    </select>
+  `;
+}
+
+type MermaidAppearance = "light" | "dark";
+
+function resolvedAppearance(): MermaidAppearance {
+  return state.theme === "system"
+    ? colorScheme.matches
+      ? "dark"
+      : "light"
+    : state.theme;
+}
+
+function activeMermaidTheme(): MermaidTheme {
+  return resolvedAppearance() === "light"
+    ? state.mermaidLightTheme
+    : state.mermaidDarkTheme;
+}
+
 function applyTheme(): void {
-  const resolved =
-    state.theme === "system"
-      ? colorScheme.matches
-        ? "dark"
-        : "light"
-      : state.theme;
+  const resolved = resolvedAppearance();
   document.documentElement.dataset.theme = resolved;
   document.documentElement.dataset.themeMode = state.theme;
   document.documentElement.style.colorScheme = resolved;
+  appliedAppearance = resolved;
 }
 
 colorScheme.addEventListener("change", () => {
-  if (state.theme === "system") applyTheme();
+  if (state.theme !== "system") return;
+  const previousMermaidTheme =
+    appliedAppearance === "light"
+      ? state.mermaidLightTheme
+      : state.mermaidDarkTheme;
+  applyTheme();
+  const nextMermaidTheme = activeMermaidTheme();
+  if (nextMermaidTheme !== previousMermaidTheme) {
+    void rerenderDocumentsForMermaidTheme(nextMermaidTheme);
+  }
 });
 
 function schedulePersist(): void {
@@ -818,6 +931,10 @@ function schedulePersist(): void {
     persistTimer = null;
     void stateStore?.set(SESSION_KEY, toPersistedSession(state));
   }, 180);
+}
+
+async function syncRecentDocuments(): Promise<void> {
+  await invoke("sync_recent_documents", { paths: state.recentDocuments });
 }
 
 function scrollToAnchor(
