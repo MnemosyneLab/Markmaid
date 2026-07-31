@@ -890,7 +890,6 @@ html.is-resizing-sidebar * {
   height: auto;
 }
 
-.markdown-body .mermaid-pending,
 .markdown-body .mermaid-error {
   padding: 18px 8px;
   color: var(--text-secondary);
@@ -913,10 +912,8 @@ html.is-resizing-sidebar * {
 
 .mermaid-viewer {
   position: fixed;
-  inset: 0;
+  inset: 38px 0 0;
   z-index: 40;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
   background: rgb(18 20 24 / 72%);
   backdrop-filter: blur(18px) saturate(120%);
 }
@@ -930,20 +927,44 @@ html.is-resizing-sidebar * {
   inset: 0;
 }
 
-.mermaid-viewer-chrome {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 14px 16px;
-}
-
 .mermaid-viewer-hint {
+  position: absolute;
+  z-index: 2;
+  bottom: 16px;
+  left: 16px;
   color: rgb(255 255 255 / 78%);
   font-size: 12px;
   font-weight: 560;
+}
+
+.mermaid-viewer-export {
+  position: absolute;
+  z-index: 2;
+  right: 16px;
+  bottom: 16px;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  color: rgb(255 255 255 / 88%);
+  background: rgb(255 255 255 / 10%);
+  border: 1px solid rgb(255 255 255 / 14%);
+  cursor: default;
+}
+
+.mermaid-viewer[data-mermaid-theme="light"] .mermaid-viewer-export {
+  color: var(--text);
+  background: var(--surface-raised);
+  border-color: var(--border);
+}
+
+.mermaid-viewer-export:hover {
+  background: rgb(255 255 255 / 18%);
+}
+
+.mermaid-viewer[data-mermaid-theme="light"] .mermaid-viewer-export:hover {
+  background: var(--surface-hover);
 }
 
 .mermaid-viewer[data-mermaid-theme="light"] .mermaid-viewer-hint {
@@ -951,6 +972,10 @@ html.is-resizing-sidebar * {
 }
 
 .mermaid-viewer-close {
+  position: absolute;
+  z-index: 2;
+  top: 14px;
+  right: 16px;
   width: 34px;
   height: 34px;
   display: grid;
@@ -977,9 +1002,9 @@ html.is-resizing-sidebar * {
 }
 
 .mermaid-viewer-canvas {
-  position: relative;
+  position: absolute;
+  inset: 0;
   z-index: 1;
-  min-height: 0;
   display: grid;
   place-items: center;
   overflow: hidden;
@@ -996,7 +1021,6 @@ html.is-resizing-sidebar * {
   height: max-content;
   margin: 0 auto;
   transform-origin: center center;
-  will-change: transform;
 }
 
 .mermaid-viewer-world svg {

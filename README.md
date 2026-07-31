@@ -14,10 +14,11 @@ The MVP includes:
 - Session, scroll position, and window-state restoration
 - Local and HTTPS images with per-file Tauri asset authorization
 - Manual reload that preserves the previous preview when reloading fails
-- Async Mermaid diagram preview with light/dark diagram themes and fullscreen zoom
+- Native Rust Mermaid-to-SVG preview with light/dark themes and fullscreen zoom
 
-Mermaid rendering is supported asynchronously in the preview. Automatic file
-watching is intentionally deferred.
+Mermaid fenced code blocks are compiled to SVG by
+[Merman](https://github.com/Latias94/merman) while the document is loaded.
+Automatic file watching is intentionally deferred.
 
 ## Install
 

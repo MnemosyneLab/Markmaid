@@ -1,15 +1,44 @@
 use std::{
+    collections::hash_map::DefaultHasher,
     fs,
+    hash::{Hash, Hasher},
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
 };
 
 use comrak::{Arena, Options, format_html, nodes::NodeValue, parse_document};
-use serde::Serialize;
+use merman::render::{HeadlessRenderer, HostThemeProfile};
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use url::Url;
 
 const MARKDOWN_EXTENSIONS: &[&str] = &["md", "markdown", "mdown", "mkd"];
+const MERMAID_PLACEHOLDER_LANGUAGE: &str = "markmaid-mermaid-placeholder";
+const MERMAID_EXPAND_ICON: &str = r#"<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false"><path fill="currentColor" d="M12 5c-5.2 0-9.5 3.3-11 7.5C2.5 16.7 6.8 20 12 20s9.5-3.3 11-7.5C21.5 8.3 17.2 5 12 5zm0 12.5c-2.8 0-5-2.2-5-5s2.2-5 5-5 5 2.2 5 5-2.2 5-5 5zm0-8a3 3 0 1 0 .001 6.001A3 3 0 0 0 12 9.5z"/></svg>"#;
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum MermaidTheme {
+    #[default]
+    Light,
+    Dark,
+}
+
+impl MermaidTheme {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Light => "light",
+            Self::Dark => "dark",
+        }
+    }
+
+    fn host_profile(self) -> HostThemeProfile {
+        match self {
+            Self::Light => HostThemeProfile::editor_light(),
+            Self::Dark => HostThemeProfile::editor_dark(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -71,17 +100,46 @@ struct RenderedMarkdown {
     image_assets: Vec<ImageAsset>,
 }
 
+#[derive(Debug)]
+struct MermaidReplacement {
+    token: String,
+    html: String,
+}
+
 #[tauri::command]
-pub fn load_documents(app: AppHandle, paths: Vec<String>) -> Vec<DocumentLoadResult> {
+pub fn load_documents(
+    app: AppHandle,
+    paths: Vec<String>,
+    mermaid_theme: MermaidTheme,
+) -> Vec<DocumentLoadResult> {
     paths
         .iter()
-        .map(|path| authorize_assets(&app, load_document_data(path)))
+        .map(|path| authorize_assets(&app, load_document_data(path, mermaid_theme)))
         .collect()
 }
 
 #[tauri::command]
-pub fn reload_document(app: AppHandle, path: String) -> DocumentLoadResult {
-    authorize_assets(&app, load_document_data(&path))
+pub fn reload_document(
+    app: AppHandle,
+    path: String,
+    mermaid_theme: MermaidTheme,
+) -> DocumentLoadResult {
+    authorize_assets(&app, load_document_data(&path, mermaid_theme))
+}
+
+#[tauri::command]
+pub fn export_svg(path: String, svg: String) -> Result<(), String> {
+    let path = PathBuf::from(path);
+    if !path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("svg"))
+    {
+        return Err("The export filename must end in .svg.".to_string());
+    }
+
+    fs::write(&path, svg)
+        .map_err(|error| format!("Could not export SVG to {}: {error}", path.display()))
 }
 
 pub fn is_markdown_path(path: &Path) -> bool {
@@ -109,7 +167,7 @@ fn authorize_assets(app: &AppHandle, mut result: DocumentLoadResult) -> Document
     result
 }
 
-fn load_document_data(requested_path: &str) -> DocumentLoadResult {
+fn load_document_data(requested_path: &str, mermaid_theme: MermaidTheme) -> DocumentLoadResult {
     let canonical_path = match fs::canonicalize(requested_path) {
         Ok(path) => path,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -172,7 +230,7 @@ fn load_document_data(requested_path: &str) -> DocumentLoadResult {
         }
     };
 
-    let rendered = match render_markdown(&source, &canonical_path) {
+    let rendered = match render_markdown(&source, &canonical_path, mermaid_theme) {
         Ok(rendered) => rendered,
         Err(error) => {
             return DocumentLoadResult::error(
@@ -217,7 +275,11 @@ fn load_document_data(requested_path: &str) -> DocumentLoadResult {
     }
 }
 
-fn render_markdown(source: &str, document_path: &Path) -> Result<RenderedMarkdown, String> {
+fn render_markdown(
+    source: &str,
+    document_path: &Path,
+    mermaid_theme: MermaidTheme,
+) -> Result<RenderedMarkdown, String> {
     let arena = Arena::new();
     let mut options = Options::default();
     options.extension.strikethrough = true;
@@ -232,42 +294,137 @@ fn render_markdown(source: &str, document_path: &Path) -> Result<RenderedMarkdow
 
     let root = parse_document(&arena, source, &options);
     let mut image_assets = Vec::new();
+    let mut mermaid_replacements = Vec::new();
+    let renderer = HeadlessRenderer::new()
+        .with_host_theme(&mermaid_theme.host_profile())
+        .with_vendored_text_measurer();
+    let document_id = document_id(document_path);
 
     for node in root.descendants() {
         let mut data = node.data_mut();
-        let NodeValue::Image(link) = &mut data.value else {
-            continue;
-        };
-
-        let original = link.url.clone();
-        match resolve_image(document_path, &original) {
-            ImageResolution::Remote => {}
-            ImageResolution::Local(path) => {
-                let token = format!("__markmaid_asset_{}__", image_assets.len());
-                link.url.clone_from(&token);
-                image_assets.push(ImageAsset {
-                    token,
-                    original,
-                    path: Some(path_to_string(&path)),
-                });
+        match &mut data.value {
+            NodeValue::Image(link) => {
+                let original = link.url.clone();
+                match resolve_image(document_path, &original) {
+                    ImageResolution::Remote => {}
+                    ImageResolution::Local(path) => {
+                        let token = format!("__markmaid_asset_{}__", image_assets.len());
+                        link.url.clone_from(&token);
+                        image_assets.push(ImageAsset {
+                            token,
+                            original,
+                            path: Some(path_to_string(&path)),
+                        });
+                    }
+                    ImageResolution::MissingOrBlocked => {
+                        let token = format!("__markmaid_missing_asset_{}__", image_assets.len());
+                        link.url.clone_from(&token);
+                        image_assets.push(ImageAsset {
+                            token,
+                            original,
+                            path: None,
+                        });
+                    }
+                }
             }
-            ImageResolution::MissingOrBlocked => {
-                let token = format!("__markmaid_missing_asset_{}__", image_assets.len());
-                link.url.clone_from(&token);
-                image_assets.push(ImageAsset {
-                    token,
-                    original,
-                    path: None,
-                });
+            NodeValue::CodeBlock(block) if is_mermaid_info(&block.info) => {
+                let index = mermaid_replacements.len();
+                let token = format!("MARKMAID_MERMAN_SVG_{document_id}_{index}");
+                let diagram_id = format!("markmaid-mermaid-{document_id}-{index}");
+                let html =
+                    render_mermaid_figure(&renderer, &block.literal, &diagram_id, mermaid_theme);
+                block.info = MERMAID_PLACEHOLDER_LANGUAGE.to_string();
+                block.literal.clone_from(&token);
+                mermaid_replacements.push(MermaidReplacement { token, html });
             }
+            _ => {}
         }
     }
 
     let mut html = String::new();
     format_html(root, &options, &mut html)
         .map_err(|error| format!("Markdown rendering failed: {error}"))?;
+    for replacement in mermaid_replacements {
+        replace_mermaid_placeholder(&mut html, &replacement)?;
+    }
 
     Ok(RenderedMarkdown { html, image_assets })
+}
+
+fn is_mermaid_info(info: &str) -> bool {
+    info.split_whitespace()
+        .next()
+        .is_some_and(|language| language.eq_ignore_ascii_case("mermaid"))
+}
+
+fn document_id(document_path: &Path) -> String {
+    let mut hasher = DefaultHasher::new();
+    document_path.hash(&mut hasher);
+    format!("{:x}", hasher.finish())
+}
+
+fn render_mermaid_figure(
+    renderer: &HeadlessRenderer,
+    source: &str,
+    diagram_id: &str,
+    theme: MermaidTheme,
+) -> String {
+    match renderer
+        .clone()
+        .with_diagram_id(diagram_id)
+        .render_svg_sync(source)
+    {
+        Ok(Some(svg)) => format!(
+            r#"<figure class="mermaid-figure" data-mermaid-theme="{}"><div class="mermaid-toolbar"><button class="mermaid-expand" type="button" title="View diagram fullscreen" aria-label="View diagram fullscreen">{MERMAID_EXPAND_ICON}</button></div><div class="mermaid-stage is-ready">{svg}</div></figure>"#,
+            theme.as_str(),
+        ),
+        Ok(None) => mermaid_error_figure(
+            theme,
+            "Merman did not recognize a supported Mermaid diagram.",
+        ),
+        Err(error) => mermaid_error_figure(theme, &error.to_string()),
+    }
+}
+
+fn mermaid_error_figure(theme: MermaidTheme, message: &str) -> String {
+    format!(
+        r#"<figure class="mermaid-figure" data-mermaid-theme="{}"><div class="mermaid-stage"><div class="mermaid-error" role="alert"><strong>Mermaid render failed</strong><span>{}</span></div></div></figure>"#,
+        theme.as_str(),
+        escape_html(message),
+    )
+}
+
+fn replace_mermaid_placeholder(
+    html: &mut String,
+    replacement: &MermaidReplacement,
+) -> Result<(), String> {
+    let language_marker = format!(r#"class="language-{MERMAID_PLACEHOLDER_LANGUAGE}""#);
+    let marker_position = html
+        .find(&language_marker)
+        .ok_or_else(|| "Markdown rendering lost a Mermaid placeholder.".to_string())?;
+    let block_start = html[..marker_position]
+        .rfind("<pre")
+        .ok_or_else(|| "Markdown rendering produced an invalid Mermaid block.".to_string())?;
+    let block_end = html[marker_position..]
+        .find("</pre>")
+        .map(|offset| marker_position + offset + "</pre>".len())
+        .ok_or_else(|| "Markdown rendering produced an incomplete Mermaid block.".to_string())?;
+
+    let wrapper = &html[block_start..block_end];
+    if !wrapper.contains(&replacement.token) {
+        return Err("Markdown rendering produced an unexpected Mermaid wrapper.".to_string());
+    }
+    html.replace_range(block_start..block_end, &replacement.html);
+    Ok(())
+}
+
+fn escape_html(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 enum ImageResolution {
@@ -334,6 +491,7 @@ mod tests {
         let rendered = render_markdown(
             "# Heading\n\n~~gone~~\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\n- [x] done",
             Path::new("/tmp/readme.md"),
+            MermaidTheme::Light,
         )
         .unwrap();
 
@@ -349,6 +507,7 @@ mod tests {
         let rendered = render_markdown(
             "<script>alert('no')</script>\n\n[bad](javascript:alert(1))",
             Path::new("/tmp/readme.md"),
+            MermaidTheme::Light,
         )
         .unwrap();
 
@@ -370,7 +529,12 @@ mod tests {
         fs::write(&document, "# Image").unwrap();
         fs::write(&image, b"not-a-real-png").unwrap();
 
-        let rendered = render_markdown("![alt](../assets/image%20one.png)", &document).unwrap();
+        let rendered = render_markdown(
+            "![alt](../assets/image%20one.png)",
+            &document,
+            MermaidTheme::Light,
+        )
+        .unwrap();
 
         assert_eq!(rendered.image_assets.len(), 1);
         assert_eq!(
@@ -392,7 +556,7 @@ mod tests {
 
         let results = [valid, invalid, unsupported]
             .iter()
-            .map(|path| load_document_data(path.to_str().unwrap()))
+            .map(|path| load_document_data(path.to_str().unwrap(), MermaidTheme::Light))
             .collect::<Vec<_>>();
 
         assert!(matches!(results[0], DocumentLoadResult::Ready { .. }));
@@ -404,5 +568,50 @@ mod tests {
             &results[2],
             DocumentLoadResult::Error { code, .. } if code == "unsupported_extension"
         ));
+    }
+
+    #[test]
+    fn renders_mermaid_blocks_to_svg_with_merman() {
+        let rendered = render_markdown(
+            "# Diagram\n\n```mermaid\nflowchart TD\n  A --> B\n```\n",
+            Path::new("/tmp/diagram.md"),
+            MermaidTheme::Light,
+        )
+        .unwrap();
+
+        assert!(rendered.html.contains("<figure class=\"mermaid-figure\""));
+        assert!(rendered.html.contains("data-mermaid-theme=\"light\""));
+        assert!(rendered.html.contains("<svg"));
+        assert!(!rendered.html.contains("<foreignObject"));
+        assert!(!rendered.html.contains("language-mermaid"));
+        assert!(!rendered.html.contains("MARKMAID_MERMAN_SVG"));
+    }
+
+    #[test]
+    fn keeps_mermaid_failures_local_to_the_diagram() {
+        let rendered = render_markdown(
+            "Before\n\n```mermaid\nthis is not a diagram\n```\n\nAfter",
+            Path::new("/tmp/diagram.md"),
+            MermaidTheme::Dark,
+        )
+        .unwrap();
+
+        assert!(rendered.html.contains("<p>Before</p>"));
+        assert!(rendered.html.contains("<p>After</p>"));
+        assert!(rendered.html.contains("Mermaid render failed"));
+        assert!(rendered.html.contains("data-mermaid-theme=\"dark\""));
+    }
+
+    #[test]
+    fn sanitizes_dangerous_mermaid_links() {
+        let rendered = render_markdown(
+            "```mermaid\nflowchart TD\n  A[Open]\n  click A \"javascript:alert(1)\"\n```",
+            Path::new("/tmp/diagram.md"),
+            MermaidTheme::Light,
+        )
+        .unwrap();
+
+        assert!(rendered.html.contains("<svg"));
+        assert!(!rendered.html.to_ascii_lowercase().contains("javascript:"));
     }
 }

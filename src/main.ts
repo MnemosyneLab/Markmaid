@@ -5,6 +5,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import { load, type Store } from "@tauri-apps/plugin-store";
 
+import { enhanceDiagramViewers } from "./diagram-viewer";
 import {
   activeTab,
   addDocumentResults,
@@ -33,7 +34,6 @@ import type {
   TabPlacement,
   ThemeMode,
 } from "./types";
-import { enhanceMermaidDiagrams } from "./mermaid";
 
 const OPEN_FILES_EVENT = "markmaid://open-files";
 const MENU_OPEN_EVENT = "markmaid://menu-open";
@@ -53,6 +53,7 @@ let state: AppState = { ...DEFAULT_STATE };
 let stateStore: Store | null = null;
 let persistTimer: number | null = null;
 let pendingAnchor: string | null = null;
+let mermaidThemeReloadSequence = 0;
 let sidebarResizeSession: {
   pointerId: number;
   startX: number;
@@ -81,6 +82,7 @@ async function bootstrap(): Promise<void> {
   if (restoredPaths.length > 0) {
     const results = await invoke<DocumentLoadResult[]>("load_documents", {
       paths: restoredPaths,
+      mermaidTheme: state.mermaidTheme,
     });
     state = hydrateRestoredTabs(state, results);
     applyTheme();
@@ -168,6 +170,7 @@ async function openDocumentPaths(
 
   const results = await invoke<DocumentLoadResult[]>("load_documents", {
     paths: uniquePaths,
+    mermaidTheme: state.mermaidTheme,
   });
   state = addDocumentResults(state, results);
   render();
@@ -185,7 +188,10 @@ async function reloadActiveDocument(): Promise<void> {
       : current.status === "error"
         ? (current.canonicalPath ?? current.requestedPath)
         : current.requestedPath;
-  const result = await invoke<DocumentLoadResult>("reload_document", { path });
+  const result = await invoke<DocumentLoadResult>("reload_document", {
+    path,
+    mermaidTheme: state.mermaidTheme,
+  });
 
   if (current.status === "ready" && result.status === "error") {
     state = {
@@ -538,7 +544,7 @@ function renderDocument(
   article.className = "markdown-body";
   article.innerHTML = tab.html;
   prepareDocumentContent(article, tab);
-  void enhanceMermaidDiagrams(article, state.mermaidTheme);
+  enhanceDiagramViewers(article);
 
   if (tab.reloadError) {
     const notice = document.createElement("div");
@@ -714,13 +720,63 @@ function renderSettings(container: HTMLElement): void {
     .querySelectorAll<HTMLElement>("[data-mermaid]")
     .forEach((button) => {
       button.addEventListener("click", () => {
-        state = setPreferences(state, {
-          mermaidTheme: button.dataset.mermaid as MermaidTheme,
-        });
+        const mermaidTheme = button.dataset.mermaid as MermaidTheme;
+        if (mermaidTheme === state.mermaidTheme) return;
+        captureActiveScroll();
+        state = setPreferences(state, { mermaidTheme });
         render();
         schedulePersist();
+        void rerenderDocumentsForMermaidTheme(mermaidTheme);
       });
     });
+}
+
+async function rerenderDocumentsForMermaidTheme(
+  mermaidTheme: MermaidTheme,
+): Promise<void> {
+  const requests = state.tabs
+    .filter((tab): tab is DocumentTab => tab.kind === "document")
+    .map((tab) => ({
+      key: tab.key,
+      path:
+        tab.status === "ready"
+          ? tab.canonicalPath
+          : tab.status === "error"
+            ? (tab.canonicalPath ?? tab.requestedPath)
+            : tab.requestedPath,
+    }));
+  if (requests.length === 0) return;
+
+  const sequence = ++mermaidThemeReloadSequence;
+  const results = await invoke<DocumentLoadResult[]>("load_documents", {
+    paths: requests.map((request) => request.path),
+    mermaidTheme,
+  });
+  if (
+    sequence !== mermaidThemeReloadSequence ||
+    state.mermaidTheme !== mermaidTheme
+  ) {
+    return;
+  }
+  const resultsByKey = new Map(
+    requests.map((request, index) => [request.key, results[index]]),
+  );
+  const keyRemap = new Map<string, string>();
+  state = {
+    ...state,
+    tabs: state.tabs.map((tab) => {
+      if (tab.kind !== "document") return tab;
+      const result = resultsByKey.get(tab.key);
+      if (!result) return tab;
+      const replacement = tabFromResult(result, tab.scrollTop);
+      keyRemap.set(tab.key, replacement.key);
+      return replacement;
+    }),
+    activeTabKey:
+      keyRemap.get(state.activeTabKey ?? "") ?? state.activeTabKey,
+  };
+  render();
+  schedulePersist();
 }
 
 function settingButton(
