@@ -7,6 +7,7 @@ import { load, type Store } from "@tauri-apps/plugin-store";
 
 import { enhanceCodeBlocks } from "./code-block";
 import { enhanceDiagramViewers } from "./diagram-viewer";
+import { icon, renderIcons } from "./icons";
 import {
   activeTab,
   addDocumentResults,
@@ -35,6 +36,7 @@ import type {
   MermaidDarkTheme,
   MermaidLightTheme,
   MermaidTheme,
+  PageWidth,
   ReadyDocumentTab,
   TabPlacement,
   ThemeMode,
@@ -65,6 +67,97 @@ const DARK_MERMAID_THEMES: ReadonlyArray<MermaidDarkTheme> = [
   "redux-dark",
   "redux-dark-color",
 ];
+const PAGE_WIDTH_OPTIONS: ReadonlyArray<{ value: PageWidth; label: string }> = [
+  { value: "default", label: "Default (860px)" },
+  { value: "narrow", label: "Narrow (680px)" },
+  { value: "comfortable", label: "Comfortable (760px)" },
+  { value: "wide", label: "Wide (1040px)" },
+  { value: "extra-wide", label: "Extra wide (1200px)" },
+  { value: "full", label: "Full width" },
+];
+const PAGE_WIDTHS: Record<Exclude<PageWidth, "default">, string> = {
+  narrow: "680px",
+  comfortable: "760px",
+  wide: "1040px",
+  "extra-wide": "1200px",
+  full: "100%",
+};
+const UI = {
+  frame: "h-full grid bg-window",
+  titlebar:
+    "relative z-2 flex min-w-0 items-center border-b border-app-border bg-chrome shadow-[inset_0_1px_rgb(255_255_255_/_30%)] backdrop-blur-[24px] backdrop-saturate-[125%] select-none",
+  brand: "relative z-1 flex min-w-[120px] max-w-[200px] flex-[0_1_auto] items-center py-0 pr-4 pl-[82px] max-[820px]:min-w-[116px]",
+  brandName:
+    "pointer-events-none overflow-hidden text-ellipsis whitespace-nowrap text-xs font-semibold tracking-tight text-app-secondary max-[820px]:hidden",
+  title:
+    "absolute top-1/2 left-1/2 z-1 max-w-[min(42vw,360px)] -translate-x-1/2 -translate-y-1/2 overflow-hidden text-ellipsis whitespace-nowrap text-center text-xs font-semibold tracking-tight text-app-text",
+  titlebarActions: "relative z-1 ml-auto flex flex-none items-center gap-1.5 px-3",
+  iconButton:
+    "grid size-8 place-items-center rounded-app bg-transparent text-xl font-normal text-app-secondary transition-[background,color,transform] duration-120 [&>svg]:size-[17px] [&>svg]:stroke-[2] active:translate-y-px hover:bg-surface-hover hover:text-app-text",
+  textButton:
+    "min-h-8 rounded-app bg-transparent px-2.5 text-xs font-semibold text-app-secondary transition-[background,color,transform] duration-120 active:translate-y-px hover:bg-surface-hover hover:text-app-text max-[820px]:hidden",
+  workspace: "flex min-h-0 min-w-0",
+  sidebar:
+    "relative min-w-0 flex-[0_0_var(--sidebar-width)] overflow-hidden border-r border-app-border bg-sidebar px-2 py-2.5",
+  contentStage: "min-h-0 min-w-0 flex-1 overflow-hidden bg-surface",
+  centeredState: "grid size-full place-items-center p-12",
+  primaryButton:
+    "min-h-8 whitespace-nowrap rounded-app border border-transparent bg-accent-strong px-3.5 font-semibold text-[#f5f9fc] shadow-[0_5px_16px_color-mix(in_srgb,var(--accent)_22%,transparent)] transition-[background,color,border-color,transform] duration-120 active:translate-y-px hover:bg-[color-mix(in_srgb,var(--accent-strong)_88%,#101820)]",
+  secondaryButton:
+    "min-h-8 whitespace-nowrap rounded-app border border-app-border-strong bg-surface-raised px-3.5 font-semibold text-app-text transition-[background,color,border-color,transform] duration-120 active:translate-y-px hover:bg-surface-hover",
+  emptyCopy: "w-[min(540px,100%)] text-left",
+  emptyMark:
+    "mb-6 grid size-12 place-items-center rounded-app bg-accent-strong text-[22px] font-bold text-[#f5f9fc] shadow-[var(--shadow),inset_0_1px_rgb(255_255_255_/_24%)]",
+  displayHeading:
+    "m-0 text-[clamp(28px,4vw,42px)] leading-[1.08] font-[680] tracking-[-0.04em] text-app-text",
+  displayCopy: "mt-3.5 mb-6 max-w-[52ch] text-[15px] leading-[1.65] text-app-secondary",
+  shortcutHint: "ml-3 text-xs text-app-muted",
+  errorPanel: "w-[min(580px,100%)]",
+  errorCode:
+    "mb-3.5 block font-mono text-[11px] font-bold tracking-[0.08em] text-danger uppercase",
+  errorPath:
+    "my-[22px] [overflow-wrap:anywhere] rounded-app bg-code-surface px-3.5 py-3 font-mono text-xs leading-6 text-app-secondary select-text",
+  buttonRow: "flex gap-2",
+  documentMeta:
+    "mx-auto mt-5 flex min-h-[52px] items-center justify-between gap-5 text-app-secondary",
+  documentIdentity: "flex min-w-0 items-baseline gap-2.5",
+  documentTitle: "flex-none text-xs font-semibold text-app-text",
+  documentPath: "min-w-0 truncate font-mono text-[10px]",
+  reloadNotice:
+    "mx-auto mt-[22px] flex gap-2 rounded-app border border-[color-mix(in_srgb,var(--danger)_30%,transparent)] bg-danger-soft px-3 py-2.5 text-xs leading-5 text-danger",
+  settingsPage:
+    "size-full overflow-y-auto overscroll-contain select-text",
+  settingsContent:
+    "mx-auto w-[min(760px,calc(100%_-_64px))] py-[68px] max-[820px]:w-[calc(100%_-_40px)]",
+  settingsHeader: "mb-[52px]",
+  settingsEyebrow: "mb-2.5 block text-xs font-bold text-accent-strong",
+  settingsHeading: "m-0 text-[34px] leading-[1.08] font-[680] tracking-[-0.04em] text-app-text",
+  settingsCopy: "mt-3.5 max-w-[52ch] text-[15px] leading-[1.65] text-app-secondary",
+  settingsSection: "mb-10",
+  settingsSectionTitle:
+    "mb-3 text-[11px] font-bold tracking-[0.08em] text-app-muted uppercase",
+  settingsSectionBody: "border-t border-app-border divide-y divide-app-border",
+  settingGroup:
+    "grid grid-cols-[minmax(0,1fr)_auto] items-center gap-8 py-6 max-[820px]:grid-cols-1 max-[820px]:gap-4",
+  settingTitle: "mb-1.5 text-[15px] font-semibold text-app-text",
+  settingDescription: "m-0 max-w-[46ch] text-[13px] leading-[1.55] text-app-secondary",
+  segmented:
+    "flex gap-0.5 rounded-app border border-app-border bg-code-surface p-[3px] max-[820px]:w-fit",
+  segmentedButton:
+    "min-h-8 min-w-[70px] rounded-app bg-transparent px-3 text-xs font-semibold text-app-secondary transition-[background,color,transform] duration-120 active:translate-y-px hover:text-app-text",
+  selectWrapper: "relative min-w-72",
+  select:
+    "h-11 w-80 max-w-full cursor-default appearance-none rounded-[10px] border border-app-border bg-surface-raised py-0 pr-11 pl-3.5 text-sm font-medium text-app-text shadow-[0_1px_2px_rgb(31_39_48_/_6%)] transition-[border-color,background,box-shadow] duration-150 hover:border-app-border-strong hover:bg-surface focus:border-accent focus:ring-3 focus:ring-accent/15 focus:outline-none",
+  selectIcon:
+    "pointer-events-none absolute top-1/2 right-3.5 size-4 -translate-y-1/2 text-app-muted",
+  fontInput:
+    "h-11 w-80 max-w-full rounded-[10px] border border-app-border bg-surface-raised px-3.5 font-mono text-[13px] text-app-text shadow-[0_1px_2px_rgb(31_39_48_/_6%)] transition-[border-color,background,box-shadow] duration-150 placeholder:text-app-muted hover:border-app-border-strong hover:bg-surface focus:border-accent focus:ring-3 focus:ring-accent/15 focus:outline-none",
+  settingsNote: "border-t border-app-border pt-[22px] text-xs leading-[1.6] text-app-muted",
+  dropOverlay:
+    "pointer-events-none fixed inset-0 z-5 grid place-items-center bg-[color-mix(in_srgb,var(--surface)_80%,transparent)] p-[22px] opacity-0 backdrop-blur-[10px] transition-opacity duration-120",
+  dropMessage:
+    "flex min-h-[210px] w-[min(460px,90%)] flex-col items-center justify-center gap-2 rounded-app border-2 border-dashed border-accent bg-surface-raised p-9 text-app-text shadow-app",
+} as const;
 
 const rootElement = document.querySelector<HTMLElement>("#app");
 if (!rootElement) throw new Error("MarkMaid app root is missing.");
@@ -306,20 +399,23 @@ function render(): void {
 
   root.innerHTML = `
     <div
-      class="app-frame placement-${state.tabPlacement}"
+      class="app-frame placement-${state.tabPlacement} ${UI.frame}"
       style="--sidebar-width: ${sidebarWidth}px"
     >
-      <header class="titlebar" data-tauri-drag-region>
-        <div class="brand" data-tauri-drag-region aria-label="MarkMaid">
-          <span class="brand-name">MarkMaid</span>
+      <header class="titlebar ${UI.titlebar}" data-tauri-drag-region>
+        <div class="brand ${UI.brand}" data-tauri-drag-region aria-label="MarkMaid">
+          <span class="brand-name ${UI.brandName}">MarkMaid</span>
         </div>
-        <div class="titlebar-title" data-tauri-drag-region title="${escapeAttribute(windowTitle(current))}">${title}</div>
-        <nav class="titlebar-actions" aria-label="Application actions">
-          <button class="icon-button" type="button" data-action="open" title="Open Markdown (⌘O)">
-            <span aria-hidden="true">+</span>
+        <div class="titlebar-title ${UI.title}" data-tauri-drag-region title="${escapeAttribute(windowTitle(current))}">${title}</div>
+        <nav class="titlebar-actions ${UI.titlebarActions}" aria-label="Application actions">
+          <button class="icon-button ${UI.iconButton}" type="button" data-action="open" title="Open Markdown (⌘O)">
+            ${icon("folder-open")}
             <span class="sr-only">Open Markdown</span>
           </button>
-          <button class="text-button" type="button" data-action="settings">Settings</button>
+          <button class="icon-button ${UI.iconButton}" type="button" data-action="settings" title="Settings" aria-label="Settings">
+            ${icon("settings")}
+            <span class="sr-only">Settings</span>
+          </button>
         </nav>
       </header>
       ${
@@ -327,21 +423,21 @@ function render(): void {
           ? `<div class="tab-strip" aria-label="Document tabs">${topTabs}</div>`
           : ""
       }
-      <div class="workspace">
+      <div class="workspace ${UI.workspace}">
         ${
           state.tabPlacement === "left"
-            ? `<aside class="sidebar" aria-label="Open tabs">
+            ? `<aside class="sidebar ${UI.sidebar}" aria-label="Open tabs">
                 ${sideTabs}
                 <div class="sidebar-resize" role="separator" aria-orientation="vertical" aria-label="Resize tab rail" tabindex="0"></div>
               </aside>`
             : ""
         }
-        <main class="content-stage" id="content-stage" aria-live="polite"></main>
+        <main class="content-stage ${UI.contentStage}" id="content-stage" aria-live="polite"></main>
       </div>
-      <div class="drop-overlay" aria-hidden="true">
-        <div class="drop-message">
-          <strong>Drop Markdown files here</strong>
-          <span>Each document opens in its own tab.</span>
+      <div class="drop-overlay ${UI.dropOverlay}" aria-hidden="true">
+        <div class="drop-message ${UI.dropMessage}">
+          <strong class="text-lg">Drop Markdown files here</strong>
+          <span class="text-[13px] text-app-secondary">Each document opens in its own tab.</span>
         </div>
       </div>
     </div>
@@ -352,6 +448,7 @@ function render(): void {
     root.querySelector<HTMLElement>("#content-stage"),
     current,
   );
+  renderIcons(root);
 }
 
 function renderTabList(tabs: AppTab[]): string {
@@ -382,7 +479,7 @@ function renderTabList(tabs: AppTab[]): string {
                 type="button"
                 data-close-tab="${escapeAttribute(tab.key)}"
                 aria-label="Close ${escapeAttribute(tabLabel(tab))}"
-              >×</button>
+              >${icon("x")}</button>
             </div>
           `;
         })
@@ -516,13 +613,13 @@ function renderContent(
 
 function renderEmptyState(container: HTMLElement): void {
   container.innerHTML = `
-    <section class="empty-state">
-      <div class="empty-copy">
-        <span class="empty-mark" aria-hidden="true">M</span>
-        <h1>Read Markdown without the editor.</h1>
-        <p>Open several documents, keep your place, and move between them as tabs.</p>
-        <button class="primary-button" type="button" data-empty-open>Open Markdown</button>
-        <span class="shortcut-hint">⌘O or drag files into this window</span>
+    <section class="empty-state ${UI.centeredState}">
+      <div class="empty-copy ${UI.emptyCopy}">
+        <span class="empty-mark ${UI.emptyMark}" aria-hidden="true">M</span>
+        <h1 class="${UI.displayHeading}">Read Markdown without the editor.</h1>
+        <p class="${UI.displayCopy}">Open several documents, keep your place, and move between them as tabs.</p>
+        <button class="primary-button ${UI.primaryButton}" type="button" data-empty-open>Open Markdown</button>
+        <span class="shortcut-hint ${UI.shortcutHint}">⌘O or drag files into this window</span>
       </div>
     </section>
   `;
@@ -533,8 +630,8 @@ function renderEmptyState(container: HTMLElement): void {
 
 function renderLoading(container: HTMLElement, tab: DocumentTab): void {
   container.innerHTML = `
-    <section class="loading-state" aria-label="Loading ${escapeAttribute(tab.displayName)}">
-      <div class="document-skeleton">
+    <section class="loading-state ${UI.centeredState}" aria-label="Loading ${escapeAttribute(tab.displayName)}">
+      <div class="document-skeleton w-[min(720px,80%)]">
         <span class="skeleton-line skeleton-title"></span>
         <span class="skeleton-line"></span>
         <span class="skeleton-line skeleton-short"></span>
@@ -548,15 +645,15 @@ function renderLoading(container: HTMLElement, tab: DocumentTab): void {
 function renderError(container: HTMLElement, tab: DocumentTab): void {
   if (tab.status !== "error") return;
   container.innerHTML = `
-    <section class="error-state">
-      <div class="error-panel">
-        <span class="error-code">${escapeHtml(tab.code.replaceAll("_", " "))}</span>
-        <h1>${escapeHtml(tab.displayName)}</h1>
-        <p>${escapeHtml(tab.message)}</p>
-        <div class="error-path">${escapeHtml(tab.canonicalPath ?? tab.requestedPath)}</div>
-        <div class="button-row">
-          <button class="primary-button" type="button" data-error-retry>Try Again</button>
-          <button class="secondary-button" type="button" data-error-open>Open Another</button>
+    <section class="error-state ${UI.centeredState}">
+      <div class="error-panel ${UI.errorPanel}">
+        <span class="error-code ${UI.errorCode}">${escapeHtml(tab.code.replaceAll("_", " "))}</span>
+        <h1 class="${UI.displayHeading}">${escapeHtml(tab.displayName)}</h1>
+        <p class="${UI.displayCopy}">${escapeHtml(tab.message)}</p>
+        <div class="error-path ${UI.errorPath}">${escapeHtml(tab.canonicalPath ?? tab.requestedPath)}</div>
+        <div class="button-row ${UI.buttonRow}">
+          <button class="primary-button ${UI.primaryButton}" type="button" data-error-retry>Try Again</button>
+          <button class="secondary-button ${UI.secondaryButton}" type="button" data-error-open>Open Another</button>
         </div>
       </div>
     </section>
@@ -577,13 +674,13 @@ function renderDocument(
   scroller.className = "document-scroll";
 
   const header = document.createElement("header");
-  header.className = "document-meta";
+  header.className = `document-meta ${UI.documentMeta}`;
   header.innerHTML = `
-    <div class="document-identity">
-      <strong>${escapeHtml(tab.displayName)}</strong>
-      <span title="${escapeAttribute(tab.canonicalPath)}">${escapeHtml(tab.canonicalPath)}</span>
+    <div class="document-identity ${UI.documentIdentity}">
+      <strong class="${UI.documentTitle}">${escapeHtml(tab.displayName)}</strong>
+      <span class="${UI.documentPath}" title="${escapeAttribute(tab.canonicalPath)}">${escapeHtml(tab.canonicalPath)}</span>
     </div>
-    <button class="secondary-button compact" type="button" data-document-reload>Reload</button>
+    <button class="secondary-button compact ${UI.secondaryButton} min-h-7 px-2.5 text-xs" type="button" data-document-reload>Reload</button>
   `;
 
   const article = document.createElement("article");
@@ -595,7 +692,7 @@ function renderDocument(
 
   if (tab.reloadError) {
     const notice = document.createElement("div");
-    notice.className = "reload-notice";
+    notice.className = `reload-notice ${UI.reloadNotice}`;
     notice.setAttribute("role", "status");
     notice.innerHTML = `
       <strong>Reload failed.</strong>
@@ -695,55 +792,98 @@ async function handleDocumentLink(
 
 function renderSettings(container: HTMLElement): void {
   container.innerHTML = `
-    <section class="settings-page">
-      <header class="settings-header">
-        <span>Preferences</span>
-        <h1>Reading settings</h1>
-        <p>Changes apply immediately and are restored the next time MarkMaid opens.</p>
+    <section class="settings-page ${UI.settingsPage}">
+      <div class="settings-content ${UI.settingsContent}">
+      <header class="settings-header ${UI.settingsHeader}">
+        <span class="${UI.settingsEyebrow}">Preferences</span>
+        <h1 class="${UI.settingsHeading}">Reading settings</h1>
+        <p class="${UI.settingsCopy}">Changes apply immediately and are restored the next time MarkMaid opens.</p>
       </header>
 
-      <div class="setting-group">
-        <div class="setting-copy">
-          <h2>Appearance</h2>
-          <p>Use the macOS appearance or keep a fixed reading theme.</p>
+      <section class="${UI.settingsSection}" aria-labelledby="appearance-settings">
+        <h2 id="appearance-settings" class="${UI.settingsSectionTitle}">Appearance</h2>
+        <div class="${UI.settingsSectionBody}">
+          <div class="setting-group ${UI.settingGroup}">
+            <div class="setting-copy">
+              <h3 class="${UI.settingTitle}">Theme</h3>
+              <p class="${UI.settingDescription}">Use the macOS appearance or keep a fixed reading theme.</p>
+            </div>
+            <div class="segmented-control ${UI.segmented}" role="group" aria-label="Theme">
+              ${settingButton("theme", "system", "System", state.theme)}
+              ${settingButton("theme", "light", "Light", state.theme)}
+              ${settingButton("theme", "dark", "Dark", state.theme)}
+            </div>
+          </div>
         </div>
-        <div class="segmented-control" role="group" aria-label="Theme">
-          ${settingButton("theme", "system", "System", state.theme)}
-          ${settingButton("theme", "light", "Light", state.theme)}
-          ${settingButton("theme", "dark", "Dark", state.theme)}
-        </div>
-      </div>
+      </section>
 
-      <div class="setting-group">
-        <div class="setting-copy">
-          <h2>Tab position</h2>
-          <p>Keep document tabs in a strip under the title bar or move them to a left rail.</p>
+      <section class="${UI.settingsSection}" aria-labelledby="typography-settings">
+        <h2 id="typography-settings" class="${UI.settingsSectionTitle}">Typography</h2>
+        <div class="${UI.settingsSectionBody}">
+          <div class="setting-group ${UI.settingGroup}">
+            <div class="setting-copy">
+              <h3 class="${UI.settingTitle}">Text font</h3>
+              <p class="${UI.settingDescription}">Used for Markdown prose. Enter a comma-separated font stack; leave empty to inherit the app theme font.</p>
+            </div>
+            ${fontInput("text-font", state.textFont, "e.g. Georgia, Songti SC, serif", "Text font")}
+          </div>
+          <div class="setting-group ${UI.settingGroup}">
+            <div class="setting-copy">
+              <h3 class="${UI.settingTitle}">Code font</h3>
+              <p class="${UI.settingDescription}">Used for inline code, fenced code blocks, and Mermaid source. Enter a comma-separated font stack; leave empty for the built-in monospace stack.</p>
+            </div>
+            ${fontInput("code-font", state.codeFont, "e.g. 'Maple Mono NF CN', 'Fira Code', Menlo, monospace", "Code font")}
+          </div>
         </div>
-        <div class="segmented-control" role="group" aria-label="Tab position">
-          ${settingButton("placement", "top", "Top", state.tabPlacement)}
-          ${settingButton("placement", "left", "Left", state.tabPlacement)}
-        </div>
-      </div>
+      </section>
 
-      <div class="setting-group mermaid-theme-group">
-        <div class="setting-copy">
-          <h2>Mermaid light theme</h2>
-          <p>Used whenever the app appearance is light.</p>
+      <section class="${UI.settingsSection}" aria-labelledby="workspace-settings">
+        <h2 id="workspace-settings" class="${UI.settingsSectionTitle}">Workspace</h2>
+        <div class="${UI.settingsSectionBody}">
+          <div class="setting-group ${UI.settingGroup}">
+            <div class="setting-copy">
+              <h3 class="${UI.settingTitle}">Page width</h3>
+              <p class="${UI.settingDescription}">Sets the maximum reading width for Markdown previews while keeping side margins on smaller windows.</p>
+            </div>
+            ${selectControl("page-width", PAGE_WIDTH_OPTIONS, state.pageWidth, "Page width")}
+          </div>
+          <div class="setting-group ${UI.settingGroup}">
+            <div class="setting-copy">
+              <h3 class="${UI.settingTitle}">Tab position</h3>
+              <p class="${UI.settingDescription}">Keep document tabs in a strip under the title bar or move them to a left rail.</p>
+            </div>
+            <div class="segmented-control ${UI.segmented}" role="group" aria-label="Tab position">
+              ${settingButton("placement", "top", "Top", state.tabPlacement)}
+              ${settingButton("placement", "left", "Left", state.tabPlacement)}
+            </div>
+          </div>
         </div>
-        ${settingSelect("mermaid-light", LIGHT_MERMAID_THEMES, state.mermaidLightTheme)}
-      </div>
+      </section>
 
-      <div class="setting-group mermaid-theme-group">
-        <div class="setting-copy">
-          <h2>Mermaid dark theme</h2>
-          <p>Used whenever the app appearance is dark.</p>
+      <section class="${UI.settingsSection}" aria-labelledby="mermaid-settings">
+        <h2 id="mermaid-settings" class="${UI.settingsSectionTitle}">Mermaid</h2>
+        <div class="${UI.settingsSectionBody}">
+          <div class="setting-group mermaid-theme-group ${UI.settingGroup}">
+            <div class="setting-copy">
+              <h3 class="${UI.settingTitle}">Light theme</h3>
+              <p class="${UI.settingDescription}">Used whenever the app appearance is light.</p>
+            </div>
+            ${settingSelect("mermaid-light", LIGHT_MERMAID_THEMES, state.mermaidLightTheme)}
+          </div>
+          <div class="setting-group mermaid-theme-group ${UI.settingGroup}">
+            <div class="setting-copy">
+              <h3 class="${UI.settingTitle}">Dark theme</h3>
+              <p class="${UI.settingDescription}">Used whenever the app appearance is dark.</p>
+            </div>
+            ${settingSelect("mermaid-dark", DARK_MERMAID_THEMES, state.mermaidDarkTheme)}
+          </div>
         </div>
-        ${settingSelect("mermaid-dark", DARK_MERMAID_THEMES, state.mermaidDarkTheme)}
-      </div>
+      </section>
 
-      <footer class="settings-note">
+      <footer class="settings-note ${UI.settingsNote}">
         GFM and Mermaid preview are enabled. Editing and automatic file refresh are not part of this version.
       </footer>
+      </div>
     </section>
   `;
 
@@ -801,6 +941,33 @@ function renderSettings(container: HTMLElement): void {
         if (resolvedAppearance() === "dark") {
           void rerenderDocumentsForMermaidTheme(mermaidDarkTheme);
         }
+      });
+    });
+  container
+    .querySelectorAll<HTMLInputElement>("[data-text-font]")
+    .forEach((input) => {
+      input.addEventListener("input", () => {
+        state = setPreferences(state, { textFont: input.value.trim() });
+        applyFontPreferences();
+        schedulePersist();
+      });
+    });
+  container
+    .querySelectorAll<HTMLInputElement>("[data-code-font]")
+    .forEach((input) => {
+      input.addEventListener("input", () => {
+        state = setPreferences(state, { codeFont: input.value.trim() });
+        applyFontPreferences();
+        schedulePersist();
+      });
+    });
+  container
+    .querySelectorAll<HTMLSelectElement>("[data-page-width]")
+    .forEach((select) => {
+      select.addEventListener("change", () => {
+        state = setPreferences(state, { pageWidth: select.value as PageWidth });
+        render();
+        schedulePersist();
       });
     });
 }
@@ -861,7 +1028,7 @@ function settingButton(
 ): string {
   return `
     <button
-      class="${value === selected ? "is-selected" : ""}"
+      class="${UI.segmentedButton} ${value === selected ? "is-selected" : ""}"
       type="button"
       data-${kind}="${value}"
       aria-pressed="${value === selected}"
@@ -876,14 +1043,59 @@ function settingSelect<T extends MermaidTheme>(
 ): string {
   const label = kind === "mermaid-light" ? "Mermaid light theme" : "Mermaid dark theme";
   return `
-    <select class="mermaid-theme-select" data-${kind} aria-label="${label}">
-      ${themes
-        .map(
-          (theme) =>
-            `<option value="${theme}"${theme === selected ? " selected" : ""}>${theme}</option>`,
-        )
-        .join("")}
-    </select>
+    <div class="mermaid-theme-select ${UI.selectWrapper}">
+      <select class="${UI.select}" data-${kind} aria-label="${label}">
+        ${themes
+          .map(
+            (theme) =>
+              `<option value="${theme}"${theme === selected ? " selected" : ""}>${theme}</option>`,
+          )
+          .join("")}
+      </select>
+      <span class="${UI.selectIcon}">${icon("chevron-down")}</span>
+    </div>
+  `;
+}
+
+function selectControl<T extends string>(
+  kind: "page-width",
+  options: ReadonlyArray<{ value: T; label: string; disabled?: boolean }>,
+  selected: T,
+  label: string,
+): string {
+  return `
+    <div class="font-select ${UI.selectWrapper}">
+      <select class="${UI.select}" data-${kind} aria-label="${label}">
+        ${options
+          .map(
+            (option) =>
+              `<option value="${option.value}"${option.value === selected ? " selected" : ""}${option.disabled ? " disabled" : ""}>${option.label}</option>`,
+          )
+          .join("")}
+      </select>
+      <span class="${UI.selectIcon}">${icon("chevron-down")}</span>
+    </div>
+  `;
+}
+
+function fontInput(
+  kind: "text-font" | "code-font",
+  value: string,
+  placeholder: string,
+  label: string,
+): string {
+  return `
+    <input
+      class="font-input ${UI.fontInput}"
+      type="text"
+      data-${kind}
+      value="${escapeAttribute(value)}"
+      placeholder="${escapeAttribute(placeholder)}"
+      aria-label="${label}"
+      autocomplete="off"
+      autocapitalize="off"
+      spellcheck="false"
+    >
   `;
 }
 
@@ -908,7 +1120,27 @@ function applyTheme(): void {
   document.documentElement.dataset.theme = resolved;
   document.documentElement.dataset.themeMode = state.theme;
   document.documentElement.style.colorScheme = resolved;
+  applyFontPreferences();
   appliedAppearance = resolved;
+}
+
+function applyFontPreferences(): void {
+  const styles = document.documentElement.style;
+  if (!state.textFont) {
+    styles.removeProperty("--markdown-font");
+  } else {
+    styles.setProperty("--markdown-font", state.textFont);
+  }
+  if (!state.codeFont) {
+    styles.removeProperty("--code-font");
+  } else {
+    styles.setProperty("--code-font", state.codeFont);
+  }
+  if (state.pageWidth === "default") {
+    styles.removeProperty("--preview-max-width");
+  } else {
+    styles.setProperty("--preview-max-width", PAGE_WIDTHS[state.pageWidth]);
+  }
 }
 
 colorScheme.addEventListener("change", () => {

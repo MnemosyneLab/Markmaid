@@ -112,7 +112,12 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         .item(&close_tab)
         .build()?;
     let edit_menu = SubmenuBuilder::new(app, "Edit")
+        .undo()
+        .redo()
+        .separator()
+        .cut()
         .copy()
+        .paste()
         .select_all()
         .build()?;
     let view_menu = SubmenuBuilder::new(app, "View")

@@ -1,16 +1,19 @@
 import type {
   AppState,
   AppTab,
+  CodeFont,
   DocumentLoadResult,
   DocumentTab,
   ErrorDocumentTab,
   LoadingDocumentTab,
   MermaidDarkTheme,
   MermaidLightTheme,
+  PageWidth,
   PersistedSessionV1,
   ReadyDocumentTab,
   SettingsTab,
   TabPlacement,
+  TextFont,
   ThemeMode,
 } from "./types";
 
@@ -27,6 +30,9 @@ export const DEFAULT_STATE: AppState = {
   sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
   mermaidLightTheme: "default",
   mermaidDarkTheme: "dark",
+  textFont: "",
+  codeFont: "",
+  pageWidth: "default",
   recentDocuments: [],
 };
 
@@ -213,6 +219,9 @@ export function setPreferences(
     sidebarWidth?: number;
     mermaidLightTheme?: MermaidLightTheme;
     mermaidDarkTheme?: MermaidDarkTheme;
+    textFont?: TextFont;
+    codeFont?: CodeFont;
+    pageWidth?: PageWidth;
   },
 ): AppState {
   const next = { ...state, ...preferences };
@@ -257,6 +266,9 @@ export function toPersistedSession(state: AppState): PersistedSessionV1 {
     sidebarWidth: clampSidebarWidth(state.sidebarWidth),
     mermaidLightTheme: state.mermaidLightTheme,
     mermaidDarkTheme: state.mermaidDarkTheme,
+    textFont: state.textFont,
+    codeFont: state.codeFont,
+    pageWidth: state.pageWidth,
     recentDocuments: state.recentDocuments,
   };
 }
@@ -283,6 +295,15 @@ export function fromPersistedSession(value: unknown): AppState {
     mermaidDarkTheme: isMermaidDarkTheme(value.mermaidDarkTheme)
       ? value.mermaidDarkTheme
       : DEFAULT_STATE.mermaidDarkTheme,
+    textFont: isTextFont(value.textFont)
+      ? normalizeTextFont(value.textFont)
+      : DEFAULT_STATE.textFont,
+    codeFont: isCodeFont(value.codeFont)
+      ? normalizeCodeFont(value.codeFont)
+      : DEFAULT_STATE.codeFont,
+    pageWidth: isPageWidth(value.pageWidth)
+      ? value.pageWidth
+      : DEFAULT_STATE.pageWidth,
     recentDocuments: normalizeRecentDocuments(value.recentDocuments),
   };
 }
@@ -295,6 +316,41 @@ function isMermaidLightTheme(value: unknown): value is MermaidLightTheme {
 
 function isMermaidDarkTheme(value: unknown): value is MermaidDarkTheme {
   return ["dark", "neo-dark", "redux-dark", "redux-dark-color"].includes(
+    value as string,
+  );
+}
+
+function isTextFont(value: unknown): value is TextFont {
+  return typeof value === "string" && value.length <= 1024;
+}
+
+function isCodeFont(value: unknown): value is CodeFont {
+  return typeof value === "string" && value.length <= 1024;
+}
+
+function normalizeTextFont(value: TextFont): TextFont {
+  return {
+    system: "",
+    "sf-pro": "SF Pro Text",
+    helvetica: "Helvetica",
+    georgia: "Georgia",
+    songti: "Songti SC",
+  }[value] ?? value;
+}
+
+function normalizeCodeFont(value: CodeFont): CodeFont {
+  return {
+    system: "",
+    "sf-mono": "SF Mono",
+    menlo: "Menlo",
+    monaco: "Monaco",
+    "courier-new": "Courier New",
+    "jetbrains-mono": "JetBrains Mono",
+  }[value] ?? value;
+}
+
+function isPageWidth(value: unknown): value is PageWidth {
+  return ["default", "narrow", "comfortable", "wide", "extra-wide", "full"].includes(
     value as string,
   );
 }

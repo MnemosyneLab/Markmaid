@@ -6,7 +6,10 @@ use std::{
     time::UNIX_EPOCH,
 };
 
-use comrak::{Arena, Options, format_html, nodes::NodeValue, parse_document};
+use comrak::{
+    Arena, Options, format_html_with_plugins, nodes::NodeValue, parse_document,
+    plugins::syntect::SyntectAdapterBuilder,
+};
 use merman::{MermaidConfig, render::HeadlessRenderer};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
@@ -14,8 +17,6 @@ use url::Url;
 
 const MARKDOWN_EXTENSIONS: &[&str] = &["md", "markdown", "mdown", "mkd"];
 const MERMAID_PLACEHOLDER_LANGUAGE: &str = "markmaid-mermaid-placeholder";
-const MERMAID_EXPAND_ICON: &str = r#"<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false"><path fill="currentColor" d="M12 5c-5.2 0-9.5 3.3-11 7.5C2.5 16.7 6.8 20 12 20s9.5-3.3 11-7.5C21.5 8.3 17.2 5 12 5zm0 12.5c-2.8 0-5-2.2-5-5s2.2-5 5-5 5 2.2 5 5-2.2 5-5 5zm0-8a3 3 0 1 0 .001 6.001A3 3 0 0 0 12 9.5z"/></svg>"#;
-const MERMAID_SOURCE_ICON: &str = r#"<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8.7 6.3a1 1 0 0 1 0 1.4L4.4 12l4.3 4.3a1 1 0 1 1-1.4 1.4l-5-5a1 1 0 0 1 0-1.4l5-5a1 1 0 0 1 1.4 0Zm6.6 0a1 1 0 0 1 1.4 0l5 5a1 1 0 0 1 0 1.4l-5 5a1 1 0 1 1-1.4-1.4l4.3-4.3-4.3-4.3a1 1 0 0 1 0-1.4ZM13.6 3.2a1 1 0 0 1 .7 1.2l-4 15a1 1 0 1 1-1.9-.5l4-15a1 1 0 0 1 1.2-.7Z"/></svg>"#;
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -364,8 +365,14 @@ fn render_markdown(
         }
     }
 
+    let syntax_highlighter = SyntectAdapterBuilder::new()
+        .css_with_class_prefix("syn-")
+        .build();
+    let mut plugins = comrak::options::Plugins::default();
+    plugins.render.codefence_syntax_highlighter = Some(&syntax_highlighter);
+
     let mut html = String::new();
-    format_html(root, &options, &mut html)
+    format_html_with_plugins(root, &options, &mut html, &plugins)
         .map_err(|error| format!("Markdown rendering failed: {error}"))?;
     for replacement in mermaid_replacements {
         replace_mermaid_placeholder(&mut html, &replacement)?;
@@ -398,23 +405,25 @@ fn render_mermaid_figure(
         .render_svg_sync(source)
     {
         Ok(Some(svg)) => format!(
-            r#"<figure class="mermaid-figure" data-mermaid-theme="{}"><div class="mermaid-toolbar"><button class="mermaid-expand" type="button" title="View diagram fullscreen" aria-label="View diagram fullscreen">{MERMAID_EXPAND_ICON}</button><button class="mermaid-show-source" type="button" title="Show Mermaid source" aria-label="Show Mermaid source">{MERMAID_SOURCE_ICON}</button></div><div class="mermaid-stage is-ready">{svg}</div><template class="mermaid-source-template">{}</template></figure>"#,
+            r#"<figure class="mermaid-figure" data-mermaid-theme="{}"><div class="mermaid-toolbar"><button class="mermaid-expand" type="button" title="View diagram fullscreen" aria-label="View diagram fullscreen"><i data-lucide="maximize-2"></i></button><button class="mermaid-show-source" type="button" title="Show Mermaid source" aria-label="Show Mermaid source"><i data-lucide="code-2"></i></button></div><div class="mermaid-stage is-ready">{svg}</div><template class="mermaid-source-template">{}</template></figure>"#,
             theme.appearance(),
             escape_html(source),
         ),
         Ok(None) => mermaid_error_figure(
             theme,
+            source,
             "Merman did not recognize a supported Mermaid diagram.",
         ),
-        Err(error) => mermaid_error_figure(theme, &error.to_string()),
+        Err(error) => mermaid_error_figure(theme, source, &error.to_string()),
     }
 }
 
-fn mermaid_error_figure(theme: MermaidTheme, message: &str) -> String {
+fn mermaid_error_figure(theme: MermaidTheme, source: &str, message: &str) -> String {
     format!(
-        r#"<figure class="mermaid-figure" data-mermaid-theme="{}"><div class="mermaid-stage"><div class="mermaid-error" role="alert"><strong>Mermaid render failed</strong><span>{}</span></div></div></figure>"#,
+        r#"<figure class="mermaid-figure" data-mermaid-theme="{}"><div class="mermaid-toolbar"><button class="mermaid-show-source" type="button" title="Show Mermaid source" aria-label="Show Mermaid source"><i data-lucide="code-2"></i></button></div><div class="mermaid-stage"><div class="mermaid-error" role="alert"><strong>Mermaid render failed</strong><span>{}</span></div></div><template class="mermaid-source-template">{}</template></figure>"#,
         theme.appearance(),
         escape_html(message),
+        escape_html(source),
     )
 }
 
@@ -549,6 +558,44 @@ mod tests {
     }
 
     #[test]
+    fn highlights_supported_code_fences_with_scoped_syntect_classes() {
+        let rendered = render_markdown(
+            "```rust\nfn main() { println!(\"hello\"); }\n```\n\n```json\n{\"enabled\": true, \"count\": 2}\n```\n\n```yaml\nname: MarkMaid\nenabled: true\n```\n\n```lua\nlocal enabled = true\n```",
+            Path::new("/tmp/highlighted.md"),
+            MermaidTheme::Default,
+        )
+        .unwrap();
+
+        for language in ["rust", "json", "yaml", "lua"] {
+            assert!(
+                rendered
+                    .html
+                    .contains(&format!("class=\"language-{language}\"")),
+                "missing language class for {language}",
+            );
+        }
+        assert!(rendered.html.contains("class=\"syntax-highlighting\""));
+        assert!(rendered.html.contains("syn-keyword"));
+        assert!(rendered.html.contains("syn-string"));
+    }
+
+    #[test]
+    fn preserves_plain_text_and_escapes_code_fences_without_a_known_language() {
+        let rendered = render_markdown(
+            "```unknown-language\n<script>alert('no')</script>\n```\n\n```\nplain <value>\n```",
+            Path::new("/tmp/plain-code.md"),
+            MermaidTheme::Default,
+        )
+        .unwrap();
+
+        assert!(rendered.html.contains("language-unknown-language"));
+        assert!(rendered.html.contains("&lt;script&gt;"));
+        assert!(rendered.html.contains("&lt;/script&gt;"));
+        assert!(rendered.html.contains("plain &lt;value&gt;"));
+        assert!(!rendered.html.contains("<script>alert('no')</script>"));
+    }
+
+    #[test]
     fn omits_raw_html_and_dangerous_links() {
         let rendered = render_markdown(
             "<script>alert('no')</script>\n\n[bad](javascript:alert(1))",
@@ -630,8 +677,11 @@ mod tests {
         assert!(rendered.html.contains("<svg"));
         assert!(rendered.html.contains("mermaid-show-source"));
         assert!(rendered.html.contains("mermaid-source-template"));
+        assert!(rendered.html.contains("data-lucide=\"maximize-2\""));
+        assert!(rendered.html.contains("data-lucide=\"code-2\""));
         assert!(rendered.html.contains("flowchart TD"));
         assert!(!rendered.html.contains("language-mermaid"));
+        assert!(!rendered.html.contains("syntax-highlighting"));
         assert!(!rendered.html.contains("MARKMAID_MERMAN_SVG"));
     }
 
@@ -648,6 +698,10 @@ mod tests {
         assert!(rendered.html.contains("<p>After</p>"));
         assert!(rendered.html.contains("Mermaid render failed"));
         assert!(rendered.html.contains("data-mermaid-theme=\"dark\""));
+        assert!(rendered.html.contains("mermaid-show-source"));
+        assert!(rendered.html.contains("mermaid-source-template"));
+        assert!(rendered.html.contains("this is not a diagram"));
+        assert!(!rendered.html.contains("mermaid-expand"));
     }
 
     #[test]

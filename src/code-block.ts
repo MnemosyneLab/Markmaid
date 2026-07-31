@@ -1,8 +1,4 @@
-const COPY_ICON = `
-  <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false">
-    <path fill="currentColor" d="M8 3a2 2 0 0 0-2 2v2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-1h3a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2H8Zm0 2h11v8h-3V9a2 2 0 0 0-2-2H8V5Zm-3 4h9v9H5V9Z" />
-  </svg>
-`;
+import { icon, renderIcons } from "./icons";
 
 export interface CodeBlockEnhancement {
   code: HTMLElement;
@@ -63,7 +59,7 @@ export function enhanceCodeBlock(
   copyButton.type = "button";
   copyButton.title = "Copy code";
   copyButton.setAttribute("aria-label", "Copy code");
-  copyButton.innerHTML = COPY_ICON;
+  copyButton.innerHTML = icon("copy");
   copyButton.addEventListener("click", () => void copyCode(code, copyButton));
 
   toolbar.append(copyButton);
@@ -108,6 +104,7 @@ async function copyCode(
   window.setTimeout(() => {
     button.disabled = false;
     button.innerHTML = original;
+    renderIcons(button);
     button.title = "Copy code";
     button.setAttribute("aria-label", "Copy code");
   }, 1200);

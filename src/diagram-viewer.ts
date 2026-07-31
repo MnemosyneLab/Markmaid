@@ -2,19 +2,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 
 import { enhanceCodeBlock } from "./code-block";
+import { icon, renderIcons } from "./icons";
 
 type MermaidAppearance = "light" | "dark";
-const ZOOM_LEVELS = [50, 75, 100, 125, 150, 175, 200] as const;
+const ZOOM_LEVELS = [50, 75, 100, 125, 150, 175, 200, 250, 300] as const;
+const DEFAULT_ZOOM = 150;
 
-const CLOSE_ICON = `
-  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
-    <path
-      fill="currentColor"
-      d="M18.3 5.7a1 1 0 0 0-1.4 0L12 10.6 7.1 5.7a1 1 0 0 0-1.4 1.4l4.9 4.9-4.9 4.9a1 1 0 1 0 1.4 1.4l4.9-4.9 4.9 4.9a1 1 0 0 0 1.4-1.4L13.4 12l4.9-4.9a1 1 0 0 0 0-1.4z"
-    />
-  </svg>
-`;
-
+/*
 const EXPORT_ICON = `
   <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
     <path fill="currentColor" d="M11 3a1 1 0 0 1 2 0v9.6l3.3-3.3a1 1 0 1 1 1.4 1.4l-5 5a1 1 0 0 1-1.4 0l-5-5a1 1 0 0 1 1.4-1.4l3.3 3.3V3ZM5 19a1 1 0 0 1 1-1h12a1 1 0 1 1 0 2H6a1 1 0 0 1-1-1Z" />
@@ -38,6 +32,7 @@ const PREVIEW_ICON = `
     <path fill="currentColor" d="M5 3a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2H5Zm0 2h14v14H5V5Zm3 2.5a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm8.6 3.2a1 1 0 0 0-1.4 0l-2.7 2.7-1.2-1.2a1 1 0 0 0-1.4 0L7 16h10l-3-3 2.6-2.3Z" />
   </svg>
 `;
+*/
 
 let activeViewer: { close: () => void } | null = null;
 
@@ -101,12 +96,13 @@ function showMermaidSource(
   previewButton.type = "button";
   previewButton.title = "Show diagram preview";
   previewButton.setAttribute("aria-label", "Show diagram preview");
-  previewButton.innerHTML = PREVIEW_ICON;
+  previewButton.innerHTML = icon("image");
   previewButton.addEventListener("click", () => {
     stage.replaceChildren(preview);
     delete figure.dataset.mermaidView;
   });
   codeBlock.toolbar.append(previewButton);
+  renderIcons(codeBlock.toolbar);
 }
 
 function openDiagramViewer(
@@ -118,39 +114,59 @@ function openDiagramViewer(
 
   activeViewer?.close();
 
+  const viewerTheme =
+    theme === "light"
+      ? {
+          overlay: "bg-chrome text-app-text",
+          control:
+            "border-app-border bg-surface-raised text-app-text hover:bg-surface-hover",
+          select: "border-app-border bg-surface-raised text-app-text",
+          hint: "text-app-secondary",
+        }
+      : {
+          overlay: "bg-[rgb(18_20_24_/_72%)] text-white",
+          control:
+            "border-[rgb(255_255_255_/_14%)] bg-[rgb(255_255_255_/_10%)] text-[rgb(255_255_255_/_88%)] hover:bg-[rgb(255_255_255_/_18%)]",
+          select:
+            "border-[rgb(255_255_255_/_14%)] bg-[rgb(255_255_255_/_14%)] text-[rgb(255_255_255_/_94%)]",
+          hint: "text-[rgb(255_255_255_/_78%)]",
+        };
+
   const overlay = document.createElement("div");
-  overlay.className = "mermaid-viewer";
+  overlay.className = `mermaid-viewer fixed inset-x-0 top-[38px] bottom-0 z-40 overflow-hidden backdrop-blur-[18px] backdrop-saturate-[120%] ${viewerTheme.overlay}`;
   overlay.dataset.mermaidTheme = theme;
   overlay.setAttribute("role", "dialog");
   overlay.setAttribute("aria-modal", "true");
   overlay.setAttribute("aria-label", "Mermaid diagram viewer");
   overlay.innerHTML = `
-    <div class="mermaid-viewer-backdrop" data-viewer-close></div>
+    <div class="mermaid-viewer-backdrop absolute inset-0" data-viewer-close></div>
     <button
-      class="mermaid-viewer-close"
+      class="mermaid-viewer-close absolute top-3.5 right-4 z-2 grid size-[34px] place-items-center rounded-app border transition-colors [&>svg]:size-[18px] [&>svg]:stroke-[1.9] ${viewerTheme.control}"
       type="button"
       data-viewer-close
       title="Close"
       aria-label="Close diagram viewer"
-    >${CLOSE_ICON}</button>
-    <div class="mermaid-viewer-hint">Scroll to zoom · drag to pan · Esc to close</div>
-    <div class="mermaid-viewer-controls" aria-label="Diagram controls">
-      <button class="mermaid-viewer-zoom" type="button" data-zoom="out" title="Zoom out" aria-label="Zoom out">${ZOOM_OUT_ICON}</button>
-      <select class="mermaid-viewer-zoom-select" aria-label="Zoom level">
-        ${ZOOM_LEVELS.map((level) => `<option value="${level}"${level === 100 ? " selected" : ""}>${level}%</option>`).join("")}
+    >${icon("x")}</button>
+    <div class="mermaid-viewer-hint absolute bottom-4 left-4 z-2 text-xs font-medium ${viewerTheme.hint}">Scroll to zoom · drag to pan · Esc to close</div>
+    <div class="mermaid-viewer-controls absolute right-4 bottom-4 z-2 flex items-center gap-1.5" aria-label="Diagram controls">
+      <button class="mermaid-viewer-zoom grid size-[34px] place-items-center rounded-app border transition-colors [&>svg]:size-[18px] [&>svg]:stroke-[1.9] ${viewerTheme.control}" type="button" data-zoom="out" title="Zoom out" aria-label="Zoom out">${icon("zoom-out")}</button>
+      <select class="mermaid-viewer-zoom-select h-[34px] w-[82px] rounded-[17px] border px-2 text-sm font-semibold ${viewerTheme.select}" aria-label="Zoom level">
+        ${ZOOM_LEVELS.map((level) => `<option value="${level}"${level === DEFAULT_ZOOM ? " selected" : ""}>${level}%</option>`).join("")}
       </select>
-      <button class="mermaid-viewer-zoom" type="button" data-zoom="in" title="Zoom in" aria-label="Zoom in">${ZOOM_IN_ICON}</button>
-      <button class="mermaid-viewer-export" type="button" title="Export SVG" aria-label="Export SVG">${EXPORT_ICON}</button>
+      <button class="mermaid-viewer-zoom grid size-[34px] place-items-center rounded-app border transition-colors [&>svg]:size-[18px] [&>svg]:stroke-[1.9] ${viewerTheme.control}" type="button" data-zoom="in" title="Zoom in" aria-label="Zoom in">${icon("zoom-in")}</button>
+      <button class="mermaid-viewer-export grid size-[34px] place-items-center rounded-app border transition-colors [&>svg]:size-[18px] [&>svg]:stroke-[1.9] ${viewerTheme.control}" type="button" title="Export SVG" aria-label="Export SVG">${icon("download")}</button>
     </div>
-    <div class="mermaid-viewer-canvas">
-      <div class="mermaid-viewer-world"></div>
+    <div class="mermaid-viewer-canvas absolute inset-0 z-1 grid place-items-center overflow-hidden cursor-grab touch-none">
+      <div class="mermaid-viewer-world m-auto size-max origin-center"></div>
     </div>
   `;
+  renderIcons(overlay);
 
   const world = overlay.querySelector<HTMLElement>(".mermaid-viewer-world");
   if (!world) return;
   const clone = svg.cloneNode(true) as SVGElement;
   clone.removeAttribute("style");
+  clone.classList.add("block", "max-w-none");
   clone.style.maxWidth = "none";
   clone.style.height = "auto";
   world.append(clone);
@@ -161,7 +177,7 @@ function openDiagramViewer(
   const initialBounds = svg.getBoundingClientRect();
   const baseWidth = initialBounds.width;
 
-  let zoomIndex = ZOOM_LEVELS.indexOf(100);
+  let zoomIndex = ZOOM_LEVELS.indexOf(DEFAULT_ZOOM);
   let translateX = 0;
   let translateY = 0;
   let dragging = false;
@@ -199,7 +215,7 @@ function openDiagramViewer(
     pointerId = event.pointerId;
     lastX = event.clientX;
     lastY = event.clientY;
-    canvas.classList.add("is-dragging");
+    canvas.classList.replace("cursor-grab", "cursor-grabbing");
     canvas.setPointerCapture(event.pointerId);
   });
 
@@ -216,7 +232,7 @@ function openDiagramViewer(
     if (event.pointerId !== pointerId) return;
     dragging = false;
     pointerId = null;
-    canvas?.classList.remove("is-dragging");
+    canvas?.classList.replace("cursor-grabbing", "cursor-grab");
   };
   canvas?.addEventListener("pointerup", endDrag);
   canvas?.addEventListener("pointercancel", endDrag);

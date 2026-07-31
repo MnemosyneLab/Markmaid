@@ -22,7 +22,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }
-comrak = "0.54"
+comrak = { version = "0.54", default-features = false, features = ["syntect-onig"] }
 merman = { version = "=0.7.0", features = ["render"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"

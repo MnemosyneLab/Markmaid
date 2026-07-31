@@ -99,6 +99,9 @@ describe("tab state", () => {
         sidebarWidth: 300,
         mermaidLightTheme: "forest",
         mermaidDarkTheme: "redux-dark-color",
+        textFont: "Georgia, Songti SC, serif",
+        codeFont: "Menlo, Monaco, monospace",
+        pageWidth: "wide",
       }),
       [ready("/one.md")],
     );
@@ -112,6 +115,9 @@ describe("tab state", () => {
     expect(restored.sidebarWidth).toBe(300);
     expect(restored.mermaidLightTheme).toBe("forest");
     expect(restored.mermaidDarkTheme).toBe("redux-dark-color");
+    expect(restored.textFont).toBe("Georgia, Songti SC, serif");
+    expect(restored.codeFont).toBe("Menlo, Monaco, monospace");
+    expect(restored.pageWidth).toBe("wide");
     expect(restored.recentDocuments).toEqual([]);
     expect(restored.tabs.map((item) => item.kind)).toEqual([
       "document",
@@ -148,6 +154,33 @@ describe("tab state", () => {
         tabPlacement: "top",
       }).mermaidDarkTheme,
     ).toBe("dark");
+    expect(
+      fromPersistedSession({
+        version: 1,
+        tabs: [],
+        activeTabKey: null,
+        theme: "system",
+        tabPlacement: "top",
+      }).textFont,
+    ).toBe("");
+    expect(
+      fromPersistedSession({
+        version: 1,
+        tabs: [],
+        activeTabKey: null,
+        theme: "system",
+        tabPlacement: "top",
+      }).codeFont,
+    ).toBe("");
+    expect(
+      fromPersistedSession({
+        version: 1,
+        tabs: [],
+        activeTabKey: null,
+        theme: "system",
+        tabPlacement: "top",
+      }).pageWidth,
+    ).toBe("default");
 
     expect(
       setPreferences(baseState(), { sidebarWidth: 90 }).sidebarWidth,
