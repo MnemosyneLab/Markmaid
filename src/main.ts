@@ -28,10 +28,12 @@ import type {
   AppTab,
   DocumentLoadResult,
   DocumentTab,
+  MermaidTheme,
   ReadyDocumentTab,
   TabPlacement,
   ThemeMode,
 } from "./types";
+import { enhanceMermaidDiagrams } from "./mermaid";
 
 const OPEN_FILES_EVENT = "markmaid://open-files";
 const MENU_OPEN_EVENT = "markmaid://menu-open";
@@ -255,13 +257,11 @@ function render(): void {
       class="app-frame placement-${state.tabPlacement}"
       style="--sidebar-width: ${sidebarWidth}px"
     >
-      <header class="titlebar">
-        <div class="window-drag-region" data-tauri-drag-region></div>
-        <div class="brand" aria-label="MarkMaid">
-          <span class="brand-mark">M</span>
+      <header class="titlebar" data-tauri-drag-region>
+        <div class="brand" data-tauri-drag-region aria-label="MarkMaid">
           <span class="brand-name">MarkMaid</span>
         </div>
-        <div class="titlebar-title" title="${escapeAttribute(windowTitle(current))}">${title}</div>
+        <div class="titlebar-title" data-tauri-drag-region title="${escapeAttribute(windowTitle(current))}">${title}</div>
         <nav class="titlebar-actions" aria-label="Application actions">
           <button class="icon-button" type="button" data-action="open" title="Open Markdown (⌘O)">
             <span aria-hidden="true">+</span>
@@ -538,6 +538,7 @@ function renderDocument(
   article.className = "markdown-body";
   article.innerHTML = tab.html;
   prepareDocumentContent(article, tab);
+  void enhanceMermaidDiagrams(article, state.mermaidTheme);
 
   if (tab.reloadError) {
     const notice = document.createElement("div");
@@ -671,8 +672,19 @@ function renderSettings(container: HTMLElement): void {
         </div>
       </div>
 
+      <div class="setting-group">
+        <div class="setting-copy">
+          <h2>Mermaid theme</h2>
+          <p>Choose the light or dark palette used for diagram previews.</p>
+        </div>
+        <div class="segmented-control" role="group" aria-label="Mermaid theme">
+          ${settingButton("mermaid", "light", "Light", state.mermaidTheme)}
+          ${settingButton("mermaid", "dark", "Dark", state.mermaidTheme)}
+        </div>
+      </div>
+
       <footer class="settings-note">
-        GFM preview is enabled. Editing, Mermaid, and automatic file refresh are not part of this version.
+        GFM and Mermaid preview are enabled. Editing and automatic file refresh are not part of this version.
       </footer>
     </section>
   `;
@@ -698,10 +710,21 @@ function renderSettings(container: HTMLElement): void {
         schedulePersist();
       });
     });
+  container
+    .querySelectorAll<HTMLElement>("[data-mermaid]")
+    .forEach((button) => {
+      button.addEventListener("click", () => {
+        state = setPreferences(state, {
+          mermaidTheme: button.dataset.mermaid as MermaidTheme,
+        });
+        render();
+        schedulePersist();
+      });
+    });
 }
 
 function settingButton(
-  kind: "theme" | "placement",
+  kind: "theme" | "placement" | "mermaid",
   value: string,
   label: string,
   selected: string,

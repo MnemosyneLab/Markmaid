@@ -1,5 +1,6 @@
 export type ThemeMode = "system" | "light" | "dark";
 export type TabPlacement = "top" | "left";
+export type MermaidTheme = "light" | "dark";
 
 export interface ImageAsset {
   token: string;
@@ -67,6 +68,7 @@ export interface AppState {
   theme: ThemeMode;
   tabPlacement: TabPlacement;
   sidebarWidth: number;
+  mermaidTheme: MermaidTheme;
 }
 
 export type PersistedTab =
@@ -80,4 +82,5 @@ export interface PersistedSessionV1 {
   theme: ThemeMode;
   tabPlacement: TabPlacement;
   sidebarWidth?: number;
+  mermaidTheme?: MermaidTheme;
 }

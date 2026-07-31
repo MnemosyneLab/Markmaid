@@ -91,7 +91,12 @@ describe("tab state", () => {
 
   it("round-trips session preferences, tab order, and scroll positions", () => {
     let state = addDocumentResults(
-      baseState({ theme: "dark", tabPlacement: "left", sidebarWidth: 300 }),
+      baseState({
+        theme: "dark",
+        tabPlacement: "left",
+        sidebarWidth: 300,
+        mermaidTheme: "dark",
+      }),
       [ready("/one.md")],
     );
     const tab = state.tabs[0];
@@ -102,6 +107,7 @@ describe("tab state", () => {
     expect(restored.theme).toBe("dark");
     expect(restored.tabPlacement).toBe("left");
     expect(restored.sidebarWidth).toBe(300);
+    expect(restored.mermaidTheme).toBe("dark");
     expect(restored.tabs.map((item) => item.kind)).toEqual([
       "document",
       "settings",
@@ -119,6 +125,15 @@ describe("tab state", () => {
         tabPlacement: "top",
       }).sidebarWidth,
     ).toBe(DEFAULT_SIDEBAR_WIDTH);
+    expect(
+      fromPersistedSession({
+        version: 1,
+        tabs: [],
+        activeTabKey: null,
+        theme: "system",
+        tabPlacement: "top",
+      }).mermaidTheme,
+    ).toBe("light");
 
     expect(
       setPreferences(baseState(), { sidebarWidth: 90 }).sidebarWidth,

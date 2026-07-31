@@ -5,6 +5,7 @@ import type {
   DocumentTab,
   ErrorDocumentTab,
   LoadingDocumentTab,
+  MermaidTheme,
   PersistedSessionV1,
   ReadyDocumentTab,
   SettingsTab,
@@ -22,6 +23,7 @@ export const DEFAULT_STATE: AppState = {
   theme: "system",
   tabPlacement: "top",
   sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
+  mermaidTheme: "light",
 };
 
 export function clampSidebarWidth(width: number): number {
@@ -205,6 +207,7 @@ export function setPreferences(
     theme?: ThemeMode;
     tabPlacement?: TabPlacement;
     sidebarWidth?: number;
+    mermaidTheme?: MermaidTheme;
   },
 ): AppState {
   const next = { ...state, ...preferences };
@@ -235,6 +238,7 @@ export function toPersistedSession(state: AppState): PersistedSessionV1 {
     theme: state.theme,
     tabPlacement: state.tabPlacement,
     sidebarWidth: clampSidebarWidth(state.sidebarWidth),
+    mermaidTheme: state.mermaidTheme,
   };
 }
 
@@ -254,6 +258,10 @@ export function fromPersistedSession(value: unknown): AppState {
         ? value.sidebarWidth
         : DEFAULT_SIDEBAR_WIDTH,
     ),
+    mermaidTheme:
+      value.mermaidTheme === "dark" || value.mermaidTheme === "light"
+        ? value.mermaidTheme
+        : DEFAULT_STATE.mermaidTheme,
   };
 }
 

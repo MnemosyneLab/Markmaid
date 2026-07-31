@@ -21,14 +21,15 @@
         "decorations": true,
         "hiddenTitle": true,
         "titleBarStyle": "Overlay",
+        "acceptFirstMouse": true,
         "trafficLightPosition": {
           "x": 18,
-          "y": 12
+          "y": 22
         }
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost https: data:; style-src 'self' 'unsafe-inline'; script-src 'self'",
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost https: data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:",
       "assetProtocol": {
         "enable": true,
         "scope": []
