@@ -2,10 +2,10 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
-import { openPath, openUrl } from "@tauri-apps/plugin-opener";
+import { openPath, openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { load, type Store } from "@tauri-apps/plugin-store";
 
-import { enhanceCodeBlocks } from "./code-block";
+import { copyText, enhanceCodeBlocks } from "./code-block";
 import { enhanceDiagramViewers } from "./diagram-viewer";
 import { icon, renderIcons } from "./icons";
 import {
@@ -31,6 +31,7 @@ import "./styles.css";
 import type {
   AppState,
   AppTab,
+  ColorTheme,
   DocumentLoadResult,
   DocumentTab,
   MermaidDarkTheme,
@@ -82,13 +83,22 @@ const PAGE_WIDTHS: Record<Exclude<PageWidth, "default">, string> = {
   "extra-wide": "1200px",
   full: "100%",
 };
+const COLOR_THEME_OPTIONS: ReadonlyArray<{
+  value: ColorTheme;
+  label: string;
+  description: string;
+}> = [
+  { value: "default", label: "Default", description: "Neutral blue" },
+  { value: "solarized", label: "Solarized", description: "Warm, low-contrast" },
+  { value: "nord", label: "Nord", description: "Cool Arctic" },
+  { value: "gruvbox", label: "Gruvbox", description: "Warm retro" },
+  { value: "catppuccin", label: "Catppuccin", description: "Soft pastel" },
+];
 const UI = {
   frame: "h-full grid bg-window",
   titlebar:
     "relative z-2 flex min-w-0 items-center border-b border-app-border bg-chrome shadow-[inset_0_1px_rgb(255_255_255_/_30%)] backdrop-blur-[24px] backdrop-saturate-[125%] select-none",
-  brand: "relative z-1 flex min-w-[120px] max-w-[200px] flex-[0_1_auto] items-center py-0 pr-4 pl-[82px] max-[820px]:min-w-[116px]",
-  brandName:
-    "pointer-events-none overflow-hidden text-ellipsis whitespace-nowrap text-xs font-semibold tracking-tight text-app-secondary max-[820px]:hidden",
+  titlebarLeading: "relative z-1 flex h-full items-center pl-[100px] pr-3",
   title:
     "absolute top-1/2 left-1/2 z-1 max-w-[min(42vw,360px)] -translate-x-1/2 -translate-y-1/2 overflow-hidden text-ellipsis whitespace-nowrap text-center text-xs font-semibold tracking-tight text-app-text",
   titlebarActions: "relative z-1 ml-auto flex flex-none items-center gap-1.5 px-3",
@@ -123,6 +133,14 @@ const UI = {
   documentIdentity: "flex min-w-0 items-baseline gap-2.5",
   documentTitle: "flex-none text-xs font-semibold text-app-text",
   documentPath: "min-w-0 truncate font-mono text-[10px]",
+  documentLayout: "flex size-full min-h-0 min-w-0",
+  documentOutline:
+    "document-outline shrink-0 overflow-y-auto border-l border-app-border bg-surface px-3 py-5",
+  documentOutlineTitle:
+    "mb-2 px-2 text-[11px] font-bold tracking-[0.08em] text-app-muted uppercase",
+  documentOutlineList: "m-0 flex list-none flex-col gap-0.5 p-0",
+  documentOutlineItem:
+    "document-outline-item w-full truncate rounded-md py-1.5 pr-2 text-left text-xs leading-5 text-app-secondary transition-[background,color] duration-120 hover:bg-surface-hover hover:text-app-text",
   reloadNotice:
     "mx-auto mt-[22px] flex gap-2 rounded-app border border-[color-mix(in_srgb,var(--danger)_30%,transparent)] bg-danger-soft px-3 py-2.5 text-xs leading-5 text-danger",
   settingsPage:
@@ -174,6 +192,8 @@ let sidebarResizeSession: {
   startX: number;
   startWidth: number;
 } | null = null;
+let tabContextMenu: HTMLElement | null = null;
+let dismissTabContextMenuListener: (() => void) | null = null;
 const colorScheme = window.matchMedia("(prefers-color-scheme: dark)");
 
 void bootstrap();
@@ -199,6 +219,7 @@ async function bootstrap(): Promise<void> {
     const results = await invoke<DocumentLoadResult[]>("load_documents", {
       paths: restoredPaths,
       mermaidTheme: activeMermaidTheme(),
+      colorTheme: state.colorTheme,
     });
     state = hydrateRestoredTabs(state, results);
     applyTheme();
@@ -303,6 +324,7 @@ async function openDocumentPaths(
   const results = await invoke<DocumentLoadResult[]>("load_documents", {
     paths: uniquePaths,
     mermaidTheme: activeMermaidTheme(),
+    colorTheme: state.colorTheme,
   });
   state = addDocumentResults(state, results);
   state = addRecentDocuments(
@@ -330,6 +352,7 @@ async function reloadActiveDocument(): Promise<void> {
   const result = await invoke<DocumentLoadResult>("reload_document", {
     path,
     mermaidTheme: activeMermaidTheme(),
+    colorTheme: state.colorTheme,
   });
 
   if (current.status === "ready" && result.status === "error") {
@@ -388,6 +411,7 @@ function captureActiveScroll(): void {
 }
 
 function render(): void {
+  dismissTabContextMenu();
   applyTheme();
   const current = activeTab(state);
   const topTabs =
@@ -396,6 +420,20 @@ function render(): void {
     state.tabPlacement === "left" ? renderTabList(state.tabs) : "";
   const title = escapeHtml(windowTitle(current));
   const sidebarWidth = clampSidebarWidth(state.sidebarWidth);
+  const sidebarToggle =
+    state.tabPlacement === "left"
+      ? `<button class="icon-button ${UI.iconButton}" type="button" data-action="toggle-left-sidebar" title="${state.leftSidebarVisible ? "Hide" : "Show"} left sidebar" aria-label="${state.leftSidebarVisible ? "Hide" : "Show"} left sidebar" aria-pressed="${state.leftSidebarVisible}">
+          ${icon(state.leftSidebarVisible ? "panel-left-close" : "panel-left-open")}
+          <span class="sr-only">${state.leftSidebarVisible ? "Hide" : "Show"} left sidebar</span>
+        </button>`
+      : "";
+  const outlineToggle =
+    current?.kind === "document" && current.status === "ready"
+      ? `<button class="icon-button ${UI.iconButton}" type="button" data-action="toggle-outline" title="${state.tableOfContentsVisible ? "Hide" : "Show"} document outline" aria-label="${state.tableOfContentsVisible ? "Hide" : "Show"} document outline" aria-pressed="${state.tableOfContentsVisible}">
+          ${icon(state.tableOfContentsVisible ? "panel-right-close" : "panel-right-open")}
+          <span class="sr-only">${state.tableOfContentsVisible ? "Hide" : "Show"} document outline</span>
+        </button>`
+      : "";
 
   root.innerHTML = `
     <div
@@ -403,15 +441,14 @@ function render(): void {
       style="--sidebar-width: ${sidebarWidth}px"
     >
       <header class="titlebar ${UI.titlebar}" data-tauri-drag-region>
-        <div class="brand ${UI.brand}" data-tauri-drag-region aria-label="MarkMaid">
-          <span class="brand-name ${UI.brandName}">MarkMaid</span>
-        </div>
+        <div class="titlebar-leading ${UI.titlebarLeading}">${sidebarToggle}</div>
         <div class="titlebar-title ${UI.title}" data-tauri-drag-region title="${escapeAttribute(windowTitle(current))}">${title}</div>
         <nav class="titlebar-actions ${UI.titlebarActions}" aria-label="Application actions">
           <button class="icon-button ${UI.iconButton}" type="button" data-action="open" title="Open Markdown (⌘O)">
             ${icon("folder-open")}
             <span class="sr-only">Open Markdown</span>
           </button>
+          ${outlineToggle}
           <button class="icon-button ${UI.iconButton}" type="button" data-action="settings" title="Settings" aria-label="Settings">
             ${icon("settings")}
             <span class="sr-only">Settings</span>
@@ -425,7 +462,7 @@ function render(): void {
       }
       <div class="workspace ${UI.workspace}">
         ${
-          state.tabPlacement === "left"
+          state.tabPlacement === "left" && state.leftSidebarVisible
             ? `<aside class="sidebar ${UI.sidebar}" aria-label="Open tabs">
                 ${sideTabs}
                 <div class="sidebar-resize" role="separator" aria-orientation="vertical" aria-label="Resize tab rail" tabindex="0"></div>
@@ -514,8 +551,127 @@ function bindShellInteractions(): void {
   root
     .querySelector<HTMLElement>('[data-action="settings"]')
     ?.addEventListener("click", showSettings);
+  root
+    .querySelector<HTMLElement>('[data-action="toggle-outline"]')
+    ?.addEventListener("click", () => {
+      captureActiveScroll();
+      state = setPreferences(state, {
+        tableOfContentsVisible: !state.tableOfContentsVisible,
+      });
+      render();
+      schedulePersist();
+    });
+  root
+    .querySelector<HTMLElement>('[data-action="toggle-left-sidebar"]')
+    ?.addEventListener("click", () => {
+      state = setPreferences(state, {
+        leftSidebarVisible: !state.leftSidebarVisible,
+      });
+      render();
+      schedulePersist();
+    });
+
+  root.querySelectorAll<HTMLElement>(".sidebar .tab").forEach((tabElement) => {
+    tabElement.addEventListener("pointerdown", (event) => {
+      if (event.button === 2) event.preventDefault();
+    });
+    tabElement.addEventListener("contextmenu", (event) => {
+      const tabKey = tabElement
+        .querySelector<HTMLElement>("[data-tab-key]")
+        ?.dataset.tabKey;
+      if (!tabKey) return;
+      event.preventDefault();
+      event.stopPropagation();
+      showTabContextMenu(event, tabKey);
+    });
+  });
 
   bindSidebarResize();
+}
+
+function showTabContextMenu(event: MouseEvent, tabKey: string): void {
+  const tab = state.tabs.find((candidate) => candidate.key === tabKey);
+  if (!tab) return;
+
+  dismissTabContextMenu();
+  const menu = document.createElement("div");
+  menu.className =
+    "tab-context-menu fixed z-50 min-w-52 rounded-[10px] border border-app-border bg-surface-raised p-1.5 text-sm text-app-text shadow-app";
+  menu.setAttribute("role", "menu");
+  menu.setAttribute("aria-label", `${tabLabel(tab)} actions`);
+
+  const addAction = (
+    label: string,
+    action: () => void | Promise<unknown>,
+  ): void => {
+    const button = document.createElement("button");
+    button.className =
+      "block w-full rounded-md px-2.5 py-1.5 text-left text-sm text-app-text transition-colors hover:bg-surface-hover";
+    button.type = "button";
+    button.setAttribute("role", "menuitem");
+    button.textContent = label;
+    button.addEventListener("click", () => {
+      dismissTabContextMenu();
+      void action();
+    });
+    menu.append(button);
+  };
+  const addSeparator = (): void => {
+    const separator = document.createElement("div");
+    separator.className = "my-1 border-t border-app-border";
+    separator.setAttribute("role", "separator");
+    menu.append(separator);
+  };
+
+  addAction("Close", () => {
+    captureActiveScroll();
+    state = closeTab(state, tabKey);
+    render();
+    schedulePersist();
+  });
+
+  if (tab.kind === "document") {
+    const path =
+      tab.status === "ready"
+        ? tab.canonicalPath
+        : tab.status === "error"
+          ? (tab.canonicalPath ?? tab.requestedPath)
+          : tab.requestedPath;
+    addSeparator();
+    addAction("Copy file name", () => copyText(tab.displayName));
+    addAction("Copy absolute path", () => copyText(path));
+    addAction("Reveal in Finder", () => revealItemInDir(path));
+  }
+
+  document.body.append(menu);
+  const bounds = menu.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, Math.min(event.clientX, window.innerWidth - bounds.width - 8))}px`;
+  menu.style.top = `${Math.max(8, Math.min(event.clientY, window.innerHeight - bounds.height - 8))}px`;
+  tabContextMenu = menu;
+
+  const dismiss = (dismissEvent: PointerEvent | KeyboardEvent): void => {
+    if (dismissEvent instanceof KeyboardEvent && dismissEvent.key !== "Escape") return;
+    if (
+      dismissEvent instanceof PointerEvent &&
+      menu.contains(dismissEvent.target as Node)
+    ) {
+      return;
+    }
+    dismissTabContextMenu();
+  };
+  document.addEventListener("pointerdown", dismiss);
+  document.addEventListener("keydown", dismiss);
+  dismissTabContextMenuListener = () => {
+    document.removeEventListener("pointerdown", dismiss);
+    document.removeEventListener("keydown", dismiss);
+  };
+}
+
+function dismissTabContextMenu(): void {
+  tabContextMenu?.remove();
+  tabContextMenu = null;
+  dismissTabContextMenuListener?.();
+  dismissTabContextMenuListener = null;
 }
 
 function bindSidebarResize(): void {
@@ -702,7 +858,14 @@ function renderDocument(
   }
 
   scroller.append(header, article);
-  container.append(scroller);
+  const outline = state.tableOfContentsVisible
+    ? createDocumentOutline(article, scroller)
+    : null;
+  const layout = document.createElement("div");
+  layout.className = UI.documentLayout;
+  layout.append(scroller);
+  if (outline) layout.append(outline.element);
+  container.append(layout);
 
   header
     .querySelector<HTMLElement>("[data-document-reload]")
@@ -710,6 +873,7 @@ function renderDocument(
   scroller.addEventListener("scroll", () => {
     state = updateScroll(state, tab.key, scroller.scrollTop);
     schedulePersist();
+    outline?.updateActiveHeading();
   });
 
   requestAnimationFrame(() => {
@@ -718,7 +882,84 @@ function renderDocument(
       scrollToAnchor(article, pendingAnchor);
       pendingAnchor = null;
     }
+    outline?.updateActiveHeading();
   });
+}
+
+interface DocumentOutline {
+  element: HTMLElement;
+  updateActiveHeading: () => void;
+}
+
+function createDocumentOutline(
+  article: HTMLElement,
+  scroller: HTMLElement,
+): DocumentOutline | null {
+  const headings = Array.from(
+    article.querySelectorAll<HTMLHeadingElement>("h1, h2, h3, h4, h5, h6"),
+  ).filter((heading) => heading.id && heading.textContent?.trim());
+  if (headings.length === 0) return null;
+
+  const aside = document.createElement("aside");
+  aside.className = UI.documentOutline;
+  aside.setAttribute("aria-label", "Document outline");
+
+  const title = document.createElement("h2");
+  title.className = UI.documentOutlineTitle;
+  title.textContent = "On this page";
+  const list = document.createElement("nav");
+  list.className = UI.documentOutlineList;
+  list.setAttribute("aria-label", "Document headings");
+
+  const entries = headings.map((heading) => {
+    const level = Number(heading.tagName.slice(1));
+    const button = document.createElement("button");
+    button.className = UI.documentOutlineItem;
+    button.type = "button";
+    button.dataset.tocTarget = heading.id;
+    button.style.setProperty("--toc-level", String(level));
+    button.textContent = heading.textContent?.trim() ?? "";
+    button.title = button.textContent;
+    button.addEventListener("click", () => {
+      const top =
+        scroller.scrollTop +
+        heading.getBoundingClientRect().top -
+        scroller.getBoundingClientRect().top -
+        20;
+      scroller.scrollTo({
+        top: Math.max(0, top),
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+          ? "auto"
+          : "smooth",
+      });
+    });
+    list.append(button);
+    return { heading, button };
+  });
+
+  aside.append(title, list);
+  const updateActiveHeading = (): void => {
+    const viewportTop = scroller.getBoundingClientRect().top + 84;
+    let active = entries[0];
+    for (const entry of entries) {
+      if (entry.heading.getBoundingClientRect().top <= viewportTop) {
+        active = entry;
+      } else {
+        break;
+      }
+    }
+    entries.forEach((entry) => {
+      const selected = entry === active;
+      entry.button.classList.toggle("is-active", selected);
+      if (selected) {
+        entry.button.setAttribute("aria-current", "location");
+      } else {
+        entry.button.removeAttribute("aria-current");
+      }
+    });
+  };
+
+  return { element: aside, updateActiveHeading };
 }
 
 function prepareDocumentContent(
@@ -805,14 +1046,21 @@ function renderSettings(container: HTMLElement): void {
         <div class="${UI.settingsSectionBody}">
           <div class="setting-group ${UI.settingGroup}">
             <div class="setting-copy">
-              <h3 class="${UI.settingTitle}">Theme</h3>
-              <p class="${UI.settingDescription}">Use the macOS appearance or keep a fixed reading theme.</p>
+              <h3 class="${UI.settingTitle}">Appearance mode</h3>
+              <p class="${UI.settingDescription}">Use the macOS appearance or keep a fixed light or dark mode.</p>
             </div>
             <div class="segmented-control ${UI.segmented}" role="group" aria-label="Theme">
               ${settingButton("theme", "system", "System", state.theme)}
               ${settingButton("theme", "light", "Light", state.theme)}
               ${settingButton("theme", "dark", "Dark", state.theme)}
             </div>
+          </div>
+          <div class="setting-group ${UI.settingGroup}">
+            <div class="setting-copy">
+              <h3 class="${UI.settingTitle}">Color palette</h3>
+              <p class="${UI.settingDescription}">Applies a matched light and dark palette across the app, Markdown, and syntax highlighting.</p>
+            </div>
+            ${colorThemeSelect(state.colorTheme)}
           </div>
         </div>
       </section>
@@ -914,6 +1162,22 @@ function renderSettings(container: HTMLElement): void {
       });
     });
   container
+    .querySelectorAll<HTMLSelectElement>("[data-color-theme]")
+    .forEach((select) => {
+      select.addEventListener("change", () => {
+        captureActiveScroll();
+        state = setPreferences(state, {
+          colorTheme: select.value as ColorTheme,
+        });
+        applyTheme();
+        schedulePersist();
+        void rerenderDocumentsForMermaidTheme(
+          activeMermaidTheme(),
+          state.colorTheme,
+        );
+      });
+    });
+  container
     .querySelectorAll<HTMLSelectElement>("[data-mermaid-light]")
     .forEach((button) => {
       button.addEventListener("change", () => {
@@ -974,6 +1238,7 @@ function renderSettings(container: HTMLElement): void {
 
 async function rerenderDocumentsForMermaidTheme(
   mermaidTheme: MermaidTheme,
+  colorTheme: ColorTheme = state.colorTheme,
 ): Promise<void> {
   const requests = state.tabs
     .filter((tab): tab is DocumentTab => tab.kind === "document")
@@ -992,10 +1257,12 @@ async function rerenderDocumentsForMermaidTheme(
   const results = await invoke<DocumentLoadResult[]>("load_documents", {
     paths: requests.map((request) => request.path),
     mermaidTheme,
+    colorTheme,
   });
   if (
     sequence !== mermaidThemeReloadSequence ||
-    activeMermaidTheme() !== mermaidTheme
+    activeMermaidTheme() !== mermaidTheme ||
+    state.colorTheme !== colorTheme
   ) {
     return;
   }
@@ -1078,6 +1345,22 @@ function selectControl<T extends string>(
   `;
 }
 
+function colorThemeSelect(selected: ColorTheme): string {
+  return `
+    <div class="color-theme-select ${UI.selectWrapper}">
+      <select class="${UI.select}" data-color-theme aria-label="Color palette">
+        ${COLOR_THEME_OPTIONS
+          .map(
+            (theme) =>
+              `<option value="${theme.value}"${theme.value === selected ? " selected" : ""}>${theme.label} — ${theme.description}</option>`,
+          )
+          .join("")}
+      </select>
+      <span class="${UI.selectIcon}">${icon("chevron-down")}</span>
+    </div>
+  `;
+}
+
 function fontInput(
   kind: "text-font" | "code-font",
   value: string,
@@ -1119,6 +1402,7 @@ function applyTheme(): void {
   const resolved = resolvedAppearance();
   document.documentElement.dataset.theme = resolved;
   document.documentElement.dataset.themeMode = state.theme;
+  document.documentElement.dataset.colorTheme = state.colorTheme;
   document.documentElement.style.colorScheme = resolved;
   applyFontPreferences();
   appliedAppearance = resolved;

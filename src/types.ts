@@ -1,4 +1,5 @@
 export type ThemeMode = "system" | "light" | "dark";
+export type ColorTheme = "default" | "solarized" | "nord" | "gruvbox" | "catppuccin";
 export type TabPlacement = "top" | "left";
 export type TextFont = string;
 export type CodeFont = string;
@@ -88,13 +89,16 @@ export interface AppState {
   tabs: AppTab[];
   activeTabKey: string | null;
   theme: ThemeMode;
+  colorTheme: ColorTheme;
   tabPlacement: TabPlacement;
   sidebarWidth: number;
+  leftSidebarVisible: boolean;
   mermaidLightTheme: MermaidLightTheme;
   mermaidDarkTheme: MermaidDarkTheme;
   textFont: TextFont;
   codeFont: CodeFont;
   pageWidth: PageWidth;
+  tableOfContentsVisible: boolean;
   recentDocuments: string[];
 }
 
@@ -107,13 +111,16 @@ export interface PersistedSessionV1 {
   tabs: PersistedTab[];
   activeTabKey: string | null;
   theme: ThemeMode;
+  colorTheme?: ColorTheme;
   tabPlacement: TabPlacement;
   sidebarWidth?: number;
+  leftSidebarVisible?: boolean;
   mermaidLightTheme?: MermaidLightTheme;
   mermaidDarkTheme?: MermaidDarkTheme;
   textFont?: TextFont;
   codeFont?: CodeFont;
   pageWidth?: PageWidth;
+  tableOfContentsVisible?: boolean;
   recentDocuments?: string[];
   // Kept for one-time migration from the earlier light/dark selector.
   mermaidTheme?: "light" | "dark";

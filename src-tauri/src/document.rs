@@ -12,6 +12,7 @@ use comrak::{
 };
 use merman::{MermaidConfig, render::HeadlessRenderer};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use tauri::{AppHandle, Manager};
 use url::Url;
 
@@ -33,6 +34,191 @@ pub enum MermaidTheme {
     NeoDark,
     ReduxDark,
     ReduxDarkColor,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ColorTheme {
+    #[default]
+    Default,
+    Solarized,
+    Nord,
+    Gruvbox,
+    Catppuccin,
+}
+
+struct MermaidPalette {
+    canvas: &'static str,
+    surface: &'static str,
+    surface_alt: &'static str,
+    surface_muted: &'static str,
+    text: &'static str,
+    subtle_text: &'static str,
+    border: &'static str,
+    line: &'static str,
+    accent: &'static str,
+    success: &'static str,
+    warning: &'static str,
+    error: &'static str,
+    series: [&'static str; 5],
+}
+
+impl ColorTheme {
+    fn palette(self, appearance: &'static str) -> MermaidPalette {
+        let dark = appearance == "dark";
+        match (self, dark) {
+            (Self::Solarized, false) => MermaidPalette {
+                canvas: "#fdf6e3",
+                surface: "#fffaf0",
+                surface_alt: "#eee8d5",
+                surface_muted: "#f4eddb",
+                text: "#586e75",
+                subtle_text: "#839496",
+                border: "#c9c1aa",
+                line: "#657b83",
+                accent: "#268bd2",
+                success: "#859900",
+                warning: "#b58900",
+                error: "#dc322f",
+                series: ["#268bd2", "#2aa198", "#859900", "#b58900", "#d33682"],
+            },
+            (Self::Solarized, true) => MermaidPalette {
+                canvas: "#002b36",
+                surface: "#073642",
+                surface_alt: "#0a3b47",
+                surface_muted: "#124955",
+                text: "#93a1a1",
+                subtle_text: "#657b83",
+                border: "#33626b",
+                line: "#839496",
+                accent: "#2aa198",
+                success: "#859900",
+                warning: "#b58900",
+                error: "#dc6b65",
+                series: ["#2aa198", "#268bd2", "#859900", "#b58900", "#d33682"],
+            },
+            (Self::Nord, false) => MermaidPalette {
+                canvas: "#f8fafc",
+                surface: "#ffffff",
+                surface_alt: "#e5e9f0",
+                surface_muted: "#e9edf3",
+                text: "#2e3440",
+                subtle_text: "#4c566a",
+                border: "#c2cad6",
+                line: "#5e81ac",
+                accent: "#5e81ac",
+                success: "#a35f82",
+                warning: "#8f6f3f",
+                error: "#bf616a",
+                series: ["#5e81ac", "#88c0d0", "#a3be8c", "#b48ead", "#bf616a"],
+            },
+            (Self::Nord, true) => MermaidPalette {
+                canvas: "#2e3440",
+                surface: "#3b4252",
+                surface_alt: "#434c5e",
+                surface_muted: "#343c4a",
+                text: "#eceff4",
+                subtle_text: "#a8b2c2",
+                border: "#5d6980",
+                line: "#88c0d0",
+                accent: "#88c0d0",
+                success: "#a3be8c",
+                warning: "#ebcb8b",
+                error: "#e5969c",
+                series: ["#88c0d0", "#81a1c1", "#a3be8c", "#b48ead", "#d08770"],
+            },
+            (Self::Gruvbox, false) => MermaidPalette {
+                canvas: "#fbf1c7",
+                surface: "#fff7d7",
+                surface_alt: "#f2e5bc",
+                surface_muted: "#f5e9bf",
+                text: "#3c3836",
+                subtle_text: "#928374",
+                border: "#cdbd90",
+                line: "#665c54",
+                accent: "#458588",
+                success: "#79740e",
+                warning: "#b57614",
+                error: "#9d0006",
+                series: ["#458588", "#79740e", "#b57614", "#8f3f71", "#cc241d"],
+            },
+            (Self::Gruvbox, true) => MermaidPalette {
+                canvas: "#282828",
+                surface: "#3c3836",
+                surface_alt: "#45403d",
+                surface_muted: "#32302f",
+                text: "#ebdbb2",
+                subtle_text: "#a89984",
+                border: "#665c54",
+                line: "#d5c4a1",
+                accent: "#83a598",
+                success: "#b8bb26",
+                warning: "#fabd2f",
+                error: "#fb8077",
+                series: ["#83a598", "#b8bb26", "#fabd2f", "#d3869b", "#fb4934"],
+            },
+            (Self::Catppuccin, false) => MermaidPalette {
+                canvas: "#f8f9fc",
+                surface: "#ffffff",
+                surface_alt: "#e6e9ef",
+                surface_muted: "#e9ebf1",
+                text: "#4c4f69",
+                subtle_text: "#8c8fa1",
+                border: "#bcc0cc",
+                line: "#5c5f77",
+                accent: "#1e66f5",
+                success: "#40a02b",
+                warning: "#df8e1d",
+                error: "#d20f39",
+                series: ["#1e66f5", "#40a02b", "#8839ef", "#fe640b", "#d20f39"],
+            },
+            (Self::Catppuccin, true) => MermaidPalette {
+                canvas: "#1e1e2e",
+                surface: "#252538",
+                surface_alt: "#2a2a3f",
+                surface_muted: "#242438",
+                text: "#cdd6f4",
+                subtle_text: "#9399b2",
+                border: "#4a4d6b",
+                line: "#bac2de",
+                accent: "#89b4fa",
+                success: "#a6e3a1",
+                warning: "#f9e2af",
+                error: "#f38ba8",
+                series: ["#89b4fa", "#a6e3a1", "#cba6f7", "#fab387", "#f38ba8"],
+            },
+            (Self::Default, false) => MermaidPalette {
+                canvas: "#fbfcfd",
+                surface: "#ffffff",
+                surface_alt: "#e5e9ee",
+                surface_muted: "#f1f3f5",
+                text: "#20242a",
+                subtle_text: "#5c6470",
+                border: "#c7cdd5",
+                line: "#5c6470",
+                accent: "#2878c8",
+                success: "#0a6a2b",
+                warning: "#953800",
+                error: "#b83f48",
+                series: ["#2878c8", "#0a6a2b", "#8250df", "#953800", "#b83f48"],
+            },
+            (Self::Default, true) => MermaidPalette {
+                canvas: "#1e2024",
+                surface: "#2d3036",
+                surface_alt: "#34383f",
+                surface_muted: "#24272c",
+                text: "#e7e9ec",
+                subtle_text: "#858d98",
+                border: "#484d56",
+                line: "#b1b7c0",
+                accent: "#65a8e8",
+                success: "#c3e88d",
+                warning: "#e8bf80",
+                error: "#f1848b",
+                series: ["#65a8e8", "#c3e88d", "#c792ea", "#89ddff", "#f1848b"],
+            },
+        }
+    }
 }
 
 impl MermaidTheme {
@@ -59,8 +245,77 @@ impl MermaidTheme {
         }
     }
 
-    fn config(self) -> MermaidConfig {
-        MermaidConfig::from_value(serde_json::json!({ "theme": self.as_str() }))
+    fn config(self, color_theme: ColorTheme) -> MermaidConfig {
+        let palette = color_theme.palette(self.appearance());
+        let mut variables = Map::new();
+        for (name, color) in [
+            ("background", palette.canvas),
+            ("mainBkg", palette.surface),
+            ("primaryColor", palette.surface),
+            ("primaryTextColor", palette.text),
+            ("primaryBorderColor", palette.border),
+            ("secondaryColor", palette.surface_alt),
+            ("secondaryTextColor", palette.text),
+            ("secondaryBorderColor", palette.border),
+            ("tertiaryColor", palette.surface_muted),
+            ("tertiaryTextColor", palette.text),
+            ("tertiaryBorderColor", palette.border),
+            ("textColor", palette.text),
+            ("nodeTextColor", palette.text),
+            ("nodeBorder", palette.border),
+            ("lineColor", palette.line),
+            ("edgeLabelBackground", palette.canvas),
+            ("clusterBkg", palette.surface_muted),
+            ("clusterBorder", palette.border),
+            ("noteBkgColor", palette.surface_alt),
+            ("noteBorderColor", palette.accent),
+            ("noteTextColor", palette.text),
+            ("actorBkg", palette.surface),
+            ("actorBorder", palette.border),
+            ("actorTextColor", palette.text),
+            ("activationBkgColor", palette.surface_alt),
+            ("activationBorderColor", palette.accent),
+            ("signalColor", palette.line),
+            ("signalTextColor", palette.text),
+            ("labelTextColor", palette.text),
+            ("labelBoxBkgColor", palette.surface),
+            ("labelBoxBorderColor", palette.border),
+            ("labelColor", palette.text),
+            ("classText", palette.text),
+            ("stateBkg", palette.surface),
+            ("stateBorder", palette.border),
+            ("stateLabelColor", palette.text),
+            ("transitionColor", palette.line),
+            ("transitionLabelColor", palette.text),
+            ("errorBkgColor", palette.error),
+            ("errorTextColor", palette.text),
+            ("taskTextOutsideColor", palette.subtle_text),
+            ("taskTextColor", palette.text),
+            ("taskBkgColor", palette.surface),
+            ("taskBorderColor", palette.border),
+            ("doneTaskBkgColor", palette.success),
+            ("doneTaskBorderColor", palette.success),
+            ("critBkgColor", palette.error),
+            ("critBorderColor", palette.error),
+            ("todayLineColor", palette.warning),
+            ("vertLineColor", palette.warning),
+        ] {
+            variables.insert(name.to_string(), Value::String(color.to_string()));
+        }
+        for (index, color) in palette.series.into_iter().enumerate() {
+            variables.insert(format!("cScale{index}"), Value::String(color.to_string()));
+            variables.insert(format!("git{index}"), Value::String(color.to_string()));
+            variables.insert(
+                format!("pie{}", index + 1),
+                Value::String(color.to_string()),
+            );
+        }
+
+        MermaidConfig::from_value(serde_json::json!({
+            "theme": self.as_str(),
+            "darkMode": self.appearance() == "dark",
+            "themeVariables": variables,
+        }))
     }
 }
 
@@ -135,10 +390,11 @@ pub fn load_documents(
     app: AppHandle,
     paths: Vec<String>,
     mermaid_theme: MermaidTheme,
+    color_theme: ColorTheme,
 ) -> Vec<DocumentLoadResult> {
     paths
         .iter()
-        .map(|path| authorize_assets(&app, load_document_data(path, mermaid_theme)))
+        .map(|path| authorize_assets(&app, load_document_data(path, mermaid_theme, color_theme)))
         .collect()
 }
 
@@ -147,8 +403,9 @@ pub fn reload_document(
     app: AppHandle,
     path: String,
     mermaid_theme: MermaidTheme,
+    color_theme: ColorTheme,
 ) -> DocumentLoadResult {
-    authorize_assets(&app, load_document_data(&path, mermaid_theme))
+    authorize_assets(&app, load_document_data(&path, mermaid_theme, color_theme))
 }
 
 #[tauri::command]
@@ -191,7 +448,11 @@ fn authorize_assets(app: &AppHandle, mut result: DocumentLoadResult) -> Document
     result
 }
 
-fn load_document_data(requested_path: &str, mermaid_theme: MermaidTheme) -> DocumentLoadResult {
+fn load_document_data(
+    requested_path: &str,
+    mermaid_theme: MermaidTheme,
+    color_theme: ColorTheme,
+) -> DocumentLoadResult {
     let canonical_path = match fs::canonicalize(requested_path) {
         Ok(path) => path,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -254,7 +515,7 @@ fn load_document_data(requested_path: &str, mermaid_theme: MermaidTheme) -> Docu
         }
     };
 
-    let rendered = match render_markdown(&source, &canonical_path, mermaid_theme) {
+    let rendered = match render_markdown(&source, &canonical_path, mermaid_theme, color_theme) {
         Ok(rendered) => rendered,
         Err(error) => {
             return DocumentLoadResult::error(
@@ -303,6 +564,7 @@ fn render_markdown(
     source: &str,
     document_path: &Path,
     mermaid_theme: MermaidTheme,
+    color_theme: ColorTheme,
 ) -> Result<RenderedMarkdown, String> {
     let arena = Arena::new();
     let mut options = Options::default();
@@ -320,7 +582,7 @@ fn render_markdown(
     let mut image_assets = Vec::new();
     let mut mermaid_replacements = Vec::new();
     let renderer = HeadlessRenderer::new()
-        .with_site_config(mermaid_theme.config())
+        .with_site_config(mermaid_theme.config(color_theme))
         .with_vendored_text_measurer();
     let document_id = document_id(document_path);
 
@@ -542,11 +804,30 @@ mod tests {
     }
 
     #[test]
+    fn derives_mermaid_theme_variables_from_the_selected_app_palette() {
+        let light = MermaidTheme::Default.config(ColorTheme::Solarized);
+        assert_eq!(
+            light.as_value()["themeVariables"]["primaryColor"],
+            "#fffaf0"
+        );
+        assert_eq!(light.as_value()["themeVariables"]["lineColor"], "#657b83");
+
+        let dark = MermaidTheme::Dark.config(ColorTheme::Catppuccin);
+        assert_eq!(dark.as_value()["darkMode"], true);
+        assert_eq!(dark.as_value()["themeVariables"]["primaryColor"], "#252538");
+        assert_eq!(
+            dark.as_value()["themeVariables"]["actorTextColor"],
+            "#cdd6f4"
+        );
+    }
+
+    #[test]
     fn renders_gfm_and_heading_anchors() {
         let rendered = render_markdown(
             "# Heading\n\n~~gone~~\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\n- [x] done",
             Path::new("/tmp/readme.md"),
             MermaidTheme::Default,
+            ColorTheme::Default,
         )
         .unwrap();
 
@@ -563,6 +844,7 @@ mod tests {
             "```rust\nfn main() { println!(\"hello\"); }\n```\n\n```json\n{\"enabled\": true, \"count\": 2}\n```\n\n```yaml\nname: MarkMaid\nenabled: true\n```\n\n```lua\nlocal enabled = true\n```",
             Path::new("/tmp/highlighted.md"),
             MermaidTheme::Default,
+            ColorTheme::Default,
         )
         .unwrap();
 
@@ -585,6 +867,7 @@ mod tests {
             "```unknown-language\n<script>alert('no')</script>\n```\n\n```\nplain <value>\n```",
             Path::new("/tmp/plain-code.md"),
             MermaidTheme::Default,
+            ColorTheme::Default,
         )
         .unwrap();
 
@@ -601,6 +884,7 @@ mod tests {
             "<script>alert('no')</script>\n\n[bad](javascript:alert(1))",
             Path::new("/tmp/readme.md"),
             MermaidTheme::Default,
+            ColorTheme::Default,
         )
         .unwrap();
 
@@ -626,6 +910,7 @@ mod tests {
             "![alt](../assets/image%20one.png)",
             &document,
             MermaidTheme::Default,
+            ColorTheme::Default,
         )
         .unwrap();
 
@@ -649,7 +934,13 @@ mod tests {
 
         let results = [valid, invalid, unsupported]
             .iter()
-            .map(|path| load_document_data(path.to_str().unwrap(), MermaidTheme::Default))
+            .map(|path| {
+                load_document_data(
+                    path.to_str().unwrap(),
+                    MermaidTheme::Default,
+                    ColorTheme::Default,
+                )
+            })
             .collect::<Vec<_>>();
 
         assert!(matches!(results[0], DocumentLoadResult::Ready { .. }));
@@ -669,12 +960,15 @@ mod tests {
             "# Diagram\n\n```mermaid\nflowchart TD\n  A --> B\n```\n",
             Path::new("/tmp/diagram.md"),
             MermaidTheme::Default,
+            ColorTheme::Solarized,
         )
         .unwrap();
 
         assert!(rendered.html.contains("<figure class=\"mermaid-figure\""));
         assert!(rendered.html.contains("data-mermaid-theme=\"light\""));
         assert!(rendered.html.contains("<svg"));
+        assert!(rendered.html.contains("#fffaf0"));
+        assert!(rendered.html.contains("#657b83"));
         assert!(rendered.html.contains("mermaid-show-source"));
         assert!(rendered.html.contains("mermaid-source-template"));
         assert!(rendered.html.contains("data-lucide=\"maximize-2\""));
@@ -691,6 +985,7 @@ mod tests {
             "Before\n\n```mermaid\nthis is not a diagram\n```\n\nAfter",
             Path::new("/tmp/diagram.md"),
             MermaidTheme::Dark,
+            ColorTheme::Default,
         )
         .unwrap();
 
@@ -710,6 +1005,7 @@ mod tests {
             "```mermaid\nflowchart TD\n  A[Open]\n  click A \"javascript:alert(1)\"\n```",
             Path::new("/tmp/diagram.md"),
             MermaidTheme::Default,
+            ColorTheme::Default,
         )
         .unwrap();
 
@@ -728,6 +1024,7 @@ mod tests {
             "```mermaid\nflowchart TD\n  A[<unsafe>] --> B[& value]\n```",
             Path::new("/tmp/diagram.md"),
             MermaidTheme::Default,
+            ColorTheme::Default,
         )
         .unwrap();
 

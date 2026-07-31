@@ -1,6 +1,7 @@
 import type {
   AppState,
   AppTab,
+  ColorTheme,
   CodeFont,
   DocumentLoadResult,
   DocumentTab,
@@ -26,13 +27,16 @@ export const DEFAULT_STATE: AppState = {
   tabs: [],
   activeTabKey: null,
   theme: "system",
-  tabPlacement: "top",
+  colorTheme: "default",
+  tabPlacement: "left",
   sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
+  leftSidebarVisible: true,
   mermaidLightTheme: "default",
   mermaidDarkTheme: "dark",
   textFont: "",
   codeFont: "",
   pageWidth: "default",
+  tableOfContentsVisible: false,
   recentDocuments: [],
 };
 
@@ -215,13 +219,16 @@ export function setPreferences(
   state: AppState,
   preferences: {
     theme?: ThemeMode;
+    colorTheme?: ColorTheme;
     tabPlacement?: TabPlacement;
     sidebarWidth?: number;
+    leftSidebarVisible?: boolean;
     mermaidLightTheme?: MermaidLightTheme;
     mermaidDarkTheme?: MermaidDarkTheme;
     textFont?: TextFont;
     codeFont?: CodeFont;
     pageWidth?: PageWidth;
+    tableOfContentsVisible?: boolean;
   },
 ): AppState {
   const next = { ...state, ...preferences };
@@ -262,13 +269,16 @@ export function toPersistedSession(state: AppState): PersistedSessionV1 {
     ),
     activeTabKey: state.activeTabKey,
     theme: state.theme,
+    colorTheme: state.colorTheme,
     tabPlacement: state.tabPlacement,
     sidebarWidth: clampSidebarWidth(state.sidebarWidth),
+    leftSidebarVisible: state.leftSidebarVisible,
     mermaidLightTheme: state.mermaidLightTheme,
     mermaidDarkTheme: state.mermaidDarkTheme,
     textFont: state.textFont,
     codeFont: state.codeFont,
     pageWidth: state.pageWidth,
+    tableOfContentsVisible: state.tableOfContentsVisible,
     recentDocuments: state.recentDocuments,
   };
 }
@@ -283,12 +293,19 @@ export function fromPersistedSession(value: unknown): AppState {
     ),
     activeTabKey: value.activeTabKey,
     theme: value.theme,
+    colorTheme: isColorTheme(value.colorTheme)
+      ? value.colorTheme
+      : DEFAULT_STATE.colorTheme,
     tabPlacement: value.tabPlacement,
     sidebarWidth: clampSidebarWidth(
       typeof value.sidebarWidth === "number"
         ? value.sidebarWidth
         : DEFAULT_SIDEBAR_WIDTH,
     ),
+    leftSidebarVisible:
+      typeof value.leftSidebarVisible === "boolean"
+        ? value.leftSidebarVisible
+        : DEFAULT_STATE.leftSidebarVisible,
     mermaidLightTheme: isMermaidLightTheme(value.mermaidLightTheme)
       ? value.mermaidLightTheme
       : DEFAULT_STATE.mermaidLightTheme,
@@ -304,12 +321,22 @@ export function fromPersistedSession(value: unknown): AppState {
     pageWidth: isPageWidth(value.pageWidth)
       ? value.pageWidth
       : DEFAULT_STATE.pageWidth,
+    tableOfContentsVisible:
+      typeof value.tableOfContentsVisible === "boolean"
+        ? value.tableOfContentsVisible
+        : DEFAULT_STATE.tableOfContentsVisible,
     recentDocuments: normalizeRecentDocuments(value.recentDocuments),
   };
 }
 
 function isMermaidLightTheme(value: unknown): value is MermaidLightTheme {
   return ["default", "base", "forest", "neutral", "neo", "redux", "redux-color"].includes(
+    value as string,
+  );
+}
+
+function isColorTheme(value: unknown): value is ColorTheme {
+  return ["default", "solarized", "nord", "gruvbox", "catppuccin"].includes(
     value as string,
   );
 }

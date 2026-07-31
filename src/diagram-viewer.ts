@@ -114,23 +114,13 @@ function openDiagramViewer(
 
   activeViewer?.close();
 
-  const viewerTheme =
-    theme === "light"
-      ? {
-          overlay: "bg-chrome text-app-text",
-          control:
-            "border-app-border bg-surface-raised text-app-text hover:bg-surface-hover",
-          select: "border-app-border bg-surface-raised text-app-text",
-          hint: "text-app-secondary",
-        }
-      : {
-          overlay: "bg-[rgb(18_20_24_/_72%)] text-white",
-          control:
-            "border-[rgb(255_255_255_/_14%)] bg-[rgb(255_255_255_/_10%)] text-[rgb(255_255_255_/_88%)] hover:bg-[rgb(255_255_255_/_18%)]",
-          select:
-            "border-[rgb(255_255_255_/_14%)] bg-[rgb(255_255_255_/_14%)] text-[rgb(255_255_255_/_94%)]",
-          hint: "text-[rgb(255_255_255_/_78%)]",
-        };
+  const viewerTheme = {
+    overlay: "bg-chrome text-app-text",
+    control:
+      "border-app-border bg-surface-raised text-app-text hover:bg-surface-hover",
+    select: "border-app-border bg-surface-raised text-app-text",
+    hint: "text-app-secondary",
+  };
 
   const overlay = document.createElement("div");
   overlay.className = `mermaid-viewer fixed inset-x-0 top-[38px] bottom-0 z-40 overflow-hidden backdrop-blur-[18px] backdrop-saturate-[120%] ${viewerTheme.overlay}`;

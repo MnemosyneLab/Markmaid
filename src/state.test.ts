@@ -95,13 +95,16 @@ describe("tab state", () => {
     let state = addDocumentResults(
       baseState({
         theme: "dark",
+        colorTheme: "nord",
         tabPlacement: "left",
         sidebarWidth: 300,
+        leftSidebarVisible: false,
         mermaidLightTheme: "forest",
         mermaidDarkTheme: "redux-dark-color",
         textFont: "Georgia, Songti SC, serif",
         codeFont: "Menlo, Monaco, monospace",
         pageWidth: "wide",
+        tableOfContentsVisible: true,
       }),
       [ready("/one.md")],
     );
@@ -111,13 +114,16 @@ describe("tab state", () => {
 
     const restored = fromPersistedSession(toPersistedSession(state));
     expect(restored.theme).toBe("dark");
+    expect(restored.colorTheme).toBe("nord");
     expect(restored.tabPlacement).toBe("left");
     expect(restored.sidebarWidth).toBe(300);
+    expect(restored.leftSidebarVisible).toBe(false);
     expect(restored.mermaidLightTheme).toBe("forest");
     expect(restored.mermaidDarkTheme).toBe("redux-dark-color");
     expect(restored.textFont).toBe("Georgia, Songti SC, serif");
     expect(restored.codeFont).toBe("Menlo, Monaco, monospace");
     expect(restored.pageWidth).toBe("wide");
+    expect(restored.tableOfContentsVisible).toBe(true);
     expect(restored.recentDocuments).toEqual([]);
     expect(restored.tabs.map((item) => item.kind)).toEqual([
       "document",
@@ -127,6 +133,16 @@ describe("tab state", () => {
   });
 
   it("defaults missing sidebar width and clamps invalid values", () => {
+    expect(DEFAULT_STATE.tabPlacement).toBe("left");
+    expect(
+      fromPersistedSession({
+        version: 1,
+        tabs: [],
+        activeTabKey: null,
+        theme: "system",
+        tabPlacement: "top",
+      }).colorTheme,
+    ).toBe("default");
     expect(
       fromPersistedSession({
         version: 1,
@@ -136,6 +152,15 @@ describe("tab state", () => {
         tabPlacement: "top",
       }).sidebarWidth,
     ).toBe(DEFAULT_SIDEBAR_WIDTH);
+    expect(
+      fromPersistedSession({
+        version: 1,
+        tabs: [],
+        activeTabKey: null,
+        theme: "system",
+        tabPlacement: "top",
+      }).leftSidebarVisible,
+    ).toBe(true);
     expect(
       fromPersistedSession({
         version: 1,
@@ -181,6 +206,15 @@ describe("tab state", () => {
         tabPlacement: "top",
       }).pageWidth,
     ).toBe("default");
+    expect(
+      fromPersistedSession({
+        version: 1,
+        tabs: [],
+        activeTabKey: null,
+        theme: "system",
+        tabPlacement: "top",
+      }).tableOfContentsVisible,
+    ).toBe(false);
 
     expect(
       setPreferences(baseState(), { sidebarWidth: 90 }).sidebarWidth,

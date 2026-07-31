@@ -6,6 +6,10 @@ import {
   FolderOpen,
   Image,
   Maximize2,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
   Settings,
   X,
   ZoomIn,
@@ -21,6 +25,10 @@ const ICONS = {
   FolderOpen,
   Image,
   Maximize2,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
   Settings,
   X,
   ZoomIn,
@@ -35,6 +43,10 @@ export type IconName =
   | "folder-open"
   | "image"
   | "maximize-2"
+  | "panel-left-close"
+  | "panel-left-open"
+  | "panel-right-close"
+  | "panel-right-open"
   | "settings"
   | "x"
   | "zoom-in"
