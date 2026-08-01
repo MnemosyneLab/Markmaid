@@ -36,6 +36,7 @@ export interface ReadyDocumentResult {
   requestedPath: string;
   canonicalPath: string;
   displayName: string;
+  source: string;
   html: string;
   modifiedAtMs: number;
   imageAssets: ImageAsset[];

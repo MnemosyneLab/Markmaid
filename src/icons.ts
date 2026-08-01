@@ -1,5 +1,6 @@
 import {
   ChevronDown,
+  ChevronUp,
   Code2,
   Copy,
   Download,
@@ -10,6 +11,7 @@ import {
   PanelLeftOpen,
   PanelRightClose,
   PanelRightOpen,
+  Search,
   Settings,
   X,
   ZoomIn,
@@ -19,6 +21,7 @@ import {
 
 const ICONS = {
   ChevronDown,
+  ChevronUp,
   Code2,
   Copy,
   Download,
@@ -29,6 +32,7 @@ const ICONS = {
   PanelLeftOpen,
   PanelRightClose,
   PanelRightOpen,
+  Search,
   Settings,
   X,
   ZoomIn,
@@ -37,6 +41,7 @@ const ICONS = {
 
 export type IconName =
   | "chevron-down"
+  | "chevron-up"
   | "code-2"
   | "copy"
   | "download"
@@ -47,6 +52,7 @@ export type IconName =
   | "panel-left-open"
   | "panel-right-close"
   | "panel-right-open"
+  | "search"
   | "settings"
   | "x"
   | "zoom-in"

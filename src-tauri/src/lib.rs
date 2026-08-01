@@ -5,7 +5,9 @@ use std::{
     sync::Mutex,
 };
 
-use document::{export_svg, is_markdown_path, load_documents, reload_document};
+use document::{
+    export_svg, highlight_code_chunk, is_markdown_path, load_documents, reload_document,
+};
 use tauri::{
     AppHandle, Emitter, Manager, RunEvent, State,
     menu::{Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder},
@@ -287,6 +289,7 @@ pub fn run() {
             load_documents,
             reload_document,
             export_svg,
+            highlight_code_chunk,
             take_pending_open_paths,
             sync_recent_documents
         ]);

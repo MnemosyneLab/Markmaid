@@ -11,7 +11,9 @@ import {
   DEFAULT_STATE,
   fromPersistedSession,
   loadingTab,
+  moveTab,
   openSettings,
+  replaceDocumentResult,
   setPreferences,
   toPersistedSession,
 } from "./state";
@@ -25,6 +27,7 @@ const ready = (
   requestedPath,
   canonicalPath,
   displayName: canonicalPath.split("/").at(-1) ?? canonicalPath,
+  source: "# Ready",
   html: "<h1>Ready</h1>",
   modifiedAtMs: 1,
   imageAssets: [],
@@ -89,6 +92,45 @@ describe("tab state", () => {
     expect(cycleTab(state, 1).activeTabKey).toBe("document:/one.md");
     state = cycleTab(state, -1);
     expect(state.activeTabKey).toBe("document:/one.md");
+  });
+
+  it("moves tabs before or after another tab without changing the active tab", () => {
+    let state = addDocumentResults(baseState(), [ready("/one.md"), ready("/two.md")]);
+    state = openSettings(state);
+    state = { ...state, activeTabKey: "document:/one.md" };
+
+    state = moveTab(state, "settings", "document:/one.md", false);
+    expect(state.tabs.map((tab) => tab.key)).toEqual([
+      "settings",
+      "document:/one.md",
+      "document:/two.md",
+    ]);
+    expect(state.activeTabKey).toBe("document:/one.md");
+
+    state = moveTab(state, "document:/one.md", "document:/two.md", true);
+    expect(state.tabs.map((tab) => tab.key)).toEqual([
+      "settings",
+      "document:/two.md",
+      "document:/one.md",
+    ]);
+  });
+
+  it("hydrates one deferred document without selecting it", () => {
+    const state = baseState({
+      tabs: [loadingTab("/one.md"), loadingTab("/two.md")],
+      activeTabKey: "document:/one.md",
+    });
+    const hydrated = replaceDocumentResult(
+      state,
+      "document:/two.md",
+      ready("/two.md"),
+    );
+
+    expect(hydrated.activeTabKey).toBe("document:/one.md");
+    expect(hydrated.tabs[1]).toMatchObject({
+      key: "document:/two.md",
+      status: "ready",
+    });
   });
 
   it("round-trips session preferences, tab order, and scroll positions", () => {

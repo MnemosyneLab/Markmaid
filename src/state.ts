@@ -159,6 +159,24 @@ export function hydrateRestoredTabs(
   });
 }
 
+export function replaceDocumentResult(
+  state: AppState,
+  key: string,
+  result: DocumentLoadResult,
+): AppState {
+  const current = state.tabs.find(
+    (tab): tab is DocumentTab => tab.kind === "document" && tab.key === key,
+  );
+  if (!current) return state;
+  const replacement = tabFromResult(result, current.scrollTop);
+  return deduplicateDocuments({
+    ...state,
+    tabs: state.tabs.map((tab) => (tab.key === key ? replacement : tab)),
+    activeTabKey:
+      state.activeTabKey === key ? replacement.key : state.activeTabKey,
+  });
+}
+
 export function openSettings(state: AppState): AppState {
   const existing = state.tabs.find(
     (tab): tab is SettingsTab => tab.kind === "settings",
@@ -198,6 +216,25 @@ export function cycleTab(state: AppState, direction: 1 | -1): AppState {
   const nextIndex =
     (currentIndex + direction + state.tabs.length) % state.tabs.length;
   return { ...state, activeTabKey: state.tabs[nextIndex].key };
+}
+
+export function moveTab(
+  state: AppState,
+  key: string,
+  targetKey: string,
+  placeAfter: boolean,
+): AppState {
+  if (key === targetKey) return state;
+  const movingIndex = state.tabs.findIndex((tab) => tab.key === key);
+  if (movingIndex < 0) return state;
+
+  const tabs = [...state.tabs];
+  const [moving] = tabs.splice(movingIndex, 1);
+  if (!moving) return state;
+  const targetIndex = tabs.findIndex((tab) => tab.key === targetKey);
+  if (targetIndex < 0) return state;
+  tabs.splice(targetIndex + Number(placeAfter), 0, moving);
+  return { ...state, tabs };
 }
 
 export function updateScroll(

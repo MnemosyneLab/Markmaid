@@ -1,3 +1,5 @@
+import { invoke } from "@tauri-apps/api/core";
+
 import { icon, renderIcons } from "./icons";
 
 export interface CodeBlockEnhancement {
@@ -9,6 +11,7 @@ export interface CodeBlockEnhancement {
 export interface EnhanceCodeBlockOptions {
   language?: string;
   embedded?: boolean;
+  copyValue?: string;
 }
 
 export function languageFromClassNames(
@@ -25,7 +28,15 @@ export function languageFromClassNames(
 export function enhanceCodeBlocks(root: ParentNode): void {
   root.querySelectorAll<HTMLElement>("pre > code").forEach((code) => {
     const pre = code.parentElement;
-    if (pre instanceof HTMLPreElement) enhanceCodeBlock(pre);
+    if (!(pre instanceof HTMLPreElement)) return;
+    const deferred = pre.closest<HTMLElement>(".code-block-deferred");
+    const source = deferred?.querySelector<HTMLTemplateElement>(
+      ".code-source-template",
+    )?.content.textContent;
+    const enhancement = enhanceCodeBlock(pre, { copyValue: source ?? undefined });
+    if (deferred && enhancement && source !== undefined) {
+      enhanceDeferredCodeBlock(deferred, enhancement.code, source);
+    }
   });
 }
 
@@ -60,7 +71,9 @@ export function enhanceCodeBlock(
   copyButton.title = "Copy code";
   copyButton.setAttribute("aria-label", "Copy code");
   copyButton.innerHTML = icon("copy");
-  copyButton.addEventListener("click", () => void copyCode(code, copyButton));
+  copyButton.addEventListener("click", () =>
+    void copyCode(options.copyValue ?? code.textContent ?? "", copyButton),
+  );
 
   toolbar.append(copyButton);
   frame.append(toolbar, pre);
@@ -91,10 +104,10 @@ export async function copyText(value: string): Promise<boolean> {
 }
 
 async function copyCode(
-  code: HTMLElement,
+  value: string,
   button: HTMLButtonElement,
 ): Promise<void> {
-  const copied = await copyText(code.textContent ?? "");
+  const copied = await copyText(value);
   if (!copied) return;
 
   const original = button.innerHTML;
@@ -108,6 +121,63 @@ async function copyCode(
     button.title = "Copy code";
     button.setAttribute("aria-label", "Copy code");
   }, 1200);
+}
+
+function enhanceDeferredCodeBlock(
+  frame: HTMLElement,
+  code: HTMLElement,
+  source: string,
+): void {
+  const expand = frame.querySelector<HTMLButtonElement>("[data-code-expand]");
+  const totalLines = Number(frame.dataset.codeTotalLines ?? 0);
+  let loadedLines = Number(frame.dataset.codeLoadedLines ?? 0);
+  if (!expand || !Number.isFinite(totalLines) || !Number.isFinite(loadedLines)) return;
+
+  const lines = source.endsWith("\n")
+    ? source.slice(0, -1).split("\n")
+    : source.split("\n");
+  const updateExpandButton = (): void => {
+    const remaining = lines.length - loadedLines;
+    if (remaining <= 0) {
+      expand.remove();
+      return;
+    }
+    const count = Math.min(200, remaining);
+    expand.innerHTML = `Show ${count} more lines${icon("chevron-down")}`;
+    expand.setAttribute("aria-label", `Show ${count} more lines`);
+    renderIcons(expand);
+  };
+
+  expand.addEventListener("click", async () => {
+    if (expand.disabled) return;
+    const chunk = lines.slice(loadedLines, loadedLines + 200).join("\n");
+    if (!chunk) return;
+    const trailingNewline =
+      loadedLines + 200 < lines.length || source.endsWith("\n") ? "\n" : "";
+    expand.disabled = true;
+    try {
+      const highlighted = await invokeHighlightedChunk(
+        languageFromClassNames(code.classList),
+        `${chunk}${trailingNewline}`,
+      );
+      const template = document.createElement("template");
+      template.innerHTML = highlighted;
+      code.append(template.content);
+      loadedLines += Math.min(200, lines.length - loadedLines);
+      frame.dataset.codeLoadedLines = String(loadedLines);
+      updateExpandButton();
+    } finally {
+      if (expand.isConnected) expand.disabled = false;
+    }
+  });
+  updateExpandButton();
+}
+
+async function invokeHighlightedChunk(
+  language: string,
+  source: string,
+): Promise<string> {
+  return invoke<string>("highlight_code_chunk", { language, source });
 }
 
 function escapeHtml(value: string): string {

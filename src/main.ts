@@ -19,9 +19,10 @@ import {
   DEFAULT_SIDEBAR_WIDTH,
   DEFAULT_STATE,
   fromPersistedSession,
-  hydrateRestoredTabs,
   loadingTab,
+  moveTab,
   openSettings,
+  replaceDocumentResult,
   setPreferences,
   tabFromResult,
   toPersistedSession,
@@ -194,9 +195,34 @@ let sidebarResizeSession: {
 } | null = null;
 let tabContextMenu: HTMLElement | null = null;
 let dismissTabContextMenuListener: (() => void) | null = null;
+let tabDragSession: {
+  key: string;
+  pointerId: number;
+  startX: number;
+  startY: number;
+  dragging: boolean;
+  dropTarget: { key: string; placeAfter: boolean } | null;
+  element: HTMLElement;
+} | null = null;
+let suppressTabClickKey: string | null = null;
+let suppressTabClickUntil = 0;
+let suppressNativeDropUntil = 0;
+const pendingDocumentLoads = new Set<string>();
+interface DocumentSearchMatch {
+  sourceIndex: number;
+  marks: HTMLElement[];
+}
+
+const documentSearch = {
+  visible: false,
+  query: "",
+  matches: [] as DocumentSearchMatch[],
+  activeIndex: -1,
+};
 const colorScheme = window.matchMedia("(prefers-color-scheme: dark)");
 
 void bootstrap();
+document.addEventListener("keydown", handleDocumentSearchShortcut);
 
 async function bootstrap(): Promise<void> {
   stateStore = await load("markmaid-state.json", { autoSave: 150 });
@@ -208,24 +234,7 @@ async function bootstrap(): Promise<void> {
   await registerNativeListeners();
   await syncRecentDocuments();
 
-  const restoredPaths = state.tabs
-    .filter(
-      (tab): tab is DocumentTab =>
-        tab.kind === "document" && tab.status === "loading",
-    )
-    .map((tab) => tab.requestedPath);
-
-  if (restoredPaths.length > 0) {
-    const results = await invoke<DocumentLoadResult[]>("load_documents", {
-      paths: restoredPaths,
-      mermaidTheme: activeMermaidTheme(),
-      colorTheme: state.colorTheme,
-    });
-    state = hydrateRestoredTabs(state, results);
-    applyTheme();
-    render();
-    schedulePersist();
-  }
+  await ensureDocumentLoaded(state.activeTabKey);
 
   const pendingPaths = await invoke<string[]>("take_pending_open_paths");
   if (pendingPaths.length > 0) {
@@ -249,6 +258,10 @@ async function registerNativeListeners(): Promise<void> {
       schedulePersist();
     }),
     getCurrentWebview().onDragDropEvent((event) => {
+      if (tabDragSession?.dragging || Date.now() < suppressNativeDropUntil) {
+        root.classList.remove("is-dragging");
+        return;
+      }
       if (event.payload.type === "over") {
         root.classList.add("is-dragging");
       } else if (event.payload.type === "drop") {
@@ -387,6 +400,7 @@ function closeActiveTab(): void {
   state = closeTab(state, state.activeTabKey);
   render();
   schedulePersist();
+  void ensureDocumentLoaded(state.activeTabKey);
 }
 
 function showSettings(): void {
@@ -401,6 +415,35 @@ function selectRelativeTab(direction: 1 | -1): void {
   state = cycleTab(state, direction);
   render();
   schedulePersist();
+  void ensureDocumentLoaded(state.activeTabKey);
+}
+
+async function ensureDocumentLoaded(key: string | null): Promise<void> {
+  if (!key || pendingDocumentLoads.has(key)) return;
+  const tab = state.tabs.find(
+    (candidate): candidate is DocumentTab =>
+      candidate.kind === "document" && candidate.key === key,
+  );
+  if (!tab || tab.status !== "loading") return;
+
+  pendingDocumentLoads.add(key);
+  try {
+    const [result] = await invoke<DocumentLoadResult[]>("load_documents", {
+      paths: [tab.requestedPath],
+      mermaidTheme: activeMermaidTheme(),
+      colorTheme: state.colorTheme,
+    });
+    const latest = state.tabs.find(
+      (candidate): candidate is DocumentTab =>
+        candidate.kind === "document" && candidate.key === key,
+    );
+    if (!result || !latest || latest.status !== "loading") return;
+    state = replaceDocumentResult(state, key, result);
+    render();
+    schedulePersist();
+  } finally {
+    pendingDocumentLoads.delete(key);
+  }
 }
 
 function captureActiveScroll(): void {
@@ -477,6 +520,7 @@ function render(): void {
           <span class="text-[13px] text-app-secondary">Each document opens in its own tab.</span>
         </div>
       </div>
+      ${documentSearch.visible ? renderDocumentSearch() : ""}
     </div>
   `;
 
@@ -485,7 +529,24 @@ function render(): void {
     root.querySelector<HTMLElement>("#content-stage"),
     current,
   );
+  bindDocumentSearch();
   renderIcons(root);
+  if (documentSearch.visible && documentSearch.query) {
+    requestAnimationFrame(() => refreshDocumentSearch(false));
+  }
+}
+
+function renderDocumentSearch(): string {
+  return `
+    <div class="document-search" role="search" aria-label="Find in document">
+      <i class="document-search-icon" data-lucide="search" aria-hidden="true"></i>
+      <input class="document-search-input" type="search" data-document-search-input value="${escapeAttribute(documentSearch.query)}" placeholder="Find in document" aria-label="Find in document" autocomplete="off" spellcheck="false">
+      <span class="document-search-count" data-search-count>0 of 0</span>
+      <button class="document-search-button" type="button" data-search-previous title="Previous match" aria-label="Previous match">${icon("chevron-up")}</button>
+      <button class="document-search-button" type="button" data-search-next title="Next match" aria-label="Next match">${icon("chevron-down")}</button>
+      <button class="document-search-button" type="button" data-search-close title="Close search" aria-label="Close search">${icon("x")}</button>
+    </div>
+  `;
 }
 
 function renderTabList(tabs: AppTab[]): string {
@@ -499,7 +560,7 @@ function renderTabList(tabs: AppTab[]): string {
           const loading =
             tab.kind === "document" && tab.status === "loading";
           return `
-            <div class="tab ${active ? "is-active" : ""}" role="presentation">
+            <div class="tab ${active ? "is-active" : ""}" role="presentation" data-drag-tab="${escapeAttribute(tab.key)}">
               <button
                 class="tab-select"
                 type="button"
@@ -527,11 +588,18 @@ function renderTabList(tabs: AppTab[]): string {
 
 function bindShellInteractions(): void {
   root.querySelectorAll<HTMLElement>("[data-tab-key]").forEach((element) => {
-    element.addEventListener("click", () => {
+    element.addEventListener("click", (event) => {
+      const key = element.dataset.tabKey ?? null;
+      if (key && key === suppressTabClickKey && Date.now() < suppressTabClickUntil) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
       captureActiveScroll();
-      state = { ...state, activeTabKey: element.dataset.tabKey ?? null };
+      state = { ...state, activeTabKey: key };
       render();
       schedulePersist();
+      void ensureDocumentLoaded(state.activeTabKey);
     });
   });
 
@@ -544,6 +612,8 @@ function bindShellInteractions(): void {
       schedulePersist();
     });
   });
+
+  bindTabReordering();
 
   root
     .querySelector<HTMLElement>('[data-action="open"]')
@@ -587,6 +657,151 @@ function bindShellInteractions(): void {
   });
 
   bindSidebarResize();
+}
+
+function bindTabReordering(): void {
+  root.querySelectorAll<HTMLElement>("[data-drag-tab]").forEach((tabElement) => {
+    tabElement.addEventListener("pointerdown", (event) => {
+      const key = tabElement.dataset.dragTab;
+      if (
+        !key ||
+        event.button !== 0 ||
+        (event.target as Element).closest("[data-close-tab]")
+      ) {
+        return;
+      }
+      tabDragSession = {
+        key,
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        dragging: false,
+        dropTarget: null,
+        element: tabElement,
+      };
+    });
+
+    tabElement.addEventListener("pointermove", (event) => {
+      const session = tabDragSession;
+      if (!session || event.pointerId !== session.pointerId) return;
+      if ((event.buttons & 1) === 0) {
+        finishTabPointerDrag(event, true);
+        return;
+      }
+
+      if (!session.dragging) {
+        const distance = Math.hypot(
+          event.clientX - session.startX,
+          event.clientY - session.startY,
+        );
+        if (distance < 4) return;
+        session.dragging = true;
+        session.element.setPointerCapture(event.pointerId);
+        suppressNativeDropUntil = Date.now() + 300;
+        session.element.classList.add("is-dragging");
+        document.documentElement.classList.add("is-reordering-tabs");
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      const list = session.element.closest<HTMLElement>(".tab-list");
+      const target = list
+        ? resolveTabDropTarget(list, event.clientX, event.clientY)
+        : null;
+      session.dropTarget = target?.key === session.key ? null : target;
+      clearTabDropIndicators();
+      if (session.dropTarget) {
+        setTabDropIndicator(
+          session.dropTarget.key,
+          session.dropTarget.placeAfter,
+        );
+      }
+    });
+    tabElement.addEventListener("pointerup", (event) =>
+      finishTabPointerDrag(event, false),
+    );
+    tabElement.addEventListener("pointercancel", (event) =>
+      finishTabPointerDrag(event, true),
+    );
+  });
+}
+
+function resolveTabDropTarget(
+  list: HTMLElement,
+  clientX: number,
+  clientY: number,
+): { key: string; placeAfter: boolean } | null {
+  const listBounds = list.getBoundingClientRect();
+  if (
+    clientX < listBounds.left ||
+    clientX > listBounds.right ||
+    clientY < listBounds.top ||
+    clientY > listBounds.bottom
+  ) {
+    return null;
+  }
+
+  const tabs = Array.from(
+    list.querySelectorAll<HTMLElement>("[data-drag-tab]"),
+  );
+  if (tabs.length === 0) return null;
+  const vertical = list.closest(".sidebar") !== null;
+  const coordinate = vertical ? clientY : clientX;
+
+  for (const tab of tabs) {
+    const bounds = tab.getBoundingClientRect();
+    const midpoint = vertical
+      ? bounds.top + bounds.height / 2
+      : bounds.left + bounds.width / 2;
+    if (coordinate < midpoint) {
+      const key = tab.dataset.dragTab;
+      return key ? { key, placeAfter: false } : null;
+    }
+  }
+
+  const lastKey = tabs.at(-1)?.dataset.dragTab;
+  return lastKey ? { key: lastKey, placeAfter: true } : null;
+}
+
+function setTabDropIndicator(key: string, placeAfter: boolean): void {
+  const tab = Array.from(
+    root.querySelectorAll<HTMLElement>("[data-drag-tab]"),
+  ).find((candidate) => candidate.dataset.dragTab === key);
+  if (!tab) return;
+  tab.classList.add(placeAfter ? "is-drop-after" : "is-drop-before");
+}
+
+function clearTabDropIndicators(): void {
+  root
+    .querySelectorAll<HTMLElement>(".tab.is-drop-before, .tab.is-drop-after")
+    .forEach((element) => element.classList.remove("is-drop-before", "is-drop-after"));
+}
+
+function finishTabPointerDrag(event: PointerEvent, cancelled: boolean): void {
+  const session = tabDragSession;
+  if (!session || event.pointerId !== session.pointerId) return;
+
+  if (session.element.hasPointerCapture(event.pointerId)) {
+    session.element.releasePointerCapture(event.pointerId);
+  }
+  if (session.dragging) {
+    event.preventDefault();
+    event.stopPropagation();
+    suppressTabClickKey = session.key;
+    suppressTabClickUntil = Date.now() + 300;
+    suppressNativeDropUntil = suppressTabClickUntil;
+  }
+
+  const dropTarget = cancelled ? null : session.dropTarget;
+  tabDragSession = null;
+  document.documentElement.classList.remove("is-reordering-tabs");
+  session.element.classList.remove("is-dragging");
+  clearTabDropIndicators();
+
+  if (!session.dragging || !dropTarget) return;
+  state = moveTab(state, session.key, dropTarget.key, dropTarget.placeAfter);
+  render();
+  schedulePersist();
 }
 
 function showTabContextMenu(event: MouseEvent, tabKey: string): void {
@@ -672,6 +887,201 @@ function dismissTabContextMenu(): void {
   tabContextMenu = null;
   dismissTabContextMenuListener?.();
   dismissTabContextMenuListener = null;
+}
+
+function handleDocumentSearchShortcut(event: KeyboardEvent): void {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+    event.preventDefault();
+    openDocumentSearch();
+    return;
+  }
+  if (event.key === "Escape" && documentSearch.visible) {
+    event.preventDefault();
+    closeDocumentSearch();
+    return;
+  }
+  if (
+    event.key === "Enter" &&
+    documentSearch.visible &&
+    document.activeElement?.matches("[data-document-search-input]")
+  ) {
+    event.preventDefault();
+    moveDocumentSearchMatch(event.shiftKey ? -1 : 1);
+  }
+}
+
+function openDocumentSearch(): void {
+  const current = activeTab(state);
+  if (current?.kind !== "document" || current.status !== "ready") return;
+  documentSearch.visible = true;
+  render();
+  requestAnimationFrame(() => {
+    const input = root.querySelector<HTMLInputElement>("[data-document-search-input]");
+    input?.focus();
+    input?.select();
+  });
+}
+
+function closeDocumentSearch(): void {
+  clearDocumentSearchHighlights();
+  documentSearch.visible = false;
+  documentSearch.matches = [];
+  documentSearch.activeIndex = -1;
+  render();
+}
+
+function bindDocumentSearch(): void {
+  const input = root.querySelector<HTMLInputElement>("[data-document-search-input]");
+  input?.addEventListener("input", () => {
+    documentSearch.query = input.value;
+    refreshDocumentSearch(true);
+  });
+  root
+    .querySelector<HTMLElement>("[data-search-previous]")
+    ?.addEventListener("click", () => moveDocumentSearchMatch(-1));
+  root
+    .querySelector<HTMLElement>("[data-search-next]")
+    ?.addEventListener("click", () => moveDocumentSearchMatch(1));
+  root
+    .querySelector<HTMLElement>("[data-search-close]")
+    ?.addEventListener("click", closeDocumentSearch);
+  updateDocumentSearchControls();
+}
+
+function refreshDocumentSearch(selectFirst: boolean): void {
+  clearDocumentSearchHighlights();
+  const query = documentSearch.query.trim();
+  if (!query) {
+    documentSearch.matches = [];
+    documentSearch.activeIndex = -1;
+    updateDocumentSearchControls();
+    return;
+  }
+  const current = activeTab(state);
+  if (current?.kind !== "document" || current.status !== "ready") return;
+
+  const sourceMatches = findSearchIndexes(current.source, query);
+  const article = root.querySelector<HTMLElement>(".markdown-body");
+  const visibleMatches = article
+    ? highlightVisibleSearchMatches(article, query)
+    : [];
+  documentSearch.matches = sourceMatches.map((sourceIndex, index) => ({
+    sourceIndex,
+    marks: visibleMatches[index] ?? [],
+  }));
+  documentSearch.activeIndex =
+    sourceMatches.length === 0
+      ? -1
+      : selectFirst
+        ? 0
+        : Math.max(
+            0,
+            Math.min(documentSearch.activeIndex, sourceMatches.length - 1),
+          );
+  activateDocumentSearchMatch(false);
+}
+
+function findSearchIndexes(value: string, query: string): number[] {
+  const lowerValue = value.toLocaleLowerCase();
+  const lowerQuery = query.toLocaleLowerCase();
+  const indexes: number[] = [];
+  let start = 0;
+  while (start < lowerValue.length) {
+    const index = lowerValue.indexOf(lowerQuery, start);
+    if (index < 0) break;
+    indexes.push(index);
+    start = index + query.length;
+  }
+  return indexes;
+}
+
+function highlightVisibleSearchMatches(
+  article: HTMLElement,
+  query: string,
+): HTMLElement[][] {
+  const textNodes: Array<{ node: Text; start: number; end: number }> = [];
+  const walker = document.createTreeWalker(article, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const parent = node.parentElement;
+      if (!parent || parent.closest("script, style, template")) {
+        return NodeFilter.FILTER_REJECT;
+      }
+      return node.textContent?.trim()
+        ? NodeFilter.FILTER_ACCEPT
+        : NodeFilter.FILTER_REJECT;
+    },
+  });
+  let textLength = 0;
+  while (walker.nextNode()) {
+    const node = walker.currentNode as Text;
+    const text = node.textContent ?? "";
+    textNodes.push({ node, start: textLength, end: textLength + text.length });
+    textLength += text.length;
+  }
+
+  const visibleText = textNodes.map(({ node }) => node.textContent ?? "").join("");
+  const indexes = findSearchIndexes(visibleText, query);
+  const matches = indexes.map(() => [] as HTMLElement[]);
+
+  for (let matchIndex = indexes.length - 1; matchIndex >= 0; matchIndex -= 1) {
+    const matchStart = indexes[matchIndex];
+    const matchEnd = matchStart + query.length;
+    for (let nodeIndex = textNodes.length - 1; nodeIndex >= 0; nodeIndex -= 1) {
+      const segment = textNodes[nodeIndex];
+      if (segment.end <= matchStart || segment.start >= matchEnd) continue;
+      const start = Math.max(matchStart, segment.start) - segment.start;
+      const end = Math.min(matchEnd, segment.end) - segment.start;
+      const range = document.createRange();
+      range.setStart(segment.node, start);
+      range.setEnd(segment.node, end);
+      const mark = document.createElement("mark");
+      mark.className = "document-search-match";
+      range.surroundContents(mark);
+      matches[matchIndex].unshift(mark);
+    }
+  }
+  return matches;
+}
+
+function moveDocumentSearchMatch(direction: 1 | -1): void {
+  if (documentSearch.matches.length === 0) return;
+  documentSearch.activeIndex =
+    (documentSearch.activeIndex + direction + documentSearch.matches.length) %
+    documentSearch.matches.length;
+  activateDocumentSearchMatch(true);
+}
+
+function activateDocumentSearchMatch(scroll: boolean): void {
+  documentSearch.matches.forEach((match, index) => {
+    match.marks.forEach((mark) => {
+      mark.classList.toggle("is-active", index === documentSearch.activeIndex);
+    });
+  });
+  if (scroll && documentSearch.activeIndex >= 0) {
+    documentSearch.matches[documentSearch.activeIndex]?.marks[0]?.scrollIntoView({
+      block: "center",
+      inline: "nearest",
+    });
+  }
+  updateDocumentSearchControls();
+}
+
+function updateDocumentSearchControls(): void {
+  const count = root.querySelector<HTMLElement>("[data-search-count]");
+  if (!count) return;
+  const total = documentSearch.matches.length;
+  count.textContent = total === 0 ? "No results" : `${documentSearch.activeIndex + 1} of ${total}`;
+  root
+    .querySelectorAll<HTMLButtonElement>("[data-search-previous], [data-search-next]")
+    .forEach((button) => {
+      button.disabled = total === 0;
+    });
+}
+
+function clearDocumentSearchHighlights(): void {
+  root.querySelectorAll<HTMLElement>("mark.document-search-match").forEach((match) => {
+    match.replaceWith(document.createTextNode(match.textContent ?? ""));
+  });
 }
 
 function bindSidebarResize(): void {
@@ -1241,7 +1651,10 @@ async function rerenderDocumentsForMermaidTheme(
   colorTheme: ColorTheme = state.colorTheme,
 ): Promise<void> {
   const requests = state.tabs
-    .filter((tab): tab is DocumentTab => tab.kind === "document")
+    .filter(
+      (tab): tab is DocumentTab =>
+        tab.kind === "document" && tab.status !== "loading",
+    )
     .map((tab) => ({
       key: tab.key,
       path:

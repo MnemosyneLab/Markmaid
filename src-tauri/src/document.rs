@@ -6,6 +6,7 @@ use std::{
     time::UNIX_EPOCH,
 };
 
+use comrak::adapters::{CodefenceRendererAdapter, SyntaxHighlighterAdapter};
 use comrak::{
     Arena, Options, format_html_with_plugins, nodes::NodeValue, parse_document,
     plugins::syntect::SyntectAdapterBuilder,
@@ -13,11 +14,14 @@ use comrak::{
 use merman::{MermaidConfig, render::HeadlessRenderer};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::fmt;
 use tauri::{AppHandle, Manager};
 use url::Url;
 
 const MARKDOWN_EXTENSIONS: &[&str] = &["md", "markdown", "mdown", "mkd"];
 const MERMAID_PLACEHOLDER_LANGUAGE: &str = "markmaid-mermaid-placeholder";
+const LONG_CODE_PLACEHOLDER_LANGUAGE: &str = "markmaid-long-code-placeholder";
+const INITIAL_CODE_LINES: usize = 200;
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -335,6 +339,7 @@ pub enum DocumentLoadResult {
         requested_path: String,
         canonical_path: String,
         display_name: String,
+        source: String,
         html: String,
         modified_at_ms: u64,
         image_assets: Vec<ImageAsset>,
@@ -385,6 +390,50 @@ struct MermaidReplacement {
     html: String,
 }
 
+struct LongCodeBlock {
+    language: String,
+    source: String,
+    preview: String,
+    line_count: usize,
+}
+
+struct LongCodeRenderer<'a> {
+    blocks: &'a std::collections::HashMap<String, LongCodeBlock>,
+    highlighter: &'a dyn SyntaxHighlighterAdapter,
+}
+
+impl CodefenceRendererAdapter for LongCodeRenderer<'_> {
+    fn write(
+        &self,
+        output: &mut dyn fmt::Write,
+        _lang: &str,
+        _meta: &str,
+        code: &str,
+        _sourcepos: Option<comrak::nodes::Sourcepos>,
+    ) -> fmt::Result {
+        let Some(block) = self.blocks.get(code.trim_end()) else {
+            return output.write_str("<pre><code>Code preview unavailable.</code></pre>");
+        };
+        let mut highlighted = String::new();
+        self.highlighter.write_highlighted(
+            &mut highlighted,
+            Some(&block.language),
+            &block.preview,
+        )?;
+        write!(
+            output,
+            r#"<div class="code-block-deferred" data-code-loaded-lines="{}" data-code-total-lines="{}"><pre class="syntax-highlighting"><code class="language-{}">{}</code></pre><template class="code-source-template">{}</template><button class="code-expand" type="button" data-code-expand aria-label="Show {} more lines">Show {} more lines<i data-lucide="chevron-down"></i></button></div>"#,
+            INITIAL_CODE_LINES.min(block.line_count),
+            block.line_count,
+            escape_html(&block.language),
+            highlighted,
+            escape_html(&block.source),
+            INITIAL_CODE_LINES.min(block.line_count - INITIAL_CODE_LINES),
+            INITIAL_CODE_LINES.min(block.line_count - INITIAL_CODE_LINES),
+        )
+    }
+}
+
 #[tauri::command]
 pub fn load_documents(
     app: AppHandle,
@@ -406,6 +455,18 @@ pub fn reload_document(
     color_theme: ColorTheme,
 ) -> DocumentLoadResult {
     authorize_assets(&app, load_document_data(&path, mermaid_theme, color_theme))
+}
+
+#[tauri::command]
+pub fn highlight_code_chunk(language: String, source: String) -> Result<String, String> {
+    let highlighter = SyntectAdapterBuilder::new()
+        .css_with_class_prefix("syn-")
+        .build();
+    let mut html = String::new();
+    highlighter
+        .write_highlighted(&mut html, Some(&language), &source)
+        .map_err(|error| format!("Code highlighting failed: {error}"))?;
+    Ok(html)
 }
 
 #[tauri::command]
@@ -554,6 +615,7 @@ fn load_document_data(
         requested_path: requested_path.to_string(),
         canonical_path: path_to_string(&canonical_path),
         display_name,
+        source,
         html: rendered.html,
         modified_at_ms,
         image_assets: rendered.image_assets,
@@ -581,6 +643,7 @@ fn render_markdown(
     let root = parse_document(&arena, source, &options);
     let mut image_assets = Vec::new();
     let mut mermaid_replacements = Vec::new();
+    let mut long_code_blocks = std::collections::HashMap::new();
     let renderer = HeadlessRenderer::new()
         .with_site_config(mermaid_theme.config(color_theme))
         .with_vendored_text_measurer();
@@ -623,6 +686,28 @@ fn render_markdown(
                 block.literal.clone_from(&token);
                 mermaid_replacements.push(MermaidReplacement { token, html });
             }
+            NodeValue::CodeBlock(block) => {
+                let line_count = code_line_count(&block.literal);
+                if line_count <= INITIAL_CODE_LINES {
+                    continue;
+                }
+                let index = long_code_blocks.len();
+                let token = format!("MARKMAID_LONG_CODE_{document_id}_{index}");
+                let source = std::mem::take(&mut block.literal);
+                let language = code_language(&block.info);
+                let preview = first_code_lines(&source, INITIAL_CODE_LINES);
+                long_code_blocks.insert(
+                    token.clone(),
+                    LongCodeBlock {
+                        language,
+                        source,
+                        preview,
+                        line_count,
+                    },
+                );
+                block.info = LONG_CODE_PLACEHOLDER_LANGUAGE.to_string();
+                block.literal = token;
+            }
             _ => {}
         }
     }
@@ -632,6 +717,14 @@ fn render_markdown(
         .build();
     let mut plugins = comrak::options::Plugins::default();
     plugins.render.codefence_syntax_highlighter = Some(&syntax_highlighter);
+    let long_code_renderer = LongCodeRenderer {
+        blocks: &long_code_blocks,
+        highlighter: &syntax_highlighter,
+    };
+    plugins.render.codefence_renderers.insert(
+        LONG_CODE_PLACEHOLDER_LANGUAGE.to_string(),
+        &long_code_renderer,
+    );
 
     let mut html = String::new();
     format_html_with_plugins(root, &options, &mut html, &plugins)
@@ -647,6 +740,25 @@ fn is_mermaid_info(info: &str) -> bool {
     info.split_whitespace()
         .next()
         .is_some_and(|language| language.eq_ignore_ascii_case("mermaid"))
+}
+
+fn code_language(info: &str) -> String {
+    info.split_whitespace()
+        .next()
+        .filter(|language| !language.is_empty())
+        .unwrap_or("text")
+        .to_ascii_lowercase()
+}
+
+fn code_line_count(source: &str) -> usize {
+    source.lines().count()
+}
+
+fn first_code_lines(source: &str, line_count: usize) -> String {
+    source
+        .split_inclusive('\n')
+        .take(line_count)
+        .collect::<String>()
 }
 
 fn document_id(document_path: &Path) -> String {
@@ -862,6 +974,34 @@ mod tests {
     }
 
     #[test]
+    fn defers_large_code_blocks_after_the_first_two_hundred_lines() {
+        let source = (1..=201)
+            .map(|line| format!("let line_{line} = {line};"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let rendered = render_markdown(
+            &format!("```rust\n{source}\n```"),
+            Path::new("/tmp/large-code.md"),
+            MermaidTheme::Default,
+            ColorTheme::Default,
+        )
+        .unwrap();
+
+        assert!(rendered.html.contains("class=\"code-block-deferred\""));
+        assert!(rendered.html.contains("data-code-loaded-lines=\"200\""));
+        assert!(rendered.html.contains("data-code-total-lines=\"201\""));
+        assert!(rendered.html.contains("Show 1 more lines"));
+        assert!(
+            rendered
+                .html
+                .contains("<template class=\"code-source-template\"")
+        );
+        let preview = rendered.html.split("<template").next().unwrap();
+        assert!(preview.contains("line_200"));
+        assert!(!preview.contains("line_201"));
+    }
+
+    #[test]
     fn preserves_plain_text_and_escapes_code_fences_without_a_known_language() {
         let rendered = render_markdown(
             "```unknown-language\n<script>alert('no')</script>\n```\n\n```\nplain <value>\n```",
@@ -943,7 +1083,10 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        assert!(matches!(results[0], DocumentLoadResult::Ready { .. }));
+        assert!(matches!(
+            &results[0],
+            DocumentLoadResult::Ready { source, .. } if source == "# Valid"
+        ));
         assert!(matches!(
             &results[1],
             DocumentLoadResult::Error { code, .. } if code == "invalid_utf8"

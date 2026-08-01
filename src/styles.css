@@ -409,10 +409,46 @@ a:focus-visible {
 }
 
 .tab {
+  position: relative;
   min-width: 0;
   display: flex;
   align-items: center;
   color: var(--text-secondary);
+}
+
+.tab[data-drag-tab] {
+  cursor: default;
+  touch-action: none;
+}
+
+.tab.is-dragging {
+  opacity: 0.42;
+}
+
+html.is-reordering-tabs,
+html.is-reordering-tabs * {
+  cursor: grabbing !important;
+  user-select: none !important;
+}
+
+.tab.is-drop-before::before,
+.tab.is-drop-after::after {
+  position: absolute;
+  z-index: 4;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--accent-strong);
+  content: "";
+}
+
+.tab.is-drop-before::before {
+  left: -1px;
+}
+
+.tab.is-drop-after::after {
+  right: -1px;
 }
 
 .tab-strip .tab {
@@ -571,6 +607,24 @@ html.is-resizing-sidebar * {
   margin-right: 3px;
 }
 
+.sidebar .tab.is-drop-before::before,
+.sidebar .tab.is-drop-after::after {
+  right: 4px;
+  left: 4px;
+  width: auto;
+  height: 2px;
+}
+
+.sidebar .tab.is-drop-before::before {
+  top: -1px;
+  bottom: auto;
+}
+
+.sidebar .tab.is-drop-after::after {
+  top: auto;
+  bottom: -1px;
+}
+
 .skeleton-line {
   width: 100%;
   height: 14px;
@@ -617,6 +671,89 @@ html.is-resizing-sidebar * {
   overscroll-behavior: contain;
   scroll-padding-top: 88px;
   user-select: text;
+}
+
+.document-search {
+  position: fixed;
+  right: 18px;
+  bottom: 16px;
+  z-index: 20;
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 4px 3px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  color: var(--text-secondary);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow);
+}
+
+.document-search-icon {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+}
+
+.document-search-input {
+  width: 220px;
+  border: 0;
+  outline: 0;
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+}
+
+.document-search-input::placeholder {
+  color: var(--text-muted);
+}
+
+.document-search-count {
+  min-width: 58px;
+  padding: 0 5px;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.document-search-button {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  background: transparent;
+  cursor: default;
+}
+
+.document-search-button:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.document-search-button:disabled {
+  opacity: 0.4;
+}
+
+.document-search-button svg {
+  width: 15px;
+  height: 15px;
+  stroke-width: 2;
+}
+
+.markdown-body .document-search-match {
+  padding: 0;
+  border-radius: 2px;
+  color: inherit;
+  background: color-mix(in srgb, var(--accent) 34%, transparent);
+}
+
+.markdown-body .document-search-match.is-active {
+  background: color-mix(in srgb, var(--accent) 58%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--accent-strong) 75%, transparent);
 }
 
 .document-layout .document-scroll {
@@ -809,6 +946,47 @@ html.is-resizing-sidebar * {
 .markdown-body .code-block {
   position: relative;
   margin: 0 0 1.15em;
+}
+
+.markdown-body .code-block-deferred {
+  margin: 0 0 1.15em;
+}
+
+.markdown-body .code-block-deferred .code-block {
+  margin-bottom: 0;
+}
+
+.markdown-body .code-expand {
+  display: flex;
+  width: 100%;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-top: 0;
+  border-radius: 0 0 var(--radius) var(--radius);
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--code-surface) 82%, var(--surface-raised));
+  cursor: default;
+  font-size: 11px;
+  font-weight: 650;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.markdown-body .code-expand:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.markdown-body .code-expand:disabled {
+  opacity: 0.6;
+}
+
+.markdown-body .code-expand svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2;
 }
 
 .markdown-body .code-block pre {
