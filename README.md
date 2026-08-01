@@ -4,17 +4,21 @@ MarkMaid is a focused, read-only Markdown reader for macOS. It opens local
 documents as tabs, renders GFM with Rust, and restores the reading session the
 next time the app starts.
 
-The MVP includes:
+Features include:
 
 - GFM tables, task lists, autolinks, strikethrough, and heading anchors
-- Multiple document tabs plus a singleton Settings tab
-- Top or left tab placement and system, light, or dark themes
+- Native Rust Mermaid-to-SVG preview with configurable themes and fullscreen zoom
+- Syntax-highlighted code blocks with copy, download, and progressive large-block expansion
+- Document outline navigation and source-aware in-document search
+- Multiple reorderable document tabs plus a singleton Settings tab
+- Top or left tab placement, resizable left rail, and tab context actions
+- System, light, and dark appearance with multiple color palettes
+- Configurable text font, code font, and reading width
 - Finder file associations, multi-select Open, drag and drop, and single-instance
   file forwarding
-- Session, scroll position, and window-state restoration
+- Lazy session restoration with persisted scroll positions and window state
 - Local and HTTPS images with per-file Tauri asset authorization
 - Manual reload that preserves the previous preview when reloading fails
-- Native Rust Mermaid-to-SVG preview with light/dark themes and fullscreen zoom
 
 Mermaid fenced code blocks are compiled to SVG by
 [Merman](https://github.com/Latias94/merman) while the document is loaded.

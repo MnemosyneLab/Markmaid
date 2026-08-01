@@ -2,6 +2,27 @@
 
 All notable changes to MarkMaid are documented in this file.
 
+## [0.1.1] - 2026-08-01
+
+### Added
+
+- Native Rust Mermaid-to-SVG rendering with configurable light and dark themes
+- Fullscreen Mermaid viewer with zoom and pan controls
+- Syntax highlighting, code copy/download actions, and progressive expansion for large code blocks
+- Document outline navigation and source-aware in-document search
+- Color palettes, typography controls, page-width preferences, and a resizable left tab rail
+- Tab context actions and drag-to-reorder support for top and left tab layouts
+
+### Changed
+
+- Restored sessions load the active document first and defer background documents until selected
+- Refined the title bar, tab chrome, Markdown typography, and code-block presentation
+
+### Fixed
+
+- Load the adjacent restored document after closing the active tab from the tab button or context menu
+- Keep tab reordering compatible with native file drag and drop without breaking normal tab selection
+
 ## [0.1.0] - 2026-07-30
 
 ### Added
@@ -16,4 +37,5 @@ All notable changes to MarkMaid are documented in this file.
 - Manual reload that preserves the previous preview when reloading fails
 - Local release tooling for version sync, ARM builds, and GitHub Releases
 
+[0.1.1]: https://github.com/Weichen-LF/Markmaid/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Weichen-LF/Markmaid/releases/tag/v0.1.0

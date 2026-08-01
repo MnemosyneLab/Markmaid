@@ -84,6 +84,21 @@ describe("tab state", () => {
     expect(state.activeTabKey).toBe("document:/two.md");
   });
 
+  it("selects an adjacent deferred document when the active tab closes", () => {
+    const state = baseState({
+      tabs: [loadingTab("/one.md"), loadingTab("/two.md")],
+      activeTabKey: "document:/one.md",
+    });
+
+    const closed = closeTab(state, "document:/one.md");
+
+    expect(closed.activeTabKey).toBe("document:/two.md");
+    expect(closed.tabs[0]).toMatchObject({
+      key: "document:/two.md",
+      status: "loading",
+    });
+  });
+
   it("cycles tabs in both directions", () => {
     let state = addDocumentResults(baseState(), [
       ready("/one.md"),

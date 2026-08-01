@@ -396,8 +396,12 @@ async function reloadActiveDocument(): Promise<void> {
 
 function closeActiveTab(): void {
   if (!state.activeTabKey) return;
+  closeTabAndLoadNext(state.activeTabKey);
+}
+
+function closeTabAndLoadNext(key: string): void {
   captureActiveScroll();
-  state = closeTab(state, state.activeTabKey);
+  state = closeTab(state, key);
   render();
   schedulePersist();
   void ensureDocumentLoaded(state.activeTabKey);
@@ -606,10 +610,7 @@ function bindShellInteractions(): void {
   root.querySelectorAll<HTMLElement>("[data-close-tab]").forEach((element) => {
     element.addEventListener("click", (event) => {
       event.stopPropagation();
-      captureActiveScroll();
-      state = closeTab(state, element.dataset.closeTab ?? "");
-      render();
-      schedulePersist();
+      closeTabAndLoadNext(element.dataset.closeTab ?? "");
     });
   });
 
@@ -839,10 +840,7 @@ function showTabContextMenu(event: MouseEvent, tabKey: string): void {
   };
 
   addAction("Close", () => {
-    captureActiveScroll();
-    state = closeTab(state, tabKey);
-    render();
-    schedulePersist();
+    closeTabAndLoadNext(tabKey);
   });
 
   if (tab.kind === "document") {
