@@ -6,19 +6,19 @@ All notable changes to MarkMaid are documented in this file.
 
 ### Added
 
-- External file-change and availability alerts with explicit Reload and Ignore actions
+- External-change alerts on window focus and tab activation, with explicit Reload and Ignore actions (continuous file watching remains deferred)
 - Quick Open (`⌘P`) for switching between open tabs and recent documents
-- Source-position metadata for Markdown blocks, Mermaid diagrams, and deferred code blocks
+- Find in Document (`⌘F`) overlay with match count, previous/next navigation, and Enter / Shift+Enter cycling
 
 ### Changed
 
-- Keep Markdown source as the search authority while mapping results to their rendered source blocks
+- Keep Markdown source as the Find authority and map hits onto rendered blocks via source-position metadata
 - Disambiguate same-named document tabs and Open Recent entries with the shortest useful parent path
 
 ### Fixed
 
-- Avoid pairing source search results with unrelated rendered-text matches when Markdown formatting changes the visible text
-- Highlight and navigate search results inside syntax-highlighted and deferred code blocks, expanding hidden chunks when needed
+- Avoid pairing source Find results with unrelated rendered-text matches when Markdown formatting changes the visible text
+- Highlight and navigate Find results inside syntax-highlighted and deferred code blocks, expanding hidden chunks when needed
 
 ## [0.1.1] - 2026-08-01
 

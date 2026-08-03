@@ -36,6 +36,16 @@ This synchronizes the version in:
 - `src-tauri/Cargo.toml`
 - `src-tauri/Cargo.lock`
 
+Before committing, refresh the user-facing docs for that version:
+
+- Add a dated section in `CHANGELOG.md` and keep the compare links at the bottom
+  accurate (`vPREV...vNEW`).
+- Update `README.md` feature bullets, keyboard shortcuts, and any behavior notes
+  so they match the menus and overlays in `src-tauri/src/lib.rs` and
+  `src/main.ts`.
+- Confirm the README Install section still describes the current signing /
+  quarantine expectation.
+
 Review, commit, and push the version change before continuing. The publishing
 script refuses to operate from a dirty working tree, detached HEAD, branch
 without an upstream, or commit that has not been pushed to that upstream.
@@ -79,6 +89,12 @@ pnpm release:publish -- --dry-run
 
 This verifies the clean Git state, synchronized versions, artifact names, and
 checksums without creating a tag or contacting GitHub.
+
+Also confirm:
+
+- `CHANGELOG.md` has a section for the version being published.
+- `README.md` features and shortcuts still match the shipped menus and overlays.
+- `node scripts/version.mjs --check <version>` reports synchronized versions.
 
 ## 4. Publish the GitHub Release
 

@@ -9,22 +9,25 @@ Features include:
 - GFM tables, task lists, autolinks, strikethrough, and heading anchors
 - Native Rust Mermaid-to-SVG preview with configurable themes and fullscreen zoom
 - Syntax-highlighted code blocks with copy, download, and progressive large-block expansion
-- Document outline navigation and source-position-aware in-document search
-- Multiple reorderable document tabs plus a singleton Settings tab
-- Top or left tab placement, resizable left rail, and tab context actions
+- Document outline navigation and source-backed in-document Find (`⌘F`)
 - Quick Open (`⌘P`) across open tabs and recent documents
+- Multiple reorderable document tabs plus a singleton Settings tab
+- Same-named tabs and Open Recent entries disambiguated with the shortest useful parent path
+- Top or left tab placement, resizable left rail, and tab context actions
 - System, light, and dark appearance with multiple color palettes
 - Configurable text font, code font, and reading width
 - Finder file associations, multi-select Open, drag and drop, and single-instance
   file forwarding
 - Lazy session restoration with persisted scroll positions and window state
 - Local and HTTPS images with per-file Tauri asset authorization
-- External-change alerts with explicit Reload or Ignore actions
+- External-change alerts on window focus and tab activation, with Reload or Ignore
 - Manual reload that preserves the previous preview when reloading fails
 
 Mermaid fenced code blocks are compiled to SVG by
 [Merman](https://github.com/Latias94/merman) while the document is loaded.
-Automatic file watching is intentionally deferred.
+MarkMaid does not watch the filesystem continuously; on window focus and tab
+activation it probes the active file and offers Reload or Ignore when the file
+changed or became unavailable.
 
 ## Install
 
@@ -40,6 +43,22 @@ xattr -cr /Applications/MarkMaid.app
 
 If you open the `.app` from a DMG or an extracted ZIP without copying it first,
 run the same command against that `.app` path instead.
+
+## Keyboard shortcuts
+
+| Shortcut | Action |
+| --- | --- |
+| `⌘O` | Open Markdown files |
+| `⌘P` | Quick Open (open tabs and recent documents) |
+| `⌘F` | Find in the current document |
+| `⌘R` | Reload the current document |
+| `⌘W` | Close the current tab |
+| `⌘,` | Open Settings |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous tab |
+
+In Find: `Enter` / `Shift+Enter` cycle matches; `Esc` closes the bar. Matches in
+collapsed code blocks expand when you navigate to them. In Quick Open: `↑` /
+`↓` move, `Enter` opens, `Esc` closes.
 
 ## Requirements
 
@@ -74,6 +93,8 @@ local Apple Silicon Mac; this repository does not require GitHub Actions.
 
 - `src/main.ts`: Tauri event wiring and read-only preview UI
 - `src/state.ts`: tab and persisted-session state model
+- `src/search.ts`: source-backed in-document Find matching
+- `src/freshness.ts`: external-change probe and Reload / Ignore state
 - `src-tauri/src/document.rs`: validated file loading and GFM rendering
 - `src-tauri/src/lib.rs`: menus, plugins, single-instance, and macOS open events
 - `src-tauri/capabilities/`: Tauri permission capabilities
