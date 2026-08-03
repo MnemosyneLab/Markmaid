@@ -9,15 +9,17 @@ Features include:
 - GFM tables, task lists, autolinks, strikethrough, and heading anchors
 - Native Rust Mermaid-to-SVG preview with configurable themes and fullscreen zoom
 - Syntax-highlighted code blocks with copy, download, and progressive large-block expansion
-- Document outline navigation and source-aware in-document search
+- Document outline navigation and source-position-aware in-document search
 - Multiple reorderable document tabs plus a singleton Settings tab
 - Top or left tab placement, resizable left rail, and tab context actions
+- Quick Open (`⌘P`) across open tabs and recent documents
 - System, light, and dark appearance with multiple color palettes
 - Configurable text font, code font, and reading width
 - Finder file associations, multi-select Open, drag and drop, and single-instance
   file forwarding
 - Lazy session restoration with persisted scroll positions and window state
 - Local and HTTPS images with per-file Tauri asset authorization
+- External-change alerts with explicit Reload or Ignore actions
 - Manual reload that preserves the previous preview when reloading fails
 
 Mermaid fenced code blocks are compiled to SVG by

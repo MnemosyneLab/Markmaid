@@ -30,6 +30,7 @@ const ready = (
   source: "# Ready",
   html: "<h1>Ready</h1>",
   modifiedAtMs: 1,
+  sizeBytes: 7,
   imageAssets: [],
 });
 

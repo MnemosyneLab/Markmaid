@@ -39,6 +39,7 @@ export interface ReadyDocumentResult {
   source: string;
   html: string;
   modifiedAtMs: number;
+  sizeBytes: number;
   imageAssets: ImageAsset[];
 }
 

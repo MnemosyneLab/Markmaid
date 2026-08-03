@@ -2,6 +2,24 @@
 
 All notable changes to MarkMaid are documented in this file.
 
+## [0.1.2] - 2026-08-03
+
+### Added
+
+- External file-change and availability alerts with explicit Reload and Ignore actions
+- Quick Open (`⌘P`) for switching between open tabs and recent documents
+- Source-position metadata for Markdown blocks, Mermaid diagrams, and deferred code blocks
+
+### Changed
+
+- Keep Markdown source as the search authority while mapping results to their rendered source blocks
+- Disambiguate same-named document tabs and Open Recent entries with the shortest useful parent path
+
+### Fixed
+
+- Avoid pairing source search results with unrelated rendered-text matches when Markdown formatting changes the visible text
+- Highlight and navigate search results inside syntax-highlighted and deferred code blocks, expanding hidden chunks when needed
+
 ## [0.1.1] - 2026-08-01
 
 ### Added
@@ -37,5 +55,6 @@ All notable changes to MarkMaid are documented in this file.
 - Manual reload that preserves the previous preview when reloading fails
 - Local release tooling for version sync, ARM builds, and GitHub Releases
 
+[0.1.2]: https://github.com/Weichen-LF/Markmaid/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/Weichen-LF/Markmaid/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Weichen-LF/Markmaid/releases/tag/v0.1.0

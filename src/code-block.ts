@@ -14,6 +14,30 @@ export interface EnhanceCodeBlockOptions {
   copyValue?: string;
 }
 
+interface DeferredCodeController {
+  revealLine: (line: number) => Promise<void>;
+}
+
+const deferredCodeControllers = new WeakMap<HTMLElement, DeferredCodeController>();
+
+export function nextDeferredLoadedLine(
+  loadedLines: number,
+  targetLine: number,
+  totalLines: number,
+): number {
+  return Math.min(totalLines, loadedLines + 200, targetLine);
+}
+
+export async function revealDeferredCodeLine(
+  frame: HTMLElement,
+  line: number,
+): Promise<boolean> {
+  const controller = deferredCodeControllers.get(frame);
+  if (!controller) return false;
+  await controller.revealLine(line);
+  return true;
+}
+
 export function languageFromClassNames(
   classNames: Iterable<string>,
 ): string {
@@ -136,6 +160,7 @@ function enhanceDeferredCodeBlock(
   const lines = source.endsWith("\n")
     ? source.slice(0, -1).split("\n")
     : source.split("\n");
+  let loadQueue = Promise.resolve();
   const updateExpandButton = (): void => {
     const remaining = lines.length - loadedLines;
     if (remaining <= 0) {
@@ -148,24 +173,41 @@ function enhanceDeferredCodeBlock(
     renderIcons(expand);
   };
 
+  const revealLine = (line: number): Promise<void> => {
+    const targetLine = Math.min(lines.length, Math.max(loadedLines, line));
+    const task = loadQueue.then(async () => {
+      while (loadedLines < targetLine) {
+        const nextLoadedLines = nextDeferredLoadedLine(
+          loadedLines,
+          targetLine,
+          lines.length,
+        );
+        const chunk = lines.slice(loadedLines, nextLoadedLines).join("\n");
+        if (!chunk) return;
+        const trailingNewline =
+          nextLoadedLines < lines.length || source.endsWith("\n") ? "\n" : "";
+        const highlighted = await invokeHighlightedChunk(
+          languageFromClassNames(code.classList),
+          `${chunk}${trailingNewline}`,
+        );
+        const template = document.createElement("template");
+        template.innerHTML = highlighted;
+        code.append(template.content);
+        loadedLines = nextLoadedLines;
+        frame.dataset.codeLoadedLines = String(loadedLines);
+        updateExpandButton();
+      }
+    });
+    loadQueue = task.catch(() => undefined);
+    return task;
+  };
+  deferredCodeControllers.set(frame, { revealLine });
+
   expand.addEventListener("click", async () => {
     if (expand.disabled) return;
-    const chunk = lines.slice(loadedLines, loadedLines + 200).join("\n");
-    if (!chunk) return;
-    const trailingNewline =
-      loadedLines + 200 < lines.length || source.endsWith("\n") ? "\n" : "";
     expand.disabled = true;
     try {
-      const highlighted = await invokeHighlightedChunk(
-        languageFromClassNames(code.classList),
-        `${chunk}${trailingNewline}`,
-      );
-      const template = document.createElement("template");
-      template.innerHTML = highlighted;
-      code.append(template.content);
-      loadedLines += Math.min(200, lines.length - loadedLines);
-      frame.dataset.codeLoadedLines = String(loadedLines);
-      updateExpandButton();
+      await revealLine(loadedLines + 200);
     } finally {
       if (expand.isConnected) expand.disabled = false;
     }

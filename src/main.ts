@@ -1,13 +1,33 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openPath, openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { load, type Store } from "@tauri-apps/plugin-store";
 
-import { copyText, enhanceCodeBlocks } from "./code-block";
+import {
+  copyText,
+  enhanceCodeBlocks,
+  revealDeferredCodeLine,
+} from "./code-block";
 import { enhanceDiagramViewers } from "./diagram-viewer";
 import { icon, renderIcons } from "./icons";
+import {
+  matchesRevisionBaseline,
+  noticeForRevision,
+  revisionBaseline,
+  type DocumentRevisionResult,
+  type ExternalChangeNotice,
+} from "./freshness";
+import {
+  codeMatchLocation,
+  findSourceMatches,
+  findSourceposBlock,
+  parseSourcepos,
+  shouldIncludeSearchText,
+  type SourceMatch,
+} from "./search";
 import {
   activeTab,
   addDocumentResults,
@@ -28,6 +48,12 @@ import {
   toPersistedSession,
   updateScroll,
 } from "./state";
+import {
+  buildQuickSwitcherItems,
+  disambiguatedTabLabels,
+  type QuickSwitcherItem,
+  shouldSuppressTabClick,
+} from "./ui-logic";
 import "./styles.css";
 import type {
   AppState,
@@ -46,6 +72,7 @@ import type {
 
 const OPEN_FILES_EVENT = "markmaid://open-files";
 const MENU_OPEN_EVENT = "markmaid://menu-open";
+const MENU_QUICK_OPEN_EVENT = "markmaid://menu-quick-open";
 const MENU_CLOSE_TAB_EVENT = "markmaid://menu-close-tab";
 const MENU_RELOAD_EVENT = "markmaid://menu-reload";
 const MENU_SETTINGS_EVENT = "markmaid://menu-settings";
@@ -208,9 +235,16 @@ let suppressTabClickKey: string | null = null;
 let suppressTabClickUntil = 0;
 let suppressNativeDropUntil = 0;
 const pendingDocumentLoads = new Set<string>();
+const pendingFreshnessChecks = new Set<string>();
+const lastFreshnessCheckAt = new Map<string, number>();
+const externalChangeNotices = new Map<string, ExternalChangeNotice>();
+const ignoredExternalChangeSignatures = new Map<string, string>();
 interface DocumentSearchMatch {
   sourceIndex: number;
   marks: HTMLElement[];
+  target: HTMLElement | null;
+  codeLine: number | null;
+  codeVisible: boolean;
 }
 
 const documentSearch = {
@@ -219,6 +253,12 @@ const documentSearch = {
   matches: [] as DocumentSearchMatch[],
   activeIndex: -1,
 };
+const quickSwitcher = {
+  visible: false,
+  query: "",
+  activeIndex: 0,
+};
+let documentSearchRevealSequence = 0;
 const colorScheme = window.matchMedia("(prefers-color-scheme: dark)");
 
 void bootstrap();
@@ -248,6 +288,7 @@ async function registerNativeListeners(): Promise<void> {
       void openDocumentPaths(event.payload);
     }),
     listen(MENU_OPEN_EVENT, () => void chooseDocuments()),
+    listen(MENU_QUICK_OPEN_EVENT, openQuickSwitcher),
     listen(MENU_CLOSE_TAB_EVENT, () => closeActiveTab()),
     listen(MENU_RELOAD_EVENT, () => void reloadActiveDocument()),
     listen(MENU_SETTINGS_EVENT, () => showSettings()),
@@ -256,6 +297,9 @@ async function registerNativeListeners(): Promise<void> {
     listen(MENU_CLEAR_RECENT_EVENT, () => {
       state = clearRecentDocuments(state);
       schedulePersist();
+    }),
+    getCurrentWindow().onFocusChanged((event) => {
+      if (event.payload) void checkActiveDocumentFreshness();
     }),
     getCurrentWebview().onDragDropEvent((event) => {
       if (tabDragSession?.dragging || Date.now() < suppressNativeDropUntil) {
@@ -381,6 +425,8 @@ async function reloadActiveDocument(): Promise<void> {
       ),
     };
   } else {
+    externalChangeNotices.delete(current.key);
+    ignoredExternalChangeSignatures.delete(current.key);
     const replacement = tabFromResult(result, current.scrollTop);
     state = {
       ...state,
@@ -394,6 +440,79 @@ async function reloadActiveDocument(): Promise<void> {
   schedulePersist();
 }
 
+async function checkActiveDocumentFreshness(): Promise<void> {
+  const current = activeTab(state);
+  if (!current || current.kind !== "document" || current.status !== "ready") return;
+
+  const now = Date.now();
+  if (
+    pendingFreshnessChecks.has(current.key) ||
+    now - (lastFreshnessCheckAt.get(current.key) ?? 0) < 1_000
+  ) {
+    return;
+  }
+  pendingFreshnessChecks.add(current.key);
+  lastFreshnessCheckAt.set(current.key, now);
+  const baseline = revisionBaseline(current);
+
+  try {
+    const [result] = await invoke<DocumentRevisionResult[]>(
+      "check_document_revisions",
+      {
+        documents: [
+          {
+            path: baseline.path,
+            modifiedAtMs: baseline.modifiedAtMs,
+            sizeBytes: baseline.sizeBytes,
+          },
+        ],
+      },
+    );
+    if (!result) return;
+    const latest = state.tabs.find(
+      (tab): tab is ReadyDocumentTab =>
+        tab.kind === "document" &&
+        tab.status === "ready" &&
+        tab.key === baseline.key,
+    );
+    if (!latest || !matchesRevisionBaseline(latest, baseline)) return;
+
+    const previous = externalChangeNotices.get(latest.key) ?? null;
+    if (result.status === "unchanged") {
+      externalChangeNotices.delete(latest.key);
+      ignoredExternalChangeSignatures.delete(latest.key);
+    } else {
+      const notice = noticeForRevision(
+        result,
+        ignoredExternalChangeSignatures.get(latest.key) ?? null,
+      );
+      if (notice) externalChangeNotices.set(latest.key, notice);
+      else externalChangeNotices.delete(latest.key);
+    }
+    const next = externalChangeNotices.get(latest.key) ?? null;
+    if (
+      latest.key === state.activeTabKey &&
+      (previous?.signature !== next?.signature || previous?.message !== next?.message)
+    ) {
+      render();
+    }
+  } catch {
+    // A metadata probe is advisory; normal reload remains available if it fails.
+  } finally {
+    pendingFreshnessChecks.delete(current.key);
+  }
+}
+
+function ignoreActiveExternalChange(): void {
+  const current = activeTab(state);
+  if (!current || current.kind !== "document") return;
+  const notice = externalChangeNotices.get(current.key);
+  if (!notice) return;
+  ignoredExternalChangeSignatures.set(current.key, notice.signature);
+  externalChangeNotices.delete(current.key);
+  render();
+}
+
 function closeActiveTab(): void {
   if (!state.activeTabKey) return;
   closeTabAndLoadNext(state.activeTabKey);
@@ -401,10 +520,15 @@ function closeActiveTab(): void {
 
 function closeTabAndLoadNext(key: string): void {
   captureActiveScroll();
+  externalChangeNotices.delete(key);
+  ignoredExternalChangeSignatures.delete(key);
+  lastFreshnessCheckAt.delete(key);
   state = closeTab(state, key);
   render();
   schedulePersist();
-  void ensureDocumentLoaded(state.activeTabKey);
+  void ensureDocumentLoaded(state.activeTabKey).then(() =>
+    checkActiveDocumentFreshness(),
+  );
 }
 
 function showSettings(): void {
@@ -419,7 +543,9 @@ function selectRelativeTab(direction: 1 | -1): void {
   state = cycleTab(state, direction);
   render();
   schedulePersist();
-  void ensureDocumentLoaded(state.activeTabKey);
+  void ensureDocumentLoaded(state.activeTabKey).then(() =>
+    checkActiveDocumentFreshness(),
+  );
 }
 
 async function ensureDocumentLoaded(key: string | null): Promise<void> {
@@ -525,6 +651,7 @@ function render(): void {
         </div>
       </div>
       ${documentSearch.visible ? renderDocumentSearch() : ""}
+      ${quickSwitcher.visible ? renderQuickSwitcher() : ""}
     </div>
   `;
 
@@ -534,9 +661,136 @@ function render(): void {
     current,
   );
   bindDocumentSearch();
+  bindQuickSwitcher();
   renderIcons(root);
   if (documentSearch.visible && documentSearch.query) {
     requestAnimationFrame(() => refreshDocumentSearch(false));
+  }
+}
+
+function renderQuickSwitcher(): string {
+  return `
+    <div class="quick-switcher fixed inset-0 z-50 flex justify-center bg-black/20 px-6 pt-[12vh] backdrop-blur-[2px]" data-quick-switcher-backdrop>
+      <section class="max-h-[min(560px,72vh)] w-[min(680px,100%)] overflow-hidden rounded-[14px] border border-app-border bg-surface-raised shadow-app" role="dialog" aria-modal="true" aria-label="Quick open">
+        <label class="sr-only" for="quick-switcher-input">Search open tabs and recent documents</label>
+        <input id="quick-switcher-input" class="h-13 w-full border-0 border-b border-app-border bg-transparent px-4 text-[15px] text-app-text outline-none placeholder:text-app-muted" type="search" data-quick-switcher-input value="${escapeAttribute(quickSwitcher.query)}" placeholder="Search open tabs and recent documents" autocomplete="off" spellcheck="false">
+        <div class="max-h-[calc(min(560px,72vh)-52px)] overflow-y-auto p-2" data-quick-switcher-results>
+          ${renderQuickSwitcherItems(quickSwitcherItems())}
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function renderQuickSwitcherItems(items: QuickSwitcherItem[]): string {
+  if (items.length === 0) {
+    return `<p class="px-3 py-8 text-center text-sm text-app-muted">No matching documents</p>`;
+  }
+  return items
+    .map(
+      (item, index) => `
+        <button class="quick-switcher-item ${index === quickSwitcher.activeIndex ? "is-active bg-surface-hover" : ""} flex w-full items-center gap-3 rounded-app px-3 py-2.5 text-left text-app-text hover:bg-surface-hover" type="button" data-quick-switcher-item="${escapeAttribute(item.id)}">
+          <span class="min-w-0 flex-1">
+            <strong class="block truncate text-sm font-semibold">${escapeHtml(item.label)}</strong>
+            <span class="mt-0.5 block truncate font-mono text-[10px] text-app-muted">${escapeHtml(item.detail)}</span>
+          </span>
+          <span class="flex-none text-[10px] font-semibold tracking-wide text-app-muted uppercase">${item.kind === "tab" ? "Open" : "Recent"}</span>
+        </button>
+      `,
+    )
+    .join("");
+}
+
+function quickSwitcherItems(): QuickSwitcherItem[] {
+  return buildQuickSwitcherItems(
+    state.tabs,
+    state.recentDocuments,
+    quickSwitcher.query,
+  );
+}
+
+function bindQuickSwitcher(): void {
+  if (!quickSwitcher.visible) return;
+  const input = root.querySelector<HTMLInputElement>("[data-quick-switcher-input]");
+  input?.addEventListener("input", () => {
+    quickSwitcher.query = input.value;
+    quickSwitcher.activeIndex = 0;
+    updateQuickSwitcherResults();
+  });
+  root
+    .querySelector<HTMLElement>("[data-quick-switcher-backdrop]")
+    ?.addEventListener("pointerdown", (event) => {
+      if (event.target === event.currentTarget) closeQuickSwitcher();
+    });
+  bindQuickSwitcherItemClicks();
+}
+
+function bindQuickSwitcherItemClicks(): void {
+  root.querySelectorAll<HTMLElement>("[data-quick-switcher-item]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const item = quickSwitcherItems().find(
+        (candidate) => candidate.id === button.dataset.quickSwitcherItem,
+      );
+      if (item) void activateQuickSwitcherItem(item);
+    });
+  });
+}
+
+function updateQuickSwitcherResults(): void {
+  const items = quickSwitcherItems();
+  quickSwitcher.activeIndex = Math.max(
+    0,
+    Math.min(quickSwitcher.activeIndex, items.length - 1),
+  );
+  const results = root.querySelector<HTMLElement>("[data-quick-switcher-results]");
+  if (!results) return;
+  results.innerHTML = renderQuickSwitcherItems(items);
+  bindQuickSwitcherItemClicks();
+}
+
+function openQuickSwitcher(): void {
+  documentSearch.visible = false;
+  documentSearch.matches = [];
+  documentSearch.activeIndex = -1;
+  quickSwitcher.visible = true;
+  quickSwitcher.query = "";
+  quickSwitcher.activeIndex = 0;
+  render();
+  requestAnimationFrame(() => {
+    root.querySelector<HTMLInputElement>("[data-quick-switcher-input]")?.focus();
+  });
+}
+
+function closeQuickSwitcher(): void {
+  if (!quickSwitcher.visible) return;
+  quickSwitcher.visible = false;
+  render();
+}
+
+function moveQuickSwitcherSelection(direction: 1 | -1): void {
+  const items = quickSwitcherItems();
+  if (items.length === 0) return;
+  quickSwitcher.activeIndex =
+    (quickSwitcher.activeIndex + direction + items.length) % items.length;
+  updateQuickSwitcherResults();
+  root
+    .querySelector<HTMLElement>(".quick-switcher-item.is-active")
+    ?.scrollIntoView({ block: "nearest" });
+}
+
+async function activateQuickSwitcherItem(item: QuickSwitcherItem): Promise<void> {
+  quickSwitcher.visible = false;
+  if (item.kind === "tab" && item.tabKey) {
+    captureActiveScroll();
+    state = { ...state, activeTabKey: item.tabKey };
+    render();
+    schedulePersist();
+    await ensureDocumentLoaded(item.tabKey);
+    await checkActiveDocumentFreshness();
+    return;
+  }
+  if (item.kind === "recent" && item.path) {
+    await openDocumentPaths([item.path]);
   }
 }
 
@@ -554,10 +808,15 @@ function renderDocumentSearch(): string {
 }
 
 function renderTabList(tabs: AppTab[]): string {
+  const labels = disambiguatedTabLabels(tabs);
   return `
     <div class="tab-list" role="tablist" aria-label="Open tabs">
       ${tabs
         .map((tab) => {
+          const label =
+            tab.kind === "settings"
+              ? "Settings"
+              : (labels.get(tab.key) ?? tab.displayName);
           const active = tab.key === state.activeTabKey;
           const error =
             tab.kind === "document" && tab.status === "error";
@@ -574,13 +833,13 @@ function renderTabList(tabs: AppTab[]): string {
                 title="${escapeAttribute(tabTitle(tab))}"
               >
                 <span class="tab-state" aria-hidden="true">${error ? "!" : loading ? "…" : ""}</span>
-                <span class="tab-label">${escapeHtml(tabLabel(tab))}</span>
+                <span class="tab-label">${escapeHtml(label)}</span>
               </button>
               <button
                 class="tab-close"
                 type="button"
                 data-close-tab="${escapeAttribute(tab.key)}"
-                aria-label="Close ${escapeAttribute(tabLabel(tab))}"
+                aria-label="Close ${escapeAttribute(label)}"
               >${icon("x")}</button>
             </div>
           `;
@@ -594,7 +853,14 @@ function bindShellInteractions(): void {
   root.querySelectorAll<HTMLElement>("[data-tab-key]").forEach((element) => {
     element.addEventListener("click", (event) => {
       const key = element.dataset.tabKey ?? null;
-      if (key && key === suppressTabClickKey && Date.now() < suppressTabClickUntil) {
+      if (
+        shouldSuppressTabClick(
+          key,
+          suppressTabClickKey,
+          suppressTabClickUntil,
+          Date.now(),
+        )
+      ) {
         event.preventDefault();
         event.stopPropagation();
         return;
@@ -603,7 +869,9 @@ function bindShellInteractions(): void {
       state = { ...state, activeTabKey: key };
       render();
       schedulePersist();
-      void ensureDocumentLoaded(state.activeTabKey);
+      void ensureDocumentLoaded(state.activeTabKey).then(() =>
+        checkActiveDocumentFreshness(),
+      );
     });
   });
 
@@ -888,6 +1156,26 @@ function dismissTabContextMenu(): void {
 }
 
 function handleDocumentSearchShortcut(event: KeyboardEvent): void {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "p") {
+    event.preventDefault();
+    openQuickSwitcher();
+    return;
+  }
+  if (quickSwitcher.visible) {
+    if (event.isComposing) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeQuickSwitcher();
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      moveQuickSwitcherSelection(event.key === "ArrowDown" ? 1 : -1);
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      const item = quickSwitcherItems()[quickSwitcher.activeIndex];
+      if (item) void activateQuickSwitcherItem(item);
+    }
+    return;
+  }
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
     event.preventDefault();
     openDocumentSearch();
@@ -911,6 +1199,7 @@ function handleDocumentSearchShortcut(event: KeyboardEvent): void {
 function openDocumentSearch(): void {
   const current = activeTab(state);
   if (current?.kind !== "document" || current.status !== "ready") return;
+  quickSwitcher.visible = false;
   documentSearch.visible = true;
   render();
   requestAnimationFrame(() => {
@@ -921,6 +1210,7 @@ function openDocumentSearch(): void {
 }
 
 function closeDocumentSearch(): void {
+  documentSearchRevealSequence += 1;
   clearDocumentSearchHighlights();
   documentSearch.visible = false;
   documentSearch.matches = [];
@@ -947,6 +1237,7 @@ function bindDocumentSearch(): void {
 }
 
 function refreshDocumentSearch(selectFirst: boolean): void {
+  documentSearchRevealSequence += 1;
   clearDocumentSearchHighlights();
   const query = documentSearch.query.trim();
   if (!query) {
@@ -958,15 +1249,22 @@ function refreshDocumentSearch(selectFirst: boolean): void {
   const current = activeTab(state);
   if (current?.kind !== "document" || current.status !== "ready") return;
 
-  const sourceMatches = findSearchIndexes(current.source, query);
+  const sourceMatches = findSourceMatches(current.source, query);
   const article = root.querySelector<HTMLElement>(".markdown-body");
-  const visibleMatches = article
-    ? highlightVisibleSearchMatches(article, query)
-    : [];
-  documentSearch.matches = sourceMatches.map((sourceIndex, index) => ({
-    sourceIndex,
-    marks: visibleMatches[index] ?? [],
-  }));
+  documentSearch.matches = article
+    ? mapSourceMatchesToRenderedBlocks(
+        article,
+        current.source,
+        sourceMatches,
+        query,
+      )
+    : sourceMatches.map((match) => ({
+        sourceIndex: match.start,
+        marks: [],
+        target: null,
+        codeLine: null,
+        codeVisible: false,
+      }));
   documentSearch.activeIndex =
     sourceMatches.length === 0
       ? -1
@@ -976,26 +1274,78 @@ function refreshDocumentSearch(selectFirst: boolean): void {
             0,
             Math.min(documentSearch.activeIndex, sourceMatches.length - 1),
           );
-  activateDocumentSearchMatch(false);
+  void activateDocumentSearchMatch(false);
 }
 
-function findSearchIndexes(value: string, query: string): number[] {
-  const lowerValue = value.toLocaleLowerCase();
-  const lowerQuery = query.toLocaleLowerCase();
-  const indexes: number[] = [];
-  let start = 0;
-  while (start < lowerValue.length) {
-    const index = lowerValue.indexOf(lowerQuery, start);
-    if (index < 0) break;
-    indexes.push(index);
-    start = index + query.length;
+function mapSourceMatchesToRenderedBlocks(
+  article: HTMLElement,
+  source: string,
+  sourceMatches: SourceMatch[],
+  query: string,
+): DocumentSearchMatch[] {
+  const blocks = Array.from(
+    article.querySelectorAll<HTMLElement>("[data-sourcepos]"),
+  ).flatMap((element) => {
+    const range = parseSourcepos(element.dataset.sourcepos);
+    return range ? [{ element, range }] : [];
+  });
+  const mapped = sourceMatches.map((match) => {
+    const block = findSourceposBlock(blocks, match);
+    const target = block?.element ?? null;
+    const codeRoot = target ? codeSearchRoot(target) : null;
+    const loadedLines = target?.classList.contains("code-block-deferred")
+      ? Number(target.dataset.codeLoadedLines ?? 0)
+      : undefined;
+    const codeLocation =
+      block && codeRoot
+        ? codeMatchLocation(source, block.range, match, loadedLines)
+        : null;
+    return {
+      sourceIndex: match.start,
+      marks: [] as HTMLElement[],
+      target,
+      codeLine: codeLocation?.line ?? null,
+      codeVisible: codeLocation?.visible ?? false,
+    };
+  });
+
+  const matchesByTarget = new Map<HTMLElement, DocumentSearchMatch[]>();
+  for (const match of mapped) {
+    if (!match.target) continue;
+    matchesByTarget.set(match.target, [
+      ...(matchesByTarget.get(match.target) ?? []),
+      match,
+    ]);
   }
-  return indexes;
+  for (const [target, targetMatches] of matchesByTarget) {
+    const codeRoot = codeSearchRoot(target);
+    const visibleSourceMatches = codeRoot
+      ? targetMatches.filter(
+          (match) => match.codeLine !== null && match.codeVisible,
+        )
+      : targetMatches;
+    const visibleMatches = highlightVisibleSearchMatches(
+      codeRoot ?? target,
+      query,
+      codeRoot !== null,
+    );
+    if (visibleMatches.length !== visibleSourceMatches.length) {
+      visibleMatches.flat().forEach((mark) => {
+        mark.replaceWith(document.createTextNode(mark.textContent ?? ""));
+      });
+      continue;
+    }
+    visibleSourceMatches.forEach((match, index) => {
+      match.marks = visibleMatches[index] ?? [];
+    });
+  }
+  return mapped;
 }
 
 function highlightVisibleSearchMatches(
   article: HTMLElement,
   query: string,
+  includeWhitespace = false,
 ): HTMLElement[][] {
   const textNodes: Array<{ node: Text; start: number; end: number }> = [];
   const walker = document.createTreeWalker(article, NodeFilter.SHOW_TEXT, {
@@ -1004,7 +1354,8 @@ function highlightVisibleSearchMatches(
       if (!parent || parent.closest("script, style, template")) {
         return NodeFilter.FILTER_REJECT;
       }
-      return node.textContent?.trim()
+      const text = node.textContent ?? "";
+      return shouldIncludeSearchText(text, includeWhitespace)
         ? NodeFilter.FILTER_ACCEPT
         : NodeFilter.FILTER_REJECT;
     },
@@ -1018,7 +1369,7 @@ function highlightVisibleSearchMatches(
   }
 
   const visibleText = textNodes.map(({ node }) => node.textContent ?? "").join("");
-  const indexes = findSearchIndexes(visibleText, query);
+  const indexes = findSourceMatches(visibleText, query).map((match) => match.start);
   const matches = indexes.map(() => [] as HTMLElement[]);
 
   for (let matchIndex = indexes.length - 1; matchIndex >= 0; matchIndex -= 1) {
@@ -1046,22 +1397,55 @@ function moveDocumentSearchMatch(direction: 1 | -1): void {
   documentSearch.activeIndex =
     (documentSearch.activeIndex + direction + documentSearch.matches.length) %
     documentSearch.matches.length;
-  activateDocumentSearchMatch(true);
+  void activateDocumentSearchMatch(true);
 }
 
-function activateDocumentSearchMatch(scroll: boolean): void {
+async function activateDocumentSearchMatch(scroll: boolean): Promise<void> {
+  const sequence = scroll
+    ? ++documentSearchRevealSequence
+    : documentSearchRevealSequence;
+  root
+    .querySelectorAll<HTMLElement>(".document-search-source-target")
+    .forEach((element) => element.classList.remove("document-search-source-target"));
   documentSearch.matches.forEach((match, index) => {
     match.marks.forEach((mark) => {
       mark.classList.toggle("is-active", index === documentSearch.activeIndex);
     });
   });
-  if (scroll && documentSearch.activeIndex >= 0) {
-    documentSearch.matches[documentSearch.activeIndex]?.marks[0]?.scrollIntoView({
+  const activeMatch = documentSearch.matches[documentSearch.activeIndex];
+  activeMatch?.target?.classList.add("document-search-source-target");
+  if (scroll && activeMatch) {
+    if (
+      activeMatch.marks.length === 0 &&
+      activeMatch.codeLine !== null &&
+      !activeMatch.codeVisible &&
+      activeMatch.target?.classList.contains("code-block-deferred")
+    ) {
+      try {
+        await revealDeferredCodeLine(activeMatch.target, activeMatch.codeLine);
+        if (sequence !== documentSearchRevealSequence) return;
+        refreshDocumentSearch(false);
+      } catch {
+        // Keep the source result navigable at the code-block level if expansion fails.
+      }
+    }
+    const revealedMatch = documentSearch.matches[documentSearch.activeIndex];
+    (revealedMatch?.marks[0] ?? revealedMatch?.target)?.scrollIntoView({
       block: "center",
       inline: "nearest",
     });
   }
   updateDocumentSearchControls();
+}
+
+function codeSearchRoot(target: HTMLElement): HTMLElement | null {
+  if (target.matches("pre")) {
+    return target.querySelector<HTMLElement>(":scope > code");
+  }
+  if (target.classList.contains("code-block-deferred")) {
+    return target.querySelector<HTMLElement>("pre > code");
+  }
+  return null;
 }
 
 function updateDocumentSearchControls(): void {
@@ -1080,6 +1464,9 @@ function clearDocumentSearchHighlights(): void {
   root.querySelectorAll<HTMLElement>("mark.document-search-match").forEach((match) => {
     match.replaceWith(document.createTextNode(match.textContent ?? ""));
   });
+  root
+    .querySelectorAll<HTMLElement>(".document-search-source-target")
+    .forEach((element) => element.classList.remove("document-search-source-target"));
 }
 
 function bindSidebarResize(): void {
@@ -1254,6 +1641,21 @@ function renderDocument(
   enhanceCodeBlocks(article);
   enhanceDiagramViewers(article);
 
+  const externalChange = externalChangeNotices.get(tab.key);
+  if (externalChange) {
+    const notice = document.createElement("div");
+    notice.className = `external-change-notice ${UI.reloadNotice}`;
+    notice.setAttribute("role", "status");
+    notice.innerHTML = `
+      <span><strong>${externalChange.kind === "changed" ? "File changed on disk." : "File unavailable."}</strong> ${escapeHtml(externalChange.message.replace(/^[^.]+\.\s*/, ""))}</span>
+      <span class="ml-auto flex flex-none gap-1.5">
+        <button class="secondary-button compact ${UI.secondaryButton} min-h-7 px-2.5 text-xs" type="button" data-external-reload>Reload</button>
+        <button class="secondary-button compact ${UI.secondaryButton} min-h-7 px-2.5 text-xs" type="button" data-external-ignore>Ignore</button>
+      </span>
+    `;
+    scroller.append(notice);
+  }
+
   if (tab.reloadError) {
     const notice = document.createElement("div");
     notice.className = `reload-notice ${UI.reloadNotice}`;
@@ -1278,6 +1680,12 @@ function renderDocument(
   header
     .querySelector<HTMLElement>("[data-document-reload]")
     ?.addEventListener("click", () => void reloadActiveDocument());
+  scroller
+    .querySelector<HTMLElement>("[data-external-reload]")
+    ?.addEventListener("click", () => void reloadActiveDocument());
+  scroller
+    .querySelector<HTMLElement>("[data-external-ignore]")
+    ?.addEventListener("click", () => ignoreActiveExternalChange());
   scroller.addEventListener("scroll", () => {
     state = updateScroll(state, tab.key, scroller.scrollTop);
     schedulePersist();
@@ -1909,7 +2317,9 @@ function isMarkdownPath(path: string): boolean {
 }
 
 function tabLabel(tab: AppTab): string {
-  return tab.kind === "settings" ? "Settings" : tab.displayName;
+  return tab.kind === "settings"
+    ? "Settings"
+    : (disambiguatedTabLabels(state.tabs).get(tab.key) ?? tab.displayName);
 }
 
 function windowTitle(tab: AppTab | null): string {

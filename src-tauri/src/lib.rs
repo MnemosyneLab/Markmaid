@@ -6,7 +6,8 @@ use std::{
 };
 
 use document::{
-    export_svg, highlight_code_chunk, is_markdown_path, load_documents, reload_document,
+    check_document_revisions, export_svg, highlight_code_chunk, is_markdown_path, load_documents,
+    reload_document,
 };
 use tauri::{
     AppHandle, Emitter, Manager, RunEvent, State,
@@ -15,6 +16,7 @@ use tauri::{
 
 const OPEN_FILES_EVENT: &str = "markmaid://open-files";
 const MENU_OPEN_EVENT: &str = "markmaid://menu-open";
+const MENU_QUICK_OPEN_EVENT: &str = "markmaid://menu-quick-open";
 const MENU_CLOSE_TAB_EVENT: &str = "markmaid://menu-close-tab";
 const MENU_RELOAD_EVENT: &str = "markmaid://menu-reload";
 const MENU_SETTINGS_EVENT: &str = "markmaid://menu-settings";
@@ -54,6 +56,9 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let open = MenuItemBuilder::with_id("open", "Open...")
         .accelerator("CmdOrCtrl+O")
         .build(app)?;
+    let quick_open = MenuItemBuilder::with_id("quick-open", "Quick Open...")
+        .accelerator("CmdOrCtrl+P")
+        .build(app)?;
     let close_tab = MenuItemBuilder::with_id("close-tab", "Close Tab")
         .accelerator("CmdOrCtrl+W")
         .build(app)?;
@@ -84,8 +89,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
             .build(app)?;
         recent_menu = recent_menu.item(&empty);
     } else {
-        for (index, path) in recent_documents.iter().enumerate() {
-            let label = recent_document_label(path);
+        for (index, label) in recent_document_labels(&recent_documents).iter().enumerate() {
             let item = MenuItemBuilder::with_id(format!("{RECENT_MENU_ITEM_PREFIX}{index}"), label)
                 .build(app)?;
             recent_menu = recent_menu.item(&item);
@@ -109,6 +113,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         .build()?;
     let file_menu = SubmenuBuilder::new(app, "File")
         .item(&open)
+        .item(&quick_open)
         .item(&recent_menu)
         .separator()
         .item(&close_tab)
@@ -181,6 +186,7 @@ fn on_menu_event(app: &AppHandle, id: &str) {
 
     let event = match id {
         "open" => Some(MENU_OPEN_EVENT),
+        "quick-open" => Some(MENU_QUICK_OPEN_EVENT),
         "close-tab" => Some(MENU_CLOSE_TAB_EVENT),
         "reload" => Some(MENU_RELOAD_EVENT),
         "settings" => Some(MENU_SETTINGS_EVENT),
@@ -210,9 +216,90 @@ fn normalize_recent_documents(paths: Vec<String>) -> Vec<String> {
 fn recent_document_label(path: &str) -> String {
     Path::new(path)
         .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(path)
-        .to_string()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| path.to_string())
+}
+
+fn recent_document_labels(paths: &[String]) -> Vec<String> {
+    let file_names = paths
+        .iter()
+        .map(|path| recent_document_label(path))
+        .collect::<Vec<_>>();
+    let mut labels = file_names.clone();
+
+    for (index, file_name) in file_names.iter().enumerate() {
+        let duplicates = file_names
+            .iter()
+            .enumerate()
+            .filter_map(|(candidate_index, candidate)| {
+                (candidate == file_name).then_some(candidate_index)
+            })
+            .collect::<Vec<_>>();
+        if duplicates.len() < 2 || duplicates[0] != index {
+            continue;
+        }
+
+        let parents = duplicates
+            .iter()
+            .map(|&duplicate_index| recent_document_parent_components(&paths[duplicate_index]))
+            .collect::<Vec<_>>();
+        let max_depth = parents.iter().map(Vec::len).max().unwrap_or(0).max(1);
+        let depth = (1..=max_depth)
+            .find(|&candidate_depth| {
+                let suffixes = parents
+                    .iter()
+                    .map(|parent| recent_document_parent_suffix(parent, candidate_depth))
+                    .collect::<std::collections::HashSet<_>>();
+                suffixes.len() == parents.len()
+            })
+            .unwrap_or(max_depth);
+
+        for (&duplicate_index, parent) in duplicates.iter().zip(parents.iter()) {
+            let suffix = recent_document_parent_suffix(parent, depth);
+            labels[duplicate_index] = format!("{} — {suffix}", file_names[duplicate_index]);
+        }
+    }
+
+    labels
+}
+
+fn recent_document_parent_components(path: &str) -> Vec<String> {
+    Path::new(path)
+        .parent()
+        .map(|parent| {
+            parent
+                .components()
+                .map(|component| match component {
+                    std::path::Component::Prefix(prefix) => {
+                        prefix.as_os_str().to_string_lossy().into_owned()
+                    }
+                    std::path::Component::RootDir => "/".to_string(),
+                    std::path::Component::CurDir => ".".to_string(),
+                    std::path::Component::ParentDir => "..".to_string(),
+                    std::path::Component::Normal(component) => {
+                        component.to_string_lossy().into_owned()
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn recent_document_parent_suffix(components: &[String], depth: usize) -> String {
+    let first_component = components.len().saturating_sub(depth);
+    let suffix = &components[first_component..];
+    match suffix {
+        [] => ".".to_string(),
+        [root, rest @ ..] if root == "/" => {
+            if rest.is_empty() {
+                "/".to_string()
+            } else {
+                format!("/{}", rest.join("/"))
+            }
+        }
+        _ => suffix.join("/"),
+    }
 }
 
 fn queue_and_emit_paths(app: &AppHandle, paths: Vec<String>) {
@@ -288,6 +375,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             load_documents,
             reload_document,
+            check_document_revisions,
             export_svg,
             highlight_code_chunk,
             take_pending_open_paths,
@@ -348,5 +436,53 @@ mod tests {
             vec!["/docs/one.md".to_string(), "/docs/two.md".to_string()]
         );
         assert_eq!(recent_document_label("/docs/two.md"), "two.md");
+    }
+
+    #[test]
+    fn recent_document_labels_keep_unique_file_names_compact() {
+        let paths = vec!["/docs/guide.md".to_string(), "/notes/todo.md".to_string()];
+
+        assert_eq!(
+            recent_document_labels(&paths),
+            vec!["guide.md".to_string(), "todo.md".to_string()]
+        );
+    }
+
+    #[test]
+    fn recent_document_labels_disambiguate_duplicate_file_names_by_parent() {
+        let paths = vec![
+            "/docs/project-a/README.md".to_string(),
+            "/docs/project-b/README.md".to_string(),
+            "/docs/guide.md".to_string(),
+        ];
+
+        assert_eq!(
+            recent_document_labels(&paths),
+            vec![
+                "README.md — project-a".to_string(),
+                "README.md — project-b".to_string(),
+                "guide.md".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn recent_document_labels_expand_to_the_shortest_distinguishing_suffix() {
+        let paths = vec![
+            "/repos/one/docs/README.md".to_string(),
+            "/repos/two/docs/README.md".to_string(),
+            "/README.md".to_string(),
+            "README.md".to_string(),
+        ];
+
+        assert_eq!(
+            recent_document_labels(&paths),
+            vec![
+                "README.md — one/docs".to_string(),
+                "README.md — two/docs".to_string(),
+                "README.md — /".to_string(),
+                "README.md — .".to_string(),
+            ]
+        );
     }
 }

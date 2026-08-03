@@ -756,6 +756,12 @@ html.is-resizing-sidebar * {
   outline: 1px solid color-mix(in srgb, var(--accent-strong) 75%, transparent);
 }
 
+.markdown-body .document-search-source-target {
+  border-radius: 4px;
+  outline: 2px solid color-mix(in srgb, var(--accent-strong) 45%, transparent);
+  outline-offset: 4px;
+}
+
 .document-layout .document-scroll {
   min-width: 0;
   flex: 1 1 auto;
@@ -777,6 +783,7 @@ html.is-resizing-sidebar * {
 }
 
 .document-meta,
+.external-change-notice,
 .reload-notice,
 .markdown-body {
   width: min(var(--preview-max-width, 860px), calc(100% - 64px));
@@ -1249,6 +1256,7 @@ html.is-resizing-sidebar * {
   }
 
   .document-meta,
+  .external-change-notice,
   .reload-notice,
   .markdown-body {
     width: calc(100% - 40px);

@@ -1,5 +1,6 @@
 use std::{
-    collections::hash_map::DefaultHasher,
+    borrow::Cow,
+    collections::{HashMap, hash_map::DefaultHasher},
     fs,
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
@@ -8,8 +9,10 @@ use std::{
 
 use comrak::adapters::{CodefenceRendererAdapter, SyntaxHighlighterAdapter};
 use comrak::{
-    Arena, Options, format_html_with_plugins, nodes::NodeValue, parse_document,
-    plugins::syntect::SyntectAdapterBuilder,
+    Arena, Options, format_html_with_plugins,
+    nodes::NodeValue,
+    parse_document,
+    plugins::syntect::{SyntectAdapter, SyntectAdapterBuilder},
 };
 use merman::{MermaidConfig, render::HeadlessRenderer};
 use serde::{Deserialize, Serialize};
@@ -342,6 +345,7 @@ pub enum DocumentLoadResult {
         source: String,
         html: String,
         modified_at_ms: u64,
+        size_bytes: u64,
         image_assets: Vec<ImageAsset>,
     },
     #[serde(rename_all = "camelCase")]
@@ -388,6 +392,7 @@ struct RenderedMarkdown {
 struct MermaidReplacement {
     token: String,
     html: String,
+    sourcepos: comrak::nodes::Sourcepos,
 }
 
 struct LongCodeBlock {
@@ -402,6 +407,42 @@ struct LongCodeRenderer<'a> {
     highlighter: &'a dyn SyntaxHighlighterAdapter,
 }
 
+struct SourceposSyntaxHighlighter {
+    inner: SyntectAdapter,
+}
+
+impl SyntaxHighlighterAdapter for SourceposSyntaxHighlighter {
+    fn write_highlighted(
+        &self,
+        output: &mut dyn fmt::Write,
+        lang: Option<&str>,
+        code: &str,
+    ) -> fmt::Result {
+        self.inner.write_highlighted(output, lang, code)
+    }
+
+    fn write_pre_tag(
+        &self,
+        output: &mut dyn fmt::Write,
+        mut attributes: HashMap<&'static str, Cow<'_, str>>,
+    ) -> fmt::Result {
+        let class_name = attributes.remove("class").map_or_else(
+            || "syntax-highlighting".to_string(),
+            |existing| format!("{existing} syntax-highlighting"),
+        );
+        attributes.insert("class", Cow::Owned(class_name));
+        comrak::html::write_opening_tag(output, "pre", attributes)
+    }
+
+    fn write_code_tag(
+        &self,
+        output: &mut dyn fmt::Write,
+        attributes: HashMap<&'static str, Cow<'_, str>>,
+    ) -> fmt::Result {
+        self.inner.write_code_tag(output, attributes)
+    }
+}
+
 impl CodefenceRendererAdapter for LongCodeRenderer<'_> {
     fn write(
         &self,
@@ -409,7 +450,7 @@ impl CodefenceRendererAdapter for LongCodeRenderer<'_> {
         _lang: &str,
         _meta: &str,
         code: &str,
-        _sourcepos: Option<comrak::nodes::Sourcepos>,
+        sourcepos: Option<comrak::nodes::Sourcepos>,
     ) -> fmt::Result {
         let Some(block) = self.blocks.get(code.trim_end()) else {
             return output.write_str("<pre><code>Code preview unavailable.</code></pre>");
@@ -422,7 +463,8 @@ impl CodefenceRendererAdapter for LongCodeRenderer<'_> {
         )?;
         write!(
             output,
-            r#"<div class="code-block-deferred" data-code-loaded-lines="{}" data-code-total-lines="{}"><pre class="syntax-highlighting"><code class="language-{}">{}</code></pre><template class="code-source-template">{}</template><button class="code-expand" type="button" data-code-expand aria-label="Show {} more lines">Show {} more lines<i data-lucide="chevron-down"></i></button></div>"#,
+            r#"<div class="code-block-deferred"{} data-code-loaded-lines="{}" data-code-total-lines="{}"><pre class="syntax-highlighting"><code class="language-{}">{}</code></pre><template class="code-source-template">{}</template><button class="code-expand" type="button" data-code-expand aria-label="Show {} more lines">Show {} more lines<i data-lucide="chevron-down"></i></button></div>"#,
+            sourcepos.map_or_else(String::new, |value| format!(r#" data-sourcepos="{value}""#)),
             INITIAL_CODE_LINES.min(block.line_count),
             block.line_count,
             escape_html(&block.language),
@@ -455,6 +497,85 @@ pub fn reload_document(
     color_theme: ColorTheme,
 ) -> DocumentLoadResult {
     authorize_assets(&app, load_document_data(&path, mermaid_theme, color_theme))
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentRevisionProbe {
+    path: String,
+    modified_at_ms: u64,
+    size_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum DocumentRevisionResult {
+    #[serde(rename_all = "camelCase")]
+    Unchanged { path: String },
+    #[serde(rename_all = "camelCase")]
+    Changed {
+        path: String,
+        modified_at_ms: u64,
+        size_bytes: u64,
+    },
+    #[serde(rename_all = "camelCase")]
+    Error {
+        path: String,
+        code: String,
+        message: String,
+    },
+}
+
+#[tauri::command]
+pub fn check_document_revisions(
+    documents: Vec<DocumentRevisionProbe>,
+) -> Vec<DocumentRevisionResult> {
+    documents.into_iter().map(check_document_revision).collect()
+}
+
+fn check_document_revision(probe: DocumentRevisionProbe) -> DocumentRevisionResult {
+    let error = |code: &str, message: String| DocumentRevisionResult::Error {
+        path: probe.path.clone(),
+        code: code.to_string(),
+        message,
+    };
+    let path = Path::new(&probe.path);
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {
+            return error("not_found", "The document no longer exists.".to_string());
+        }
+        Err(cause) => {
+            return error(
+                "metadata_failed",
+                format!("The document metadata could not be read: {cause}"),
+            );
+        }
+    };
+    if !metadata.is_file() {
+        return error(
+            "not_a_file",
+            "The document path is no longer a regular file.".to_string(),
+        );
+    }
+    if let Err(cause) = fs::File::open(path) {
+        return error(
+            "read_failed",
+            format!("The document could not be accessed: {cause}"),
+        );
+    }
+
+    let modified_at_ms = metadata_modified_at_ms(&metadata);
+    let size_bytes = metadata.len();
+    if modified_at_ms == probe.modified_at_ms && size_bytes == probe.size_bytes {
+        DocumentRevisionResult::Unchanged { path: probe.path }
+    } else {
+        DocumentRevisionResult::Changed {
+            path: probe.path,
+            modified_at_ms,
+            size_bytes,
+        }
+    }
 }
 
 #[tauri::command]
@@ -534,7 +655,19 @@ fn load_document_data(
         }
     };
 
-    if !canonical_path.is_file() {
+    let metadata = match fs::metadata(&canonical_path) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            return DocumentLoadResult::error(
+                requested_path,
+                Some(&canonical_path),
+                "metadata_failed",
+                format!("The document metadata could not be read: {error}"),
+            );
+        }
+    };
+
+    if !metadata.is_file() {
         return DocumentLoadResult::error(
             requested_path,
             Some(&canonical_path),
@@ -563,6 +696,7 @@ fn load_document_data(
             );
         }
     };
+    let size_bytes = bytes.len() as u64;
 
     let source = match String::from_utf8(bytes) {
         Ok(source) => source,
@@ -588,23 +722,7 @@ fn load_document_data(
         }
     };
 
-    let metadata = match fs::metadata(&canonical_path) {
-        Ok(metadata) => metadata,
-        Err(error) => {
-            return DocumentLoadResult::error(
-                requested_path,
-                Some(&canonical_path),
-                "metadata_failed",
-                format!("The document metadata could not be read: {error}"),
-            );
-        }
-    };
-
-    let modified_at_ms = metadata
-        .modified()
-        .ok()
-        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .map_or(0, |duration| duration.as_millis() as u64);
+    let modified_at_ms = metadata_modified_at_ms(&metadata);
     let display_name = canonical_path
         .file_name()
         .and_then(|name| name.to_str())
@@ -618,8 +736,17 @@ fn load_document_data(
         source,
         html: rendered.html,
         modified_at_ms,
+        size_bytes,
         image_assets: rendered.image_assets,
     }
+}
+
+fn metadata_modified_at_ms(metadata: &fs::Metadata) -> u64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |duration| duration.as_millis() as u64)
 }
 
 fn render_markdown(
@@ -637,7 +764,9 @@ fn render_markdown(
     options.extension.tasklist = true;
     options.extension.header_id_prefix = Some(String::new());
     options.extension.header_id_prefix_in_href = true;
+    options.parse.sourcepos_chars = true;
     options.render.tasklist_classes = true;
+    options.render.sourcepos = true;
     options.render.r#unsafe = false;
 
     let root = parse_document(&arena, source, &options);
@@ -651,6 +780,7 @@ fn render_markdown(
 
     for node in root.descendants() {
         let mut data = node.data_mut();
+        let sourcepos = data.sourcepos;
         match &mut data.value {
             NodeValue::Image(link) => {
                 let original = link.url.clone();
@@ -684,7 +814,11 @@ fn render_markdown(
                     render_mermaid_figure(&renderer, &block.literal, &diagram_id, mermaid_theme);
                 block.info = MERMAID_PLACEHOLDER_LANGUAGE.to_string();
                 block.literal.clone_from(&token);
-                mermaid_replacements.push(MermaidReplacement { token, html });
+                mermaid_replacements.push(MermaidReplacement {
+                    token,
+                    html,
+                    sourcepos,
+                });
             }
             NodeValue::CodeBlock(block) => {
                 let line_count = code_line_count(&block.literal);
@@ -712,9 +846,11 @@ fn render_markdown(
         }
     }
 
-    let syntax_highlighter = SyntectAdapterBuilder::new()
-        .css_with_class_prefix("syn-")
-        .build();
+    let syntax_highlighter = SourceposSyntaxHighlighter {
+        inner: SyntectAdapterBuilder::new()
+            .css_with_class_prefix("syn-")
+            .build(),
+    };
     let mut plugins = comrak::options::Plugins::default();
     plugins.render.codefence_syntax_highlighter = Some(&syntax_highlighter);
     let long_code_renderer = LongCodeRenderer {
@@ -821,7 +957,12 @@ fn replace_mermaid_placeholder(
     if !wrapper.contains(&replacement.token) {
         return Err("Markdown rendering produced an unexpected Mermaid wrapper.".to_string());
     }
-    html.replace_range(block_start..block_end, &replacement.html);
+    let replacement_html = replacement.html.replacen(
+        "<figure ",
+        &format!(r#"<figure data-sourcepos="{}" "#, replacement.sourcepos),
+        1,
+    );
+    html.replace_range(block_start..block_end, &replacement_html);
     Ok(())
 }
 
@@ -894,6 +1035,53 @@ mod tests {
     use super::*;
 
     #[test]
+    fn probes_document_revisions_without_reloading_content() {
+        let directory = tempdir().unwrap();
+        let document = directory.path().join("guide.md");
+        fs::write(&document, "old").unwrap();
+        let metadata = fs::metadata(&document).unwrap();
+        let path = path_to_string(&document);
+        let baseline = DocumentRevisionProbe {
+            path: path.clone(),
+            modified_at_ms: metadata_modified_at_ms(&metadata),
+            size_bytes: metadata.len(),
+        };
+
+        assert_eq!(
+            check_document_revision(baseline.clone()),
+            DocumentRevisionResult::Unchanged { path: path.clone() }
+        );
+
+        fs::write(&document, "new content").unwrap();
+        assert!(matches!(
+            check_document_revision(baseline.clone()),
+            DocumentRevisionResult::Changed { size_bytes: 11, .. }
+        ));
+
+        fs::remove_file(&document).unwrap();
+        assert!(matches!(
+            check_document_revision(baseline),
+            DocumentRevisionResult::Error { code, .. } if code == "not_found"
+        ));
+    }
+
+    #[test]
+    fn reports_a_directory_as_an_unavailable_document() {
+        let directory = tempdir().unwrap();
+        let metadata = fs::metadata(directory.path()).unwrap();
+        let result = check_document_revision(DocumentRevisionProbe {
+            path: path_to_string(directory.path()),
+            modified_at_ms: metadata_modified_at_ms(&metadata),
+            size_bytes: metadata.len(),
+        });
+
+        assert!(matches!(
+            result,
+            DocumentRevisionResult::Error { code, .. } if code == "not_a_file"
+        ));
+    }
+
+    #[test]
     fn accepts_every_configurable_mermaid_theme() {
         for (name, appearance) in [
             ("default", "light"),
@@ -943,9 +1131,12 @@ mod tests {
         )
         .unwrap();
 
-        assert!(rendered.html.contains("<h1 id=\"heading\">"));
-        assert!(rendered.html.contains("<del>gone</del>"));
-        assert!(rendered.html.contains("<table>"));
+        assert!(rendered.html.contains("<h1"));
+        assert!(rendered.html.contains("id=\"heading\""));
+        assert!(rendered.html.contains("data-sourcepos=\"1:1-1:9\""));
+        assert!(rendered.html.contains("data-sourcepos=\"3:1-3:8\""));
+        assert!(rendered.html.contains(">gone</del>"));
+        assert!(rendered.html.contains("<table"), "{}", rendered.html);
         assert!(rendered.html.contains("type=\"checkbox\""));
         assert!(rendered.html.contains("disabled=\"\""));
     }
@@ -969,6 +1160,11 @@ mod tests {
             );
         }
         assert!(rendered.html.contains("class=\"syntax-highlighting\""));
+        assert!(
+            rendered.html.contains("data-sourcepos=\"1:1-3:3\""),
+            "{}",
+            rendered.html,
+        );
         assert!(rendered.html.contains("syn-keyword"));
         assert!(rendered.html.contains("syn-string"));
     }
@@ -990,6 +1186,7 @@ mod tests {
         assert!(rendered.html.contains("class=\"code-block-deferred\""));
         assert!(rendered.html.contains("data-code-loaded-lines=\"200\""));
         assert!(rendered.html.contains("data-code-total-lines=\"201\""));
+        assert!(rendered.html.contains("data-sourcepos=\"1:1-203:3\""));
         assert!(rendered.html.contains("Show 1 more lines"));
         assert!(
             rendered
@@ -1107,7 +1304,12 @@ mod tests {
         )
         .unwrap();
 
-        assert!(rendered.html.contains("<figure class=\"mermaid-figure\""));
+        assert!(
+            rendered.html.contains("<figure data-sourcepos="),
+            "{}",
+            rendered.html
+        );
+        assert!(rendered.html.contains("class=\"mermaid-figure\""));
         assert!(rendered.html.contains("data-mermaid-theme=\"light\""));
         assert!(rendered.html.contains("<svg"));
         assert!(rendered.html.contains("#fffaf0"));
@@ -1123,6 +1325,20 @@ mod tests {
     }
 
     #[test]
+    fn reports_source_positions_with_unicode_character_columns() {
+        let rendered = render_markdown(
+            "# 好\n\nParagraph",
+            Path::new("/tmp/sourcepos.md"),
+            MermaidTheme::Default,
+            ColorTheme::Default,
+        )
+        .unwrap();
+
+        assert!(rendered.html.contains("data-sourcepos=\"1:1-1:3\""));
+        assert!(rendered.html.contains("data-sourcepos=\"3:1-3:9\""));
+    }
+
+    #[test]
     fn keeps_mermaid_failures_local_to_the_diagram() {
         let rendered = render_markdown(
             "Before\n\n```mermaid\nthis is not a diagram\n```\n\nAfter",
@@ -1132,8 +1348,8 @@ mod tests {
         )
         .unwrap();
 
-        assert!(rendered.html.contains("<p>Before</p>"));
-        assert!(rendered.html.contains("<p>After</p>"));
+        assert!(rendered.html.contains(">Before</p>"));
+        assert!(rendered.html.contains(">After</p>"));
         assert!(rendered.html.contains("Mermaid render failed"));
         assert!(rendered.html.contains("data-mermaid-theme=\"dark\""));
         assert!(rendered.html.contains("mermaid-show-source"));
