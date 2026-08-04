@@ -11,7 +11,7 @@ import {
   enhanceCodeBlocks,
   revealDeferredCodeLine,
 } from "./code-block";
-import { enhanceDiagramViewers } from "./diagram-viewer";
+import { enhanceDiagramViewers, wrapMarkdownImages } from "./diagram-viewer";
 import { icon, renderIcons } from "./icons";
 import {
   matchesRevisionBaseline,
@@ -2805,6 +2805,8 @@ function prepareDocumentContent(
       : `Image unavailable: ${asset.original}`;
     image.replaceWith(fallback);
   });
+
+  wrapMarkdownImages(article);
 
   article.querySelectorAll<HTMLAnchorElement>("a").forEach((link) => {
     link.addEventListener("click", (event) => {

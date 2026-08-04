@@ -893,6 +893,31 @@ html.is-resizing-sidebar * {
 .markdown-body ul,
 .markdown-body ol {
   padding-left: 1.7em;
+  list-style-position: outside;
+}
+
+.markdown-body ul {
+  list-style-type: disc;
+}
+
+.markdown-body ol {
+  list-style-type: decimal;
+}
+
+.markdown-body ul ul {
+  list-style-type: circle;
+}
+
+.markdown-body ul ul ul {
+  list-style-type: square;
+}
+
+.markdown-body ol ol {
+  list-style-type: lower-alpha;
+}
+
+.markdown-body ol ol ol {
+  list-style-type: lower-roman;
 }
 
 .markdown-body li + li {
@@ -1113,7 +1138,8 @@ html.is-resizing-sidebar * {
   text-decoration: underline wavy;
 }
 
-.markdown-body .mermaid-figure {
+.markdown-body .mermaid-figure,
+.markdown-body .markdown-image-figure {
   position: relative;
   margin: 1.15em 0;
   padding: 14px 16px 16px;
@@ -1126,6 +1152,16 @@ html.is-resizing-sidebar * {
 .markdown-body .mermaid-figure[data-mermaid-theme="dark"] {
   background: var(--code-surface);
   border-color: var(--border);
+}
+
+.markdown-body .markdown-image-figure .mermaid-stage img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 0 auto;
+  border-radius: 0;
+  background: transparent;
+  cursor: zoom-in;
 }
 
 .markdown-body .mermaid-figure[data-mermaid-view="source"] {
@@ -1220,6 +1256,10 @@ html.is-resizing-sidebar * {
   margin: 1.4em auto;
   border-radius: var(--radius);
   background: var(--code-surface);
+}
+
+.markdown-body .markdown-image-figure img {
+  margin: 0 auto;
 }
 
 .missing-image {

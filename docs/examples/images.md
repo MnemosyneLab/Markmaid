@@ -6,7 +6,8 @@ preview tabs from the Files tree.
 
 ## Relative SVG
 
-Inline preview of a lightweight sibling asset:
+Inline preview of a lightweight sibling asset (Mermaid-style frame with
+fullscreen zoom / pan via the expand control or by clicking the image):
 
 ![MarkMaid sample badge](assets/sample-badge.svg)
 

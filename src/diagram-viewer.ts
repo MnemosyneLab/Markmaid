@@ -8,32 +8,6 @@ type MermaidAppearance = "light" | "dark";
 const ZOOM_LEVELS = [50, 75, 100, 125, 150, 175, 200, 250, 300] as const;
 const DEFAULT_ZOOM = 150;
 
-/*
-const EXPORT_ICON = `
-  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
-    <path fill="currentColor" d="M11 3a1 1 0 0 1 2 0v9.6l3.3-3.3a1 1 0 1 1 1.4 1.4l-5 5a1 1 0 0 1-1.4 0l-5-5a1 1 0 0 1 1.4-1.4l3.3 3.3V3ZM5 19a1 1 0 0 1 1-1h12a1 1 0 1 1 0 2H6a1 1 0 0 1-1-1Z" />
-  </svg>
-`;
-
-const ZOOM_OUT_ICON = `
-  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
-    <path fill="currentColor" d="M10.5 3a7.5 7.5 0 1 0 4.72 13.33l4.72 4.72a1 1 0 0 0 1.42-1.42l-4.72-4.72A7.5 7.5 0 0 0 10.5 3Zm0 2a5.5 5.5 0 1 1 0 11 5.5 5.5 0 0 1 0-11Zm-3 4.5a1 1 0 0 0 0 2h6a1 1 0 1 0 0-2h-6Z" />
-  </svg>
-`;
-
-const ZOOM_IN_ICON = `
-  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
-    <path fill="currentColor" d="M10.5 3a7.5 7.5 0 1 0 4.72 13.33l4.72 4.72a1 1 0 0 0 1.42-1.42l-4.72-4.72A7.5 7.5 0 0 0 10.5 3Zm0 2a5.5 5.5 0 1 1 0 11 5.5 5.5 0 0 1 0-11Zm-1 2.5a1 1 0 0 0-1 1v1h-1a1 1 0 1 0 0 2h1v1a1 1 0 1 0 2 0v-1h1a1 1 0 1 0 0-2h-1v-1a1 1 0 0 0-1-1Z" />
-  </svg>
-`;
-
-const PREVIEW_ICON = `
-  <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false">
-    <path fill="currentColor" d="M5 3a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2H5Zm0 2h14v14H5V5Zm3 2.5a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm8.6 3.2a1 1 0 0 0-1.4 0l-2.7 2.7-1.2-1.2a1 1 0 0 0-1.4 0L7 16h10l-3-3 2.6-2.3Z" />
-  </svg>
-`;
-*/
-
 let activeViewer: { close: () => void } | null = null;
 
 export function enhanceDiagramViewers(article: HTMLElement): void {
@@ -65,6 +39,59 @@ export function enhanceDiagramViewers(article: HTMLElement): void {
       }
       showSource.addEventListener("click", () => {
         showMermaidSource(figure, stage, template.content.textContent ?? "");
+      });
+    });
+
+  enhanceMarkdownImageViewers(article);
+}
+
+export function wrapMarkdownImages(article: HTMLElement): void {
+  article.querySelectorAll<HTMLImageElement>("img").forEach((image) => {
+    if (image.closest(".markdown-image-figure, .mermaid-figure")) return;
+    if (image.classList.contains("image-preview")) return;
+
+    const figure = document.createElement("figure");
+    figure.className = "markdown-image-figure";
+
+    const toolbar = document.createElement("div");
+    toolbar.className = "mermaid-toolbar";
+    toolbar.innerHTML = `
+      <button class="mermaid-expand" type="button" title="View image fullscreen" aria-label="View image fullscreen">${icon("maximize-2")}</button>
+    `;
+
+    const stage = document.createElement("div");
+    stage.className = "mermaid-stage is-ready";
+
+    const parent = image.parentElement;
+    const replaceTarget =
+      parent?.tagName === "P" && parent.childNodes.length === 1 ? parent : image;
+    replaceTarget.replaceWith(figure);
+    stage.append(image);
+    figure.append(toolbar, stage);
+    renderIcons(toolbar);
+  });
+}
+
+function enhanceMarkdownImageViewers(article: HTMLElement): void {
+  article
+    .querySelectorAll<HTMLButtonElement>(".markdown-image-figure .mermaid-expand")
+    .forEach((expand) => {
+      const figure = expand.closest<HTMLElement>(".markdown-image-figure");
+      const image = figure?.querySelector<HTMLImageElement>(".mermaid-stage img");
+      if (!image) {
+        expand.remove();
+        return;
+      }
+      const open = (): void => openImageViewer(image);
+      expand.addEventListener("click", open);
+      image.addEventListener("click", open);
+      image.setAttribute("role", "button");
+      image.tabIndex = 0;
+      image.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          open();
+        }
       });
     });
 }
@@ -112,6 +139,55 @@ function openDiagramViewer(
   const svg = stage.querySelector("svg");
   if (!svg) return;
 
+  const clone = svg.cloneNode(true) as SVGElement;
+  clone.removeAttribute("style");
+  clone.classList.add("block", "max-w-none");
+  clone.style.maxWidth = "none";
+  clone.style.height = "auto";
+
+  openMediaViewer({
+    theme,
+    label: "Mermaid diagram viewer",
+    closeLabel: "Close diagram viewer",
+    content: clone,
+    baseWidth: svg.getBoundingClientRect().width,
+    onExport: () => void exportDiagram(svg),
+  });
+}
+
+function openImageViewer(image: HTMLImageElement): void {
+  const clone = image.cloneNode(true) as HTMLImageElement;
+  clone.removeAttribute("role");
+  clone.removeAttribute("tabindex");
+  clone.className = "block max-w-none h-auto";
+  clone.style.maxWidth = "none";
+  clone.style.height = "auto";
+  clone.alt = image.alt;
+
+  const bounds = image.getBoundingClientRect();
+  const naturalWidth = image.naturalWidth || bounds.width;
+  const baseWidth = Math.min(
+    Math.max(bounds.width, 1),
+    Math.max(naturalWidth, 1),
+  );
+
+  openMediaViewer({
+    theme: "light",
+    label: image.alt ? `Image viewer: ${image.alt}` : "Image viewer",
+    closeLabel: "Close image viewer",
+    content: clone,
+    baseWidth,
+  });
+}
+
+function openMediaViewer(options: {
+  theme: MermaidAppearance;
+  label: string;
+  closeLabel: string;
+  content: HTMLElement | SVGElement;
+  baseWidth: number;
+  onExport?: () => void;
+}): void {
   activeViewer?.close();
 
   const viewerTheme = {
@@ -124,10 +200,10 @@ function openDiagramViewer(
 
   const overlay = document.createElement("div");
   overlay.className = `mermaid-viewer fixed inset-x-0 top-[38px] bottom-0 z-40 overflow-hidden backdrop-blur-[18px] backdrop-saturate-[120%] ${viewerTheme.overlay}`;
-  overlay.dataset.mermaidTheme = theme;
+  overlay.dataset.mermaidTheme = options.theme;
   overlay.setAttribute("role", "dialog");
   overlay.setAttribute("aria-modal", "true");
-  overlay.setAttribute("aria-label", "Mermaid diagram viewer");
+  overlay.setAttribute("aria-label", options.label);
   overlay.innerHTML = `
     <div class="mermaid-viewer-backdrop absolute inset-0" data-viewer-close></div>
     <button
@@ -135,16 +211,20 @@ function openDiagramViewer(
       type="button"
       data-viewer-close
       title="Close"
-      aria-label="Close diagram viewer"
+      aria-label="${options.closeLabel}"
     >${icon("x")}</button>
     <div class="mermaid-viewer-hint absolute bottom-4 left-4 z-2 text-xs font-medium ${viewerTheme.hint}">Scroll to zoom · drag to pan · Esc to close</div>
-    <div class="mermaid-viewer-controls absolute right-4 bottom-4 z-2 flex items-center gap-1.5" aria-label="Diagram controls">
+    <div class="mermaid-viewer-controls absolute right-4 bottom-4 z-2 flex items-center gap-1.5" aria-label="Viewer controls">
       <button class="mermaid-viewer-zoom grid size-[34px] place-items-center rounded-app border transition-colors [&>svg]:size-[18px] [&>svg]:stroke-[1.9] ${viewerTheme.control}" type="button" data-zoom="out" title="Zoom out" aria-label="Zoom out">${icon("zoom-out")}</button>
       <select class="mermaid-viewer-zoom-select h-[34px] w-[82px] rounded-[17px] border px-2 text-sm font-semibold ${viewerTheme.select}" aria-label="Zoom level">
         ${ZOOM_LEVELS.map((level) => `<option value="${level}"${level === DEFAULT_ZOOM ? " selected" : ""}>${level}%</option>`).join("")}
       </select>
       <button class="mermaid-viewer-zoom grid size-[34px] place-items-center rounded-app border transition-colors [&>svg]:size-[18px] [&>svg]:stroke-[1.9] ${viewerTheme.control}" type="button" data-zoom="in" title="Zoom in" aria-label="Zoom in">${icon("zoom-in")}</button>
-      <button class="mermaid-viewer-export grid size-[34px] place-items-center rounded-app border transition-colors [&>svg]:size-[18px] [&>svg]:stroke-[1.9] ${viewerTheme.control}" type="button" title="Export SVG" aria-label="Export SVG">${icon("download")}</button>
+      ${
+        options.onExport
+          ? `<button class="mermaid-viewer-export grid size-[34px] place-items-center rounded-app border transition-colors [&>svg]:size-[18px] [&>svg]:stroke-[1.9] ${viewerTheme.control}" type="button" title="Export SVG" aria-label="Export SVG">${icon("download")}</button>`
+          : ""
+      }
     </div>
     <div class="mermaid-viewer-canvas absolute inset-0 z-1 grid place-items-center overflow-hidden cursor-grab touch-none">
       <div class="mermaid-viewer-world m-auto size-max origin-center"></div>
@@ -154,19 +234,12 @@ function openDiagramViewer(
 
   const world = overlay.querySelector<HTMLElement>(".mermaid-viewer-world");
   if (!world) return;
-  const clone = svg.cloneNode(true) as SVGElement;
-  clone.removeAttribute("style");
-  clone.classList.add("block", "max-w-none");
-  clone.style.maxWidth = "none";
-  clone.style.height = "auto";
-  world.append(clone);
+  world.append(options.content);
 
   // Scaling a transformed container makes WebKit rasterize that layer. Keep
-  // transforms for panning only and resize the SVG itself so it is painted as
-  // vector content at every zoom level.
-  const initialBounds = svg.getBoundingClientRect();
-  const baseWidth = initialBounds.width;
-
+  // transforms for panning only and resize the media itself so it is painted
+  // crisply at every zoom level.
+  const baseWidth = Math.max(options.baseWidth, 1);
   let zoomIndex = ZOOM_LEVELS.indexOf(DEFAULT_ZOOM);
   let translateX = 0;
   let translateY = 0;
@@ -176,7 +249,7 @@ function openDiagramViewer(
   let lastY = 0;
 
   const applyTransform = (): void => {
-    clone.style.width = `${baseWidth * (ZOOM_LEVELS[zoomIndex] / 100)}px`;
+    options.content.style.width = `${baseWidth * (ZOOM_LEVELS[zoomIndex] / 100)}px`;
     world.style.transform = `translate(${translateX}px, ${translateY}px)`;
   };
 
@@ -244,9 +317,11 @@ function openDiagramViewer(
     element.addEventListener("click", close);
   });
 
-  overlay
-    .querySelector<HTMLButtonElement>(".mermaid-viewer-export")
-    ?.addEventListener("click", () => void exportDiagram(svg));
+  if (options.onExport) {
+    overlay
+      .querySelector<HTMLButtonElement>(".mermaid-viewer-export")
+      ?.addEventListener("click", options.onExport);
+  }
   overlay.querySelectorAll<HTMLButtonElement>("[data-zoom]").forEach((button) => {
     button.addEventListener("click", () => {
       setZoomIndex(zoomIndex + (button.dataset.zoom === "in" ? 1 : -1));
