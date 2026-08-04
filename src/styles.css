@@ -378,6 +378,14 @@ a:focus-visible {
   grid-template-rows: 38px minmax(0, 1fr) 24px;
 }
 
+.app-frame.placement-top.is-status-alert {
+  grid-template-rows: 38px 36px minmax(0, 1fr) 32px;
+}
+
+.app-frame.placement-left.is-status-alert {
+  grid-template-rows: 38px minmax(0, 1fr) 32px;
+}
+
 .tab-strip,
 .tab-list {
   position: relative;
@@ -783,8 +791,6 @@ html.is-resizing-sidebar * {
 }
 
 .document-meta,
-.external-change-notice,
-.reload-notice,
 .markdown-body {
   width: min(var(--preview-max-width, 860px), calc(100% - 64px));
 }
@@ -1296,8 +1302,6 @@ html.is-resizing-sidebar * {
   }
 
   .document-meta,
-  .external-change-notice,
-  .reload-notice,
   .markdown-body {
     width: calc(100% - 40px);
   }
@@ -1462,6 +1466,149 @@ html.is-resizing-sidebar * {
 
 .status-bar {
   min-width: 0;
+}
+
+.status-bar.is-alert {
+  --status-alert-tone: var(--danger);
+  --status-alert-surface: color-mix(in srgb, var(--danger-soft) 72%, var(--chrome));
+  position: relative;
+  gap: 14px;
+  min-height: 32px;
+  padding: 4px 12px 4px 14px;
+  color: var(--text);
+  background: var(--status-alert-surface);
+  border-top-color: color-mix(in srgb, var(--status-alert-tone) 24%, var(--border));
+}
+
+.status-bar.is-alert::before {
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  left: 0;
+  width: 3px;
+  border-radius: 0 2px 2px 0;
+  background: var(--status-alert-tone);
+  content: "";
+}
+
+.status-bar.status-alert-changed {
+  --status-alert-tone: var(--accent-strong);
+  --status-alert-surface: color-mix(in srgb, var(--accent-soft) 72%, var(--chrome));
+}
+
+.status-alert {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+}
+
+.status-alert-icon {
+  display: grid;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  place-items: center;
+  color: var(--status-alert-tone);
+}
+
+.status-alert-icon svg {
+  width: 15px;
+  height: 15px;
+  stroke-width: 2;
+}
+
+.status-alert-copy {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.4;
+}
+
+.status-alert-title {
+  color: var(--text);
+  font-weight: 650;
+}
+
+.status-alert-detail {
+  margin-left: 6px;
+  color: var(--text-secondary);
+}
+
+.status-alert-actions {
+  display: flex;
+  flex: none;
+  gap: 6px;
+}
+
+.status-alert-button {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  border: 1px solid color-mix(in srgb, var(--status-alert-tone) 26%, var(--border));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--surface-raised) 86%, transparent);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease, transform 120ms ease;
+}
+
+.status-alert-button:hover {
+  background: var(--surface-raised);
+  border-color: color-mix(in srgb, var(--status-alert-tone) 46%, var(--border));
+}
+
+.status-alert-button:active {
+  transform: translateY(1px);
+}
+
+.status-alert-button.is-primary {
+  border-color: var(--status-alert-tone);
+  background: var(--status-alert-tone);
+  color: var(--surface-raised);
+}
+
+.status-alert-button.is-primary:hover {
+  background: color-mix(in srgb, var(--status-alert-tone) 86%, var(--text));
+}
+
+.status-alert-button svg {
+  width: 12px;
+  height: 12px;
+  stroke-width: 2.25;
+}
+
+.status-bar.is-alert .status-right {
+  color: var(--text-secondary);
+}
+
+@media (max-width: 720px) {
+  .status-alert-detail {
+    display: none;
+  }
+}
+
+@media (max-width: 460px) {
+  .status-bar.is-alert {
+    gap: 8px;
+    padding-right: 8px;
+  }
+
+  .status-alert {
+    gap: 8px;
+  }
+
+  .status-alert-button {
+    padding-inline: 7px;
+  }
 }
 
 .workspace-dialog-backdrop {

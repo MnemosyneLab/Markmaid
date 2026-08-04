@@ -56,7 +56,7 @@ import {
   updateScroll,
   upsertPreviewTab,
 } from "./state";
-import { buildStatusBar } from "./status";
+import { buildStatusBar, type StatusBarModel } from "./status";
 import {
   buildQuickSwitcherItems,
   disambiguatedTabLabels,
@@ -171,7 +171,7 @@ const UI = {
     "relative flex min-h-0 min-w-0 flex-[0_0_var(--sidebar-width)] flex-col overflow-hidden border-r border-app-border bg-sidebar",
   contentStage: "min-h-0 min-w-0 flex-1 overflow-hidden bg-surface",
   statusBar:
-    "status-bar flex h-6 min-w-0 items-center justify-between gap-3 border-t border-app-border bg-chrome px-3 text-[11px] text-app-secondary",
+    "status-bar flex min-h-6 min-w-0 items-center justify-between gap-3 border-t border-app-border bg-chrome px-3 text-[11px] text-app-secondary",
   centeredState: "grid size-full place-items-center p-12",
   primaryButton:
     "min-h-8 whitespace-nowrap rounded-app border border-transparent bg-accent-strong px-3.5 font-semibold text-[#f5f9fc] shadow-[0_5px_16px_color-mix(in_srgb,var(--accent)_22%,transparent)] transition-[background,color,border-color,transform] duration-120 active:translate-y-px hover:bg-[color-mix(in_srgb,var(--accent-strong)_88%,#101820)]",
@@ -203,8 +203,6 @@ const UI = {
   documentOutlineList: "m-0 flex list-none flex-col gap-0.5 p-0",
   documentOutlineItem:
     "document-outline-item w-full truncate rounded-md py-1.5 pr-2 text-left text-xs leading-5 text-app-secondary transition-[background,color] duration-120 hover:bg-surface-hover hover:text-app-text",
-  reloadNotice:
-    "mx-auto mt-[22px] flex gap-2 rounded-app border border-[color-mix(in_srgb,var(--danger)_30%,transparent)] bg-danger-soft px-3 py-2.5 text-xs leading-5 text-danger",
   settingsPage:
     "size-full overflow-y-auto overscroll-contain select-text",
   settingsContent:
@@ -819,11 +817,15 @@ function render(): void {
     colorTheme: state.colorTheme,
     theme: state.theme,
     systemDark: colorScheme.matches,
+    externalChange:
+      current?.kind === "document" && current.status === "ready"
+        ? (externalChangeNotices.get(current.key) ?? null)
+        : null,
   });
 
   root.innerHTML = `
     <div
-      class="app-frame placement-${state.tabPlacement} ${UI.frame}"
+      class="app-frame placement-${state.tabPlacement} ${status.alert ? "is-status-alert" : ""} ${UI.frame}"
       style="--sidebar-width: ${sidebarWidth}px"
     >
       <header class="titlebar ${UI.titlebar}" data-tauri-drag-region>
@@ -864,10 +866,7 @@ function render(): void {
         }
         <main class="content-stage ${UI.contentStage}" id="content-stage" aria-live="polite"></main>
       </div>
-      <footer class="${UI.statusBar}" aria-label="Status">
-        <span class="status-left truncate">${escapeHtml(status.left)}</span>
-        <span class="status-right truncate max-[720px]:hidden">${escapeHtml(status.right)}</span>
-      </footer>
+      ${renderStatusBar(status)}
       <div class="drop-overlay ${UI.dropOverlay}" aria-hidden="true">
         <div class="drop-message ${UI.dropMessage}">
           <strong class="text-lg">Drop Markdown files here</strong>
@@ -893,6 +892,42 @@ function render(): void {
   if (documentSearch.visible && documentSearch.query) {
     requestAnimationFrame(() => refreshDocumentSearch(false));
   }
+}
+
+function renderStatusBar(status: StatusBarModel): string {
+  if (status.alert) {
+    const actions = status.alert.actions
+      .map((action) => {
+        const label = action === "reload" ? "Reload" : "Keep current";
+        const attr = action === "reload" ? "data-status-reload" : "data-status-ignore";
+        const buttonClass = action === "reload" ? " is-primary" : "";
+        const title = action === "reload" ? "Reload from disk" : "Keep the current preview";
+        const buttonIcon = action === "reload" ? `${icon("refresh-cw")}` : "";
+        return `<button class="status-alert-button${buttonClass}" type="button" ${attr} title="${title}">${buttonIcon}<span>${label}</span></button>`;
+      })
+      .join("");
+    const alertIcon = status.alert.kind === "changed" ? "refresh-cw" : "circle-alert";
+    return `
+      <footer class="${UI.statusBar} is-alert status-alert-${status.alert.kind}" aria-label="Status">
+        <div class="status-alert">
+          <span class="status-alert-icon" aria-hidden="true">${icon(alertIcon)}</span>
+          <span class="status-alert-copy" role="status" aria-atomic="true">
+            <strong class="status-alert-title">${escapeHtml(status.alert.title)}</strong>
+            <span class="status-alert-detail">${escapeHtml(status.alert.detail)}</span>
+          </span>
+          <div class="status-alert-actions">${actions}</div>
+        </div>
+        <span class="status-right status-alert-meta truncate max-[960px]:hidden">${escapeHtml(status.right)}</span>
+      </footer>
+    `;
+  }
+
+  return `
+    <footer class="${UI.statusBar}" aria-label="Status">
+      <span class="status-left truncate">${escapeHtml(status.left)}</span>
+      <span class="status-right truncate max-[720px]:hidden">${escapeHtml(status.right)}</span>
+    </footer>
+  `;
 }
 
 function renderQuickSwitcher(): string {
@@ -1813,6 +1848,13 @@ function bindShellInteractions(): void {
     });
   });
 
+  root
+    .querySelector<HTMLElement>("[data-status-reload]")
+    ?.addEventListener("click", () => void reloadActiveDocument());
+  root
+    .querySelector<HTMLElement>("[data-status-ignore]")
+    ?.addEventListener("click", () => ignoreActiveExternalChange());
+
   root.querySelectorAll<HTMLElement>(".sidebar .tab").forEach((tabElement) => {
     tabElement.addEventListener("pointerdown", (event) => {
       if (event.button === 2) event.preventDefault();
@@ -2644,32 +2686,6 @@ function renderDocument(
   enhanceCodeBlocks(article);
   enhanceDiagramViewers(article);
 
-  const externalChange = externalChangeNotices.get(tab.key);
-  if (externalChange) {
-    const notice = document.createElement("div");
-    notice.className = `external-change-notice ${UI.reloadNotice}`;
-    notice.setAttribute("role", "status");
-    notice.innerHTML = `
-      <span><strong>${externalChange.kind === "changed" ? "File changed on disk." : "File unavailable."}</strong> ${escapeHtml(externalChange.message.replace(/^[^.]+\.\s*/, ""))}</span>
-      <span class="ml-auto flex flex-none gap-1.5">
-        <button class="secondary-button compact ${UI.secondaryButton} min-h-7 px-2.5 text-xs" type="button" data-external-reload>Reload</button>
-        <button class="secondary-button compact ${UI.secondaryButton} min-h-7 px-2.5 text-xs" type="button" data-external-ignore>Ignore</button>
-      </span>
-    `;
-    scroller.append(notice);
-  }
-
-  if (tab.reloadError) {
-    const notice = document.createElement("div");
-    notice.className = `reload-notice ${UI.reloadNotice}`;
-    notice.setAttribute("role", "status");
-    notice.innerHTML = `
-      <strong>Reload failed.</strong>
-      <span>${escapeHtml(tab.reloadError)} The previous preview is still shown.</span>
-    `;
-    scroller.append(notice);
-  }
-
   scroller.append(header, article);
   const outline = state.tableOfContentsVisible
     ? createDocumentOutline(article, scroller)
@@ -2683,12 +2699,6 @@ function renderDocument(
   header
     .querySelector<HTMLElement>("[data-document-reload]")
     ?.addEventListener("click", () => void reloadActiveDocument());
-  scroller
-    .querySelector<HTMLElement>("[data-external-reload]")
-    ?.addEventListener("click", () => void reloadActiveDocument());
-  scroller
-    .querySelector<HTMLElement>("[data-external-ignore]")
-    ?.addEventListener("click", () => ignoreActiveExternalChange());
   scroller.addEventListener("scroll", () => {
     state = updateScroll(state, tab.key, scroller.scrollTop);
     schedulePersist();

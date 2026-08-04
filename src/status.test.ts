@@ -42,6 +42,7 @@ describe("status bar formatting", () => {
     ).toEqual({
       left: "No preview open",
       right: "Nord · Dark",
+      alert: null,
     });
 
     expect(
@@ -95,6 +96,98 @@ describe("status bar formatting", () => {
     );
     expect(markdown.left.startsWith("Markdown Preview ·")).toBe(true);
     expect(markdown.right.includes("Solarized · Light")).toBe(true);
+    expect(markdown.alert).toBeNull();
+
+    const changed = buildStatusBar(
+      {
+        kind: "document",
+        key: "document:/a.md",
+        status: "ready",
+        requestedPath: "/a.md",
+        canonicalPath: "/a.md",
+        displayName: "a.md",
+        source: "one",
+        html: "<p>one</p>",
+        modifiedAtMs: 1,
+        sizeBytes: 12,
+        imageAssets: [],
+        scrollTop: 0,
+        reloadError: null,
+      },
+      {
+        colorTheme: "default",
+        theme: "light",
+        systemDark: false,
+        externalChange: {
+          kind: "changed",
+          message: "File changed on disk. The previous preview is still shown.",
+        },
+      },
+    );
+    expect(changed.alert).toEqual({
+      kind: "changed",
+      title: "File changed on disk.",
+      detail: "The previous preview is still shown.",
+      actions: ["reload", "ignore"],
+    });
+
+    const unavailable = buildStatusBar(
+      {
+        kind: "document",
+        key: "document:/a.md",
+        status: "ready",
+        requestedPath: "/a.md",
+        canonicalPath: "/a.md",
+        displayName: "a.md",
+        source: "one",
+        html: "<p>one</p>",
+        modifiedAtMs: 1,
+        sizeBytes: 12,
+        imageAssets: [],
+        scrollTop: 0,
+        reloadError: null,
+      },
+      {
+        colorTheme: "default",
+        theme: "light",
+        systemDark: false,
+        externalChange: {
+          kind: "unavailable",
+          message: "File unavailable. It may have been moved or deleted.",
+        },
+      },
+    );
+    expect(unavailable.alert).toEqual({
+      kind: "unavailable",
+      title: "File unavailable.",
+      detail: "It may have been moved or deleted.",
+      actions: ["reload", "ignore"],
+    });
+
+    const reloadFailed = buildStatusBar(
+      {
+        kind: "document",
+        key: "document:/a.md",
+        status: "ready",
+        requestedPath: "/a.md",
+        canonicalPath: "/a.md",
+        displayName: "a.md",
+        source: "one",
+        html: "<p>one</p>",
+        modifiedAtMs: 1,
+        sizeBytes: 12,
+        imageAssets: [],
+        scrollTop: 0,
+        reloadError: "Permission denied.",
+      },
+      { colorTheme: "default", theme: "light", systemDark: false },
+    );
+    expect(reloadFailed.alert).toEqual({
+      kind: "reload-error",
+      title: "Reload failed.",
+      detail: "Permission denied. The previous preview is still shown.",
+      actions: ["reload"],
+    });
 
     const mermaid = buildStatusBar(
       {
@@ -112,6 +205,7 @@ describe("status bar formatting", () => {
       { colorTheme: "default", theme: "dark", systemDark: true },
     );
     expect(mermaid.left.startsWith("Mermaid Preview ·")).toBe(true);
+    expect(mermaid.alert).toBeNull();
 
     const image = buildStatusBar(
       {
@@ -129,6 +223,7 @@ describe("status bar formatting", () => {
       { colorTheme: "nord", theme: "dark", systemDark: true },
     );
     expect(image.left).toBe("Image Preview · 100×50");
+    expect(image.alert).toBeNull();
   });
 
   it("labels system palette as System", () => {

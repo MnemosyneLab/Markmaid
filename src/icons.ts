@@ -1,4 +1,5 @@
 import {
+  CircleAlert,
   ChevronDown,
   ChevronRight,
   ChevronUp,
@@ -24,6 +25,7 @@ import {
 } from "lucide";
 
 const ICONS = {
+  CircleAlert,
   ChevronDown,
   ChevronRight,
   ChevronUp,
@@ -48,6 +50,7 @@ const ICONS = {
 };
 
 export type IconName =
+  | "circle-alert"
   | "chevron-down"
   | "chevron-right"
   | "chevron-up"

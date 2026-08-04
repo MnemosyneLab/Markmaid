@@ -9,9 +9,19 @@ import type {
 
 export type StatusAppearance = "light" | "dark";
 
+export type StatusBarAlertKind = "changed" | "unavailable" | "reload-error";
+
+export interface StatusBarAlert {
+  kind: StatusBarAlertKind;
+  title: string;
+  detail: string;
+  actions: Array<"reload" | "ignore">;
+}
+
 export interface StatusBarModel {
   left: string;
   right: string;
+  alert: StatusBarAlert | null;
 }
 
 const COLOR_THEME_LABELS: Record<ColorTheme, string> = {
@@ -110,6 +120,10 @@ export function buildStatusBar(
     theme: ThemeMode;
     systemDark: boolean;
     loadingLabel?: string;
+    externalChange?: {
+      kind: "changed" | "unavailable";
+      message: string;
+    } | null;
   },
 ): StatusBarModel {
   const appearance = resolveAppearance(options.theme, options.systemDark);
@@ -119,6 +133,7 @@ export function buildStatusBar(
     return {
       left: "No preview open",
       right: themeLabel,
+      alert: null,
     };
   }
 
@@ -126,6 +141,7 @@ export function buildStatusBar(
     return {
       left: "Settings",
       right: themeLabel,
+      alert: null,
     };
   }
 
@@ -133,6 +149,7 @@ export function buildStatusBar(
     return {
       left: `${tab.displayName} · Loading preview…`,
       right: themeLabel,
+      alert: null,
     };
   }
 
@@ -140,11 +157,12 @@ export function buildStatusBar(
     return {
       left: `Error · ${tab.code}`,
       right: themeLabel,
+      alert: null,
     };
   }
 
   if (tab.kind === "document") {
-    return markdownStatus(tab, themeLabel);
+    return markdownStatus(tab, themeLabel, options.externalChange ?? null);
   }
   if (tab.kind === "mermaid") {
     return mermaidStatus(tab, themeLabel);
@@ -152,14 +170,52 @@ export function buildStatusBar(
   return imageStatus(tab, themeLabel);
 }
 
-function markdownStatus(tab: DocumentTab & { status: "ready" }, themeLabel: string): StatusBarModel {
+function markdownStatus(
+  tab: DocumentTab & { status: "ready" },
+  themeLabel: string,
+  externalChange: { kind: "changed" | "unavailable"; message: string } | null,
+): StatusBarModel {
   const lines = countLines(tab.source);
   const words = countWords(tab.source);
   const characters = countUnicodeCharacters(tab.source);
   return {
     left: `Markdown Preview · ${formatCount(lines)} lines · ${formatCount(words)} words · ${formatCount(characters)} characters`,
     right: `${formatFileSize(tab.sizeBytes)} · ${formatModifiedAt(tab.modifiedAtMs)} · ${themeLabel}`,
+    alert: documentAlert(tab, externalChange),
   };
+}
+
+function documentAlert(
+  tab: DocumentTab & { status: "ready" },
+  externalChange: { kind: "changed" | "unavailable"; message: string } | null,
+): StatusBarAlert | null {
+  if (tab.reloadError) {
+    return {
+      kind: "reload-error",
+      title: "Reload failed.",
+      detail: `${tab.reloadError} The previous preview is still shown.`,
+      actions: ["reload"],
+    };
+  }
+  if (!externalChange) return null;
+  if (externalChange.kind === "changed") {
+    return {
+      kind: "changed",
+      title: "File changed on disk.",
+      detail: stripLeadingSentence(externalChange.message),
+      actions: ["reload", "ignore"],
+    };
+  }
+  return {
+    kind: "unavailable",
+    title: "File unavailable.",
+    detail: stripLeadingSentence(externalChange.message),
+    actions: ["reload", "ignore"],
+  };
+}
+
+function stripLeadingSentence(message: string): string {
+  return message.replace(/^[^.]+\.\s*/, "");
 }
 
 function mermaidStatus(tab: MermaidTab & { status: "ready" }, themeLabel: string): StatusBarModel {
@@ -168,6 +224,7 @@ function mermaidStatus(tab: MermaidTab & { status: "ready" }, themeLabel: string
   return {
     left: `Mermaid Preview · ${formatCount(lines)} lines · ${formatCount(characters)} characters`,
     right: `${formatFileSize(tab.sizeBytes)} · ${formatModifiedAt(tab.modifiedAtMs)} · ${themeLabel}`,
+    alert: null,
   };
 }
 
@@ -178,6 +235,7 @@ function imageStatus(tab: ImageTab & { status: "ready" }, themeLabel: string): S
   return {
     left: `Image Preview${dimensions}`,
     right: `${formatFileSize(tab.sizeBytes)} · ${formatModifiedAt(tab.modifiedAtMs)} · ${themeLabel}`,
+    alert: null,
   };
 }
 
