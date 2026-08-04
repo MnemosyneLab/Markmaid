@@ -13,7 +13,8 @@ Features include:
 - In-app image preview for common formats via the Tauri asset protocol
 - Syntax-highlighted code blocks with copy, download, and progressive large-block expansion
 - Document outline navigation and source-backed in-document Find (`⌘F`)
-- Quick Open (`⌘P`) across open tabs and recent documents
+- Quick Open (`⌘P`) across open tabs, pinned Markdown files, and recent documents
+  (path/name match only; refreshes the pinned-folder index each time it opens)
 - Multiple reorderable preview tabs plus a singleton Settings tab
 - Same-named tabs and Open Recent entries disambiguated with the shortest useful parent path
 - Top or left tab placement, resizable workspace sidebar, and tab context actions
@@ -53,7 +54,7 @@ run the same command against that `.app` path instead.
 | Shortcut | Action |
 | --- | --- |
 | `⌘O` | Open Markdown files |
-| `⌘P` | Quick Open (open tabs and recent documents) |
+| `⌘P` | Quick Open (open tabs, pinned Markdown, recent documents) |
 | `⌘F` | Find in the current document |
 | `⌘R` | Reload the current document |
 | `⌘W` | Close the current tab |
@@ -62,7 +63,10 @@ run the same command against that `.app` path instead.
 
 In Find: `Enter` / `Shift+Enter` cycle matches; `Esc` closes the bar. Matches in
 collapsed code blocks expand when you navigate to them. In Quick Open: `↑` /
-`↓` move, `Enter` opens, `Esc` closes.
+`↓` move, `Enter` opens, `Esc` closes. Quick Open matches file names and paths
+only (not Markdown body text), includes Markdown under pinned folders, and
+excludes `.mmd` / image files. The pinned-folder list refreshes each time you
+open it.
 
 ## Requirements
 

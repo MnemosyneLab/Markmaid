@@ -98,6 +98,7 @@ import type {
   TabPlacement,
   ThemeMode,
   WorkspaceEntry,
+  WorkspaceMarkdownIndex,
   WorkspaceMutation,
   WorkspaceRoot,
 } from "./types";
@@ -303,6 +304,11 @@ const quickSwitcher = {
   visible: false,
   query: "",
   activeIndex: 0,
+  activeItemId: null as string | null,
+  indexRequestId: 0,
+  indexing: false,
+  index: null as WorkspaceMarkdownIndex | null,
+  indexError: null as string | null,
 };
 let documentSearchRevealSequence = 0;
 const colorScheme = window.matchMedia("(prefers-color-scheme: dark)");
@@ -934,18 +940,65 @@ function renderQuickSwitcher(): string {
   return `
     <div class="quick-switcher fixed inset-0 z-50 flex justify-center bg-black/20 px-6 pt-[12vh] backdrop-blur-[2px]" data-quick-switcher-backdrop>
       <section class="max-h-[min(560px,72vh)] w-[min(680px,100%)] overflow-hidden rounded-[14px] border border-app-border bg-surface-raised shadow-app" role="dialog" aria-modal="true" aria-label="Quick open">
-        <label class="sr-only" for="quick-switcher-input">Search open tabs and recent documents</label>
-        <input id="quick-switcher-input" class="h-13 w-full border-0 border-b border-app-border bg-transparent px-4 text-[15px] text-app-text outline-none placeholder:text-app-muted" type="search" data-quick-switcher-input value="${escapeAttribute(quickSwitcher.query)}" placeholder="Search open tabs and recent documents" autocomplete="off" spellcheck="false">
+        <label class="sr-only" for="quick-switcher-input">Search open tabs, pinned Markdown files, and recent documents</label>
+        <input id="quick-switcher-input" class="h-13 w-full border-0 border-b border-app-border bg-transparent px-4 text-[15px] text-app-text outline-none placeholder:text-app-muted" type="search" data-quick-switcher-input value="${escapeAttribute(quickSwitcher.query)}" placeholder="Search open tabs, pinned Markdown, and recent documents" autocomplete="off" spellcheck="false">
         <div class="max-h-[calc(min(560px,72vh)-52px)] overflow-y-auto p-2" data-quick-switcher-results>
-          ${renderQuickSwitcherItems(quickSwitcherItems())}
+          ${renderQuickSwitcherResults()}
         </div>
       </section>
     </div>
   `;
 }
 
+function renderQuickSwitcherResults(): string {
+  const built = quickSwitcherBuild();
+  const status = renderQuickSwitcherStatus(built);
+  return `${status}${renderQuickSwitcherItems(built.items)}`;
+}
+
+function renderQuickSwitcherStatus(built: ReturnType<typeof quickSwitcherBuild>): string {
+  const messages: string[] = [];
+  if (quickSwitcher.indexing) {
+    messages.push("Indexing pinned folders…");
+  } else if (quickSwitcher.indexError) {
+    messages.push(quickSwitcher.indexError);
+  } else if (
+    quickSwitcher.index &&
+    quickSwitcher.index.unavailableRootIds.length > 0
+  ) {
+    messages.push("Some pinned folders were unavailable");
+  } else if (
+    !quickSwitcher.indexing &&
+    state.workspaceRoots.length > 0 &&
+    !quickSwitcher.query.trim()
+  ) {
+    messages.push("Type to search pinned Markdown files");
+  }
+
+  if (!quickSwitcher.indexing && built.items.length === 0 && quickSwitcher.query.trim()) {
+    messages.push("No matching documents");
+  }
+  if (built.truncated) {
+    messages.push("Showing first 200 matches — keep typing to narrow results");
+  }
+
+  if (messages.length === 0) return "";
+  return `
+    <p class="px-3 py-2 text-[11px] leading-4 text-app-muted" data-quick-switcher-status>
+      ${escapeHtml(messages.join(" · "))}
+    </p>
+  `;
+}
+
 function renderQuickSwitcherItems(items: QuickSwitcherItem[]): string {
   if (items.length === 0) {
+    if (
+      quickSwitcher.query.trim() ||
+      quickSwitcher.indexing ||
+      state.workspaceRoots.length > 0
+    ) {
+      return "";
+    }
     return `<p class="px-3 py-8 text-center text-sm text-app-muted">No matching documents</p>`;
   }
   return items
@@ -956,19 +1009,31 @@ function renderQuickSwitcherItems(items: QuickSwitcherItem[]): string {
             <strong class="block truncate text-sm font-semibold">${escapeHtml(item.label)}</strong>
             <span class="mt-0.5 block truncate font-mono text-[10px] text-app-muted">${escapeHtml(item.detail)}</span>
           </span>
-          <span class="flex-none text-[10px] font-semibold tracking-wide text-app-muted uppercase">${item.kind === "tab" ? "Open" : "Recent"}</span>
+          ${
+            item.kind === "workspace"
+              ? `<span class="flex-none rounded-md border border-app-border px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-app-muted uppercase">Workspace</span>`
+              : `<span class="flex-none text-[10px] font-semibold tracking-wide text-app-muted uppercase">${item.kind === "tab" ? "Open" : "Recent"}</span>`
+          }
         </button>
       `,
     )
     .join("");
 }
 
-function quickSwitcherItems(): QuickSwitcherItem[] {
+function quickSwitcherBuild() {
   return buildQuickSwitcherItems(
     state.tabs,
     state.recentDocuments,
     quickSwitcher.query,
+    {
+      workspaceEntries: quickSwitcher.index?.entries ?? [],
+      workspaceRoots: state.workspaceRoots,
+    },
   );
+}
+
+function quickSwitcherItems(): QuickSwitcherItem[] {
+  return quickSwitcherBuild().items;
 }
 
 function bindQuickSwitcher(): void {
@@ -977,6 +1042,7 @@ function bindQuickSwitcher(): void {
   input?.addEventListener("input", () => {
     quickSwitcher.query = input.value;
     quickSwitcher.activeIndex = 0;
+    quickSwitcher.activeItemId = null;
     updateQuickSwitcherResults();
   });
   root
@@ -1000,13 +1066,20 @@ function bindQuickSwitcherItemClicks(): void {
 
 function updateQuickSwitcherResults(): void {
   const items = quickSwitcherItems();
-  quickSwitcher.activeIndex = Math.max(
-    0,
-    Math.min(quickSwitcher.activeIndex, items.length - 1),
-  );
+  const selectedIndex = quickSwitcher.activeItemId
+    ? items.findIndex((item) => item.id === quickSwitcher.activeItemId)
+    : -1;
+  quickSwitcher.activeIndex =
+    selectedIndex >= 0
+      ? selectedIndex
+      : Math.max(
+          0,
+          Math.min(quickSwitcher.activeIndex, Math.max(items.length - 1, 0)),
+        );
+  quickSwitcher.activeItemId = items[quickSwitcher.activeIndex]?.id ?? null;
   const results = root.querySelector<HTMLElement>("[data-quick-switcher-results]");
   if (!results) return;
-  results.innerHTML = renderQuickSwitcherItems(items);
+  results.innerHTML = renderQuickSwitcherResults();
   bindQuickSwitcherItemClicks();
 }
 
@@ -1017,16 +1090,70 @@ function openQuickSwitcher(): void {
   quickSwitcher.visible = true;
   quickSwitcher.query = "";
   quickSwitcher.activeIndex = 0;
+  quickSwitcher.activeItemId = null;
+  quickSwitcher.index = null;
+  quickSwitcher.indexError = null;
+  quickSwitcher.indexing = state.workspaceRoots.length > 0;
+  const requestId = ++quickSwitcher.indexRequestId;
   render();
   requestAnimationFrame(() => {
     root.querySelector<HTMLInputElement>("[data-quick-switcher-input]")?.focus();
   });
+  void refreshWorkspaceMarkdownIndex(requestId);
 }
 
 function closeQuickSwitcher(): void {
   if (!quickSwitcher.visible) return;
   quickSwitcher.visible = false;
+  quickSwitcher.indexRequestId += 1;
+  quickSwitcher.indexing = false;
+  quickSwitcher.activeItemId = null;
   render();
+}
+
+function invalidateWorkspaceMarkdownIndex(): void {
+  quickSwitcher.indexRequestId += 1;
+  quickSwitcher.index = null;
+  quickSwitcher.indexError = null;
+  if (!quickSwitcher.visible) {
+    quickSwitcher.indexing = false;
+    return;
+  }
+  quickSwitcher.indexing = state.workspaceRoots.length > 0;
+  const requestId = quickSwitcher.indexRequestId;
+  updateQuickSwitcherResults();
+  void refreshWorkspaceMarkdownIndex(requestId);
+}
+
+async function refreshWorkspaceMarkdownIndex(requestId: number): Promise<void> {
+  if (state.workspaceRoots.length === 0) {
+    if (requestId !== quickSwitcher.indexRequestId) return;
+    quickSwitcher.indexing = false;
+    quickSwitcher.index = { entries: [], unavailableRootIds: [] };
+    quickSwitcher.indexError = null;
+    if (quickSwitcher.visible) updateQuickSwitcherResults();
+    return;
+  }
+
+  try {
+    const index = await invoke<WorkspaceMarkdownIndex>("index_workspace_markdown", {
+      rootIds: state.workspaceRoots.map((root) => root.id),
+    });
+    if (requestId !== quickSwitcher.indexRequestId || !quickSwitcher.visible) return;
+    quickSwitcher.index = index;
+    quickSwitcher.indexing = false;
+    quickSwitcher.indexError = null;
+    updateQuickSwitcherResults();
+  } catch (error) {
+    if (requestId !== quickSwitcher.indexRequestId || !quickSwitcher.visible) return;
+    quickSwitcher.indexing = false;
+    quickSwitcher.index = { entries: [], unavailableRootIds: [] };
+    quickSwitcher.indexError =
+      error instanceof Error
+        ? `Pinned folder search unavailable: ${error.message}`
+        : "Pinned folder search unavailable";
+    updateQuickSwitcherResults();
+  }
 }
 
 function moveQuickSwitcherSelection(direction: 1 | -1): void {
@@ -1034,6 +1161,7 @@ function moveQuickSwitcherSelection(direction: 1 | -1): void {
   if (items.length === 0) return;
   quickSwitcher.activeIndex =
     (quickSwitcher.activeIndex + direction + items.length) % items.length;
+  quickSwitcher.activeItemId = items[quickSwitcher.activeIndex]?.id ?? null;
   updateQuickSwitcherResults();
   root
     .querySelector<HTMLElement>(".quick-switcher-item.is-active")
@@ -1042,6 +1170,8 @@ function moveQuickSwitcherSelection(direction: 1 | -1): void {
 
 async function activateQuickSwitcherItem(item: QuickSwitcherItem): Promise<void> {
   quickSwitcher.visible = false;
+  quickSwitcher.indexRequestId += 1;
+  quickSwitcher.indexing = false;
   if (item.kind === "tab" && item.tabKey) {
     captureActiveScroll();
     state = { ...state, activeTabKey: item.tabKey };
@@ -1051,7 +1181,7 @@ async function activateQuickSwitcherItem(item: QuickSwitcherItem): Promise<void>
     await checkActiveDocumentFreshness();
     return;
   }
-  if (item.kind === "recent" && item.path) {
+  if ((item.kind === "recent" || item.kind === "workspace") && item.path) {
     await openDocumentPaths([item.path]);
   }
 }
@@ -1261,11 +1391,12 @@ function invalidateWorkspaceCache(
     for (const key of [...workspaceChildrenCache.keys()]) {
       if (key.startsWith(`${rootId}:`)) workspaceChildrenCache.delete(key);
     }
-    return;
+  } else {
+    for (const relativePath of relativePaths) {
+      workspaceChildrenCache.delete(workspaceCacheKey(rootId, relativePath));
+    }
   }
-  for (const relativePath of relativePaths) {
-    workspaceChildrenCache.delete(workspaceCacheKey(rootId, relativePath));
-  }
+  invalidateWorkspaceMarkdownIndex();
 }
 
 function workspaceInvokeError(error: unknown): string {

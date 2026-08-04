@@ -1,13 +1,32 @@
-import type { AppTab, PreviewTab } from "./types";
+import type {
+  AppTab,
+  PreviewTab,
+  WorkspaceMarkdownEntry,
+  WorkspaceRoot,
+} from "./types";
 import { previewPath } from "./state";
+
+export const QUICK_SWITCHER_WORKSPACE_LIMIT = 200;
 
 export interface QuickSwitcherItem {
   id: string;
-  kind: "tab" | "recent";
+  kind: "tab" | "workspace" | "recent";
   label: string;
   detail: string;
   tabKey?: string;
   path?: string;
+}
+
+export interface QuickSwitcherBuildOptions {
+  workspaceEntries?: WorkspaceMarkdownEntry[];
+  workspaceRoots?: WorkspaceRoot[];
+  workspaceLimit?: number;
+}
+
+export interface QuickSwitcherBuildResult {
+  items: QuickSwitcherItem[];
+  workspaceMatchCount: number;
+  truncated: boolean;
 }
 
 export function disambiguatedTabLabels(tabs: AppTab[]): Map<string, string> {
@@ -61,14 +80,19 @@ export function buildQuickSwitcherItems(
   tabs: AppTab[],
   recentDocuments: string[],
   query: string,
-): QuickSwitcherItem[] {
+  options: QuickSwitcherBuildOptions = {},
+): QuickSwitcherBuildResult {
   const openPaths = new Set<string>();
-  const items: QuickSwitcherItem[] = [];
+  const tabItems: QuickSwitcherItem[] = [];
   const openLabels = disambiguatedTabLabels(tabs);
+  const limit = options.workspaceLimit ?? QUICK_SWITCHER_WORKSPACE_LIMIT;
+  const rootsById = new Map(
+    (options.workspaceRoots ?? []).map((root) => [root.id, root]),
+  );
 
   for (const tab of tabs) {
     if (tab.kind === "settings") {
-      items.push({
+      tabItems.push({
         id: "tab:settings",
         kind: "tab",
         label: "Settings",
@@ -79,7 +103,7 @@ export function buildQuickSwitcherItems(
     }
     const path = previewPath(tab);
     openPaths.add(path);
-    items.push({
+    tabItems.push({
       id: `tab:${tab.key}`,
       kind: "tab",
       label: openLabels.get(tab.key) ?? tab.displayName,
@@ -88,9 +112,10 @@ export function buildQuickSwitcherItems(
     });
   }
 
+  const recentItems: QuickSwitcherItem[] = [];
   for (const path of recentDocuments) {
     if (openPaths.has(path)) continue;
-    items.push({
+    recentItems.push({
       id: `recent:${path}`,
       kind: "recent",
       label: fileName(path),
@@ -100,11 +125,70 @@ export function buildQuickSwitcherItems(
   }
 
   const terms = query.toLocaleLowerCase().trim().split(/\s+/).filter(Boolean);
-  if (terms.length === 0) return items;
-  return items.filter((item) => {
-    const haystack = `${item.label}\n${item.detail}`.toLocaleLowerCase();
-    return terms.every((term) => haystack.includes(term));
-  });
+  const filterItems = (items: QuickSwitcherItem[]): QuickSwitcherItem[] => {
+    if (terms.length === 0) return items;
+    return items.filter((item) => {
+      const haystack = `${item.label}\n${item.detail}`.toLocaleLowerCase();
+      return terms.every((term) => haystack.includes(term));
+    });
+  };
+
+  const filteredTabs = filterItems(tabItems);
+  const filteredRecent = filterItems(recentItems);
+
+  if (terms.length === 0) {
+    return {
+      items: [...filteredTabs, ...filteredRecent],
+      workspaceMatchCount: 0,
+      truncated: false,
+    };
+  }
+
+  const queryText = query.toLocaleLowerCase().trim();
+  const workspaceMatches = (options.workspaceEntries ?? [])
+    .filter((entry) => !openPaths.has(entry.canonicalPath))
+    .map((entry) => {
+      const rootName = rootsById.get(entry.rootId)?.displayName ?? entry.rootId;
+      const detailPath = entry.relativePath
+        ? `${rootName} / ${entry.relativePath}`
+        : rootName;
+      const haystack = `${entry.name}\n${rootName}\n${entry.relativePath}`.toLocaleLowerCase();
+      if (!terms.every((term) => haystack.includes(term))) return null;
+      return {
+        entry,
+        item: {
+          id: `workspace:${entry.canonicalPath}`,
+          kind: "workspace" as const,
+          label: entry.name,
+          detail: detailPath,
+          path: entry.canonicalPath,
+        },
+        rank: workspaceMatchRank(entry.name, queryText),
+      };
+    })
+    .filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== null)
+    .sort((left, right) => {
+      if (left.rank !== right.rank) return left.rank - right.rank;
+      return left.entry.canonicalPath.localeCompare(right.entry.canonicalPath);
+    });
+
+  const workspaceMatchCount = workspaceMatches.length;
+  const truncated = workspaceMatchCount > limit;
+  const workspaceItems = workspaceMatches
+    .slice(0, limit)
+    .map((candidate) => candidate.item);
+
+  // Prefer workspace hits over recent for the same path.
+  const workspacePaths = new Set(workspaceItems.map((item) => item.path));
+  const recentWithoutWorkspace = filteredRecent.filter(
+    (item) => !item.path || !workspacePaths.has(item.path),
+  );
+
+  return {
+    items: [...filteredTabs, ...workspaceItems, ...recentWithoutWorkspace],
+    workspaceMatchCount,
+    truncated,
+  };
 }
 
 export function shouldSuppressTabClick(
@@ -114,6 +198,13 @@ export function shouldSuppressTabClick(
   now: number,
 ): boolean {
   return Boolean(key && key === suppressedKey && now < suppressedUntil);
+}
+
+function workspaceMatchRank(name: string, queryText: string): number {
+  const lowerName = name.toLocaleLowerCase();
+  if (lowerName === queryText) return 0;
+  if (lowerName.startsWith(queryText)) return 1;
+  return 2;
 }
 
 function fileName(path: string): string {

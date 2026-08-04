@@ -213,6 +213,18 @@ export interface ImagePreview {
   message?: string;
 }
 
+export interface WorkspaceMarkdownEntry {
+  rootId: string;
+  canonicalPath: string;
+  relativePath: string;
+  name: string;
+}
+
+export interface WorkspaceMarkdownIndex {
+  entries: WorkspaceMarkdownEntry[];
+  unavailableRootIds: string[];
+}
+
 export interface AppState {
   tabs: AppTab[];
   activeTabKey: string | null;

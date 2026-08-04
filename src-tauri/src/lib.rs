@@ -15,9 +15,9 @@ use tauri::{
     menu::{Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder},
 };
 use workspace::{
-    WorkspaceRegistry, create_workspace_item, list_workspace_children, load_workspace_image,
-    load_workspace_mermaid, register_workspace_root, rename_workspace_item, trash_workspace_item,
-    unregister_workspace_root,
+    WorkspaceRegistry, create_workspace_item, index_workspace_markdown, list_workspace_children,
+    load_workspace_image, load_workspace_mermaid, register_workspace_root, rename_workspace_item,
+    trash_workspace_item, unregister_workspace_root,
 };
 
 const OPEN_FILES_EVENT: &str = "markmaid://open-files";
@@ -394,7 +394,8 @@ pub fn run() {
             rename_workspace_item,
             trash_workspace_item,
             load_workspace_mermaid,
-            load_workspace_image
+            load_workspace_image,
+            index_workspace_markdown
         ]);
 
     let app = builder

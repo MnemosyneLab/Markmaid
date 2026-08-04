@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  QUICK_SWITCHER_WORKSPACE_LIMIT,
   buildQuickSwitcherItems,
   disambiguatePathLabels,
   shouldSuppressTabClick,
 } from "./ui-logic";
-import type { AppTab, ReadyDocumentTab } from "./types";
+import type { AppTab, ReadyDocumentTab, WorkspaceMarkdownEntry } from "./types";
 
 function ready(path: string): ReadyDocumentTab {
   return {
@@ -22,6 +23,18 @@ function ready(path: string): ReadyDocumentTab {
     imageAssets: [],
     scrollTop: 0,
     reloadError: null,
+  };
+}
+
+function workspaceEntry(
+  partial: Partial<WorkspaceMarkdownEntry> &
+    Pick<WorkspaceMarkdownEntry, "canonicalPath" | "name">,
+): WorkspaceMarkdownEntry {
+  return {
+    rootId: partial.rootId ?? "root-docs",
+    relativePath: partial.relativePath ?? partial.name,
+    canonicalPath: partial.canonicalPath,
+    name: partial.name,
   };
 }
 
@@ -55,8 +68,40 @@ describe("quick switcher", () => {
     { kind: "settings", key: "settings" },
   ];
 
+  const workspaceRoots = [
+    { id: "root-docs", canonicalPath: "/docs", displayName: "docs" },
+    { id: "root-notes", canonicalPath: "/notes", displayName: "notes" },
+  ];
+
+  const workspaceEntries: WorkspaceMarkdownEntry[] = [
+    workspaceEntry({
+      rootId: "root-docs",
+      canonicalPath: "/docs/guides/intro.md",
+      relativePath: "guides/intro.md",
+      name: "intro.md",
+    }),
+    workspaceEntry({
+      rootId: "root-notes",
+      canonicalPath: "/notes/guides/intro.md",
+      relativePath: "guides/intro.md",
+      name: "intro.md",
+    }),
+    workspaceEntry({
+      rootId: "root-docs",
+      canonicalPath: "/docs/design.md",
+      relativePath: "design.md",
+      name: "design.md",
+    }),
+    workspaceEntry({
+      rootId: "root-docs",
+      canonicalPath: "/work/MarkMaid/README.md",
+      relativePath: "README.md",
+      name: "README.md",
+    }),
+  ];
+
   it("lists open tabs before unopened recent documents", () => {
-    const items = buildQuickSwitcherItems(
+    const { items } = buildQuickSwitcherItems(
       tabs,
       ["/work/MarkMaid/README.md", "/notes/design.md"],
       "",
@@ -69,8 +114,85 @@ describe("quick switcher", () => {
     ]);
   });
 
+  it("keeps empty queries free of workspace listings", () => {
+    const { items, workspaceMatchCount } = buildQuickSwitcherItems(
+      tabs,
+      ["/notes/design.md"],
+      "",
+      { workspaceEntries, workspaceRoots },
+    );
+
+    expect(workspaceMatchCount).toBe(0);
+    expect(items.every((item) => item.kind !== "workspace")).toBe(true);
+  });
+
+  it("matches all query terms against names, root labels, and nested paths", () => {
+    const { items } = buildQuickSwitcherItems(
+      tabs,
+      ["/notes/design.md"],
+      "docs guides intro",
+      { workspaceEntries, workspaceRoots },
+    );
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      kind: "workspace",
+      path: "/docs/guides/intro.md",
+      detail: "docs / guides/intro.md",
+    });
+  });
+
+  it("orders workspace hits before recent and dedupes open or recent paths", () => {
+    const { items } = buildQuickSwitcherItems(
+      tabs,
+      ["/docs/design.md", "/tmp/design-draft.md"],
+      "design",
+      { workspaceEntries, workspaceRoots },
+    );
+
+    expect(items.map((item) => [item.kind, item.path ?? item.tabKey])).toEqual([
+      ["workspace", "/docs/design.md"],
+      ["recent", "/tmp/design-draft.md"],
+    ]);
+  });
+
+  it("distinguishes same-named workspace files and ranks exact names first", () => {
+    const { items } = buildQuickSwitcherItems(tabs, [], "intro.md", {
+      workspaceEntries,
+      workspaceRoots,
+    });
+
+    expect(items.map((item) => item.detail)).toEqual([
+      "docs / guides/intro.md",
+      "notes / guides/intro.md",
+    ]);
+    expect(items[0].label).toBe("intro.md");
+  });
+
+  it("caps workspace matches at 200 and reports truncation", () => {
+    const many = Array.from({ length: QUICK_SWITCHER_WORKSPACE_LIMIT + 5 }, (_, index) =>
+      workspaceEntry({
+        canonicalPath: `/docs/file-${index}.md`,
+        relativePath: `file-${index}.md`,
+        name: `file-${index}.md`,
+      }),
+    );
+    const { items, workspaceMatchCount, truncated } = buildQuickSwitcherItems(
+      [],
+      [],
+      "file",
+      { workspaceEntries: many, workspaceRoots },
+    );
+
+    expect(workspaceMatchCount).toBe(QUICK_SWITCHER_WORKSPACE_LIMIT + 5);
+    expect(truncated).toBe(true);
+    expect(items.filter((item) => item.kind === "workspace")).toHaveLength(
+      QUICK_SWITCHER_WORKSPACE_LIMIT,
+    );
+  });
+
   it("matches all query terms against names and paths", () => {
-    const items = buildQuickSwitcherItems(
+    const { items } = buildQuickSwitcherItems(
       tabs,
       ["/work/MarkMaid/README.md", "/notes/design.md"],
       "notes design",

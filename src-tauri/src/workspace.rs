@@ -105,6 +105,22 @@ pub struct ImagePreview {
     pub message: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceMarkdownEntry {
+    pub root_id: String,
+    pub canonical_path: String,
+    pub relative_path: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceMarkdownIndex {
+    pub entries: Vec<WorkspaceMarkdownEntry>,
+    pub unavailable_root_ids: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceError {
     pub code: &'static str,
@@ -212,6 +228,17 @@ pub fn load_workspace_image(
 ) -> Result<ImagePreview, String> {
     load_workspace_image_inner(&app, &registry, &root_id, &relative_path)
         .map_err(|error| error.to_string_error())
+}
+
+#[tauri::command]
+pub async fn index_workspace_markdown(
+    registry: State<'_, WorkspaceRegistry>,
+    root_ids: Vec<String>,
+) -> Result<WorkspaceMarkdownIndex, String> {
+    let snapshots = snapshot_registered_roots(&registry, &root_ids);
+    tauri::async_runtime::spawn_blocking(move || index_workspace_markdown_inner(snapshots))
+        .await
+        .map_err(|error| format!("Could not index workspace Markdown: {error}"))
 }
 
 fn register_workspace_root_inner(
@@ -565,6 +592,159 @@ fn move_to_trash(path: &Path) -> Result<(), WorkspaceError> {
             format!("Could not move the item to Trash: {error}"),
         )
     })
+}
+
+fn snapshot_registered_roots(
+    registry: &WorkspaceRegistry,
+    root_ids: &[String],
+) -> Vec<(String, Option<PathBuf>)> {
+    let guard = registry.0.lock().expect("workspace registry lock poisoned");
+    root_ids
+        .iter()
+        .map(|root_id| (root_id.clone(), guard.get(root_id).cloned()))
+        .collect()
+}
+
+fn index_workspace_markdown_inner(
+    snapshots: Vec<(String, Option<PathBuf>)>,
+) -> WorkspaceMarkdownIndex {
+    let mut entries = Vec::new();
+    let mut unavailable_root_ids = Vec::new();
+    let mut seen_paths = std::collections::HashSet::new();
+
+    for (root_id, root_path) in snapshots {
+        let Some(root_path) = root_path else {
+            unavailable_root_ids.push(root_id);
+            continue;
+        };
+        let Ok(root) = fs::canonicalize(&root_path) else {
+            unavailable_root_ids.push(root_id);
+            continue;
+        };
+        let root_meta = match fs::symlink_metadata(&root) {
+            Ok(meta) => meta,
+            Err(_) => {
+                unavailable_root_ids.push(root_id);
+                continue;
+            }
+        };
+        if root_meta.file_type().is_symlink() || !root_meta.is_dir() {
+            unavailable_root_ids.push(root_id);
+            continue;
+        }
+
+        let mut root_entries = Vec::new();
+        if let Err(_error) = collect_markdown_entries(&root, &root_id, "", &mut root_entries) {
+            unavailable_root_ids.push(root_id);
+            continue;
+        }
+        for entry in root_entries {
+            if seen_paths.insert(entry.canonical_path.clone()) {
+                entries.push(entry);
+            }
+        }
+    }
+
+    entries.sort_by(|left, right| {
+        left.root_id
+            .to_ascii_lowercase()
+            .cmp(&right.root_id.to_ascii_lowercase())
+            .then_with(|| {
+                left.relative_path
+                    .to_ascii_lowercase()
+                    .cmp(&right.relative_path.to_ascii_lowercase())
+            })
+            .then_with(|| left.canonical_path.cmp(&right.canonical_path))
+    });
+    unavailable_root_ids.sort();
+    unavailable_root_ids.dedup();
+
+    WorkspaceMarkdownIndex {
+        entries,
+        unavailable_root_ids,
+    }
+}
+
+fn collect_markdown_entries(
+    root: &Path,
+    root_id: &str,
+    relative_path: &str,
+    entries: &mut Vec<WorkspaceMarkdownEntry>,
+) -> Result<(), WorkspaceError> {
+    let mut visited = std::collections::HashSet::new();
+    collect_markdown_entries_inner(root, root_id, relative_path, entries, &mut visited)
+}
+
+fn collect_markdown_entries_inner(
+    root: &Path,
+    root_id: &str,
+    relative_path: &str,
+    entries: &mut Vec<WorkspaceMarkdownEntry>,
+    visited: &mut std::collections::HashSet<PathBuf>,
+) -> Result<(), WorkspaceError> {
+    let directory = if relative_path.is_empty() {
+        root.to_path_buf()
+    } else {
+        resolve_existing_path(root, relative_path)?
+    };
+    let metadata = fs::symlink_metadata(&directory).map_err(map_io_error)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(WorkspaceError::new(
+            "not_a_directory",
+            "Only directories can be indexed.",
+        ));
+    }
+    if !visited.insert(directory.clone()) {
+        return Ok(());
+    }
+
+    let read_dir = fs::read_dir(&directory).map_err(map_io_error)?;
+    for item in read_dir {
+        let item = item.map_err(map_io_error)?;
+        let name = item.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with('.') {
+            continue;
+        }
+        let path = item.path();
+        let Ok(meta) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        let child_relative = join_relative(relative_path, &name);
+        if meta.is_dir() {
+            let Ok(canonical_child) = fs::canonicalize(&path) else {
+                continue;
+            };
+            if ensure_inside_root(root, &canonical_child).is_err() {
+                continue;
+            }
+            let _ =
+                collect_markdown_entries_inner(root, root_id, &child_relative, entries, visited);
+            continue;
+        }
+        if !meta.is_file() {
+            continue;
+        }
+        if classify_file(&path) != Some(WorkspaceEntryKind::Markdown) {
+            continue;
+        }
+        let Ok(canonical_file) = fs::canonicalize(&path) else {
+            continue;
+        };
+        if ensure_inside_root(root, &canonical_file).is_err() {
+            continue;
+        }
+        entries.push(WorkspaceMarkdownEntry {
+            root_id: root_id.to_string(),
+            canonical_path: path_to_string(&canonical_file),
+            relative_path: child_relative,
+            name: name.into_owned(),
+        });
+    }
+    Ok(())
 }
 
 fn resolve_root(registry: &WorkspaceRegistry, root_id: &str) -> Result<PathBuf, WorkspaceError> {
@@ -964,5 +1144,77 @@ mod tests {
         )
         .unwrap();
         assert!(source.ends_with("gone.md"));
+    }
+
+    #[test]
+    fn indexes_markdown_recursively_and_skips_unsupported_entries() {
+        let dir = tempdir().unwrap();
+        fs::create_dir(dir.path().join("guides")).unwrap();
+        fs::create_dir(dir.path().join(".hidden-dir")).unwrap();
+        fs::write(dir.path().join("README.MD"), "# top").unwrap();
+        fs::write(dir.path().join("notes.markdown"), "# notes").unwrap();
+        fs::write(dir.path().join("deep.mdown"), "").unwrap();
+        fs::write(dir.path().join("guides").join("intro.mkd"), "").unwrap();
+        fs::write(
+            dir.path().join("guides").join("chart.mmd"),
+            "flowchart TD\nA-->B\n",
+        )
+        .unwrap();
+        fs::write(dir.path().join("photo.png"), [0_u8; 4]).unwrap();
+        fs::write(dir.path().join("secret.rs"), "fn main() {}").unwrap();
+        fs::write(dir.path().join(".hidden.md"), "").unwrap();
+        fs::write(dir.path().join(".hidden-dir").join("nested.md"), "").unwrap();
+        symlink(dir.path().join("README.MD"), dir.path().join("link.md")).unwrap();
+
+        let (registry, root) = registry_with(dir.path());
+        let root_path = registry.0.lock().unwrap().get(&root.id).cloned();
+        let index = index_workspace_markdown_inner(vec![(root.id.clone(), root_path)]);
+        let names = index
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec!["deep.mdown", "intro.mkd", "notes.markdown", "README.MD"]
+        );
+        assert!(index.unavailable_root_ids.is_empty());
+        assert!(
+            index
+                .entries
+                .iter()
+                .any(|entry| entry.relative_path == "guides/intro.mkd")
+        );
+    }
+
+    #[test]
+    fn indexes_partial_failures_and_dedupes_nested_roots() {
+        let good = tempdir().unwrap();
+        fs::write(good.path().join("a.md"), "").unwrap();
+        fs::create_dir(good.path().join("inside")).unwrap();
+        fs::write(good.path().join("inside").join("shared.md"), "").unwrap();
+
+        let (registry, root_a) = registry_with(good.path());
+        let root_b =
+            register_workspace_root_inner(&registry, &path_to_string(&good.path().join("inside")))
+                .unwrap();
+
+        let root_a_path = registry.0.lock().unwrap().get(&root_a.id).cloned();
+        let root_b_path = registry.0.lock().unwrap().get(&root_b.id).cloned();
+        let missing_id = "root-missing".to_string();
+        let index = index_workspace_markdown_inner(vec![
+            (root_a.id.clone(), root_a_path),
+            (root_b.id.clone(), root_b_path),
+            (missing_id.clone(), None),
+        ]);
+
+        assert!(index.unavailable_root_ids.contains(&missing_id));
+        let shared_count = index
+            .entries
+            .iter()
+            .filter(|entry| entry.name == "shared.md")
+            .count();
+        assert_eq!(shared_count, 1);
+        assert!(index.entries.iter().any(|entry| entry.name == "a.md"));
     }
 }
