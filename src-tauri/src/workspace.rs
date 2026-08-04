@@ -312,6 +312,9 @@ fn list_workspace_children_inner(
         }
         let child_relative = join_relative(relative_path, &name);
         if meta.is_dir() {
+            if !directory_contains_visible_item(&path) {
+                continue;
+            }
             entries.push(WorkspaceEntry {
                 root_id: root_id.to_string(),
                 relative_path: child_relative,
@@ -320,7 +323,7 @@ fn list_workspace_children_inner(
                 kind: WorkspaceEntryKind::Directory,
                 size_bytes: None,
                 modified_at_ms: Some(metadata_modified_at_ms(&meta)),
-                has_visible_children: Some(directory_has_visible_children(&path)),
+                has_visible_children: Some(true),
             });
             continue;
         }
@@ -917,7 +920,7 @@ fn classify_file(path: &Path) -> Option<WorkspaceEntryKind> {
     None
 }
 
-fn directory_has_visible_children(path: &Path) -> bool {
+fn directory_contains_visible_item(path: &Path) -> bool {
     let Ok(read_dir) = fs::read_dir(path) else {
         return false;
     };
@@ -933,7 +936,10 @@ fn directory_has_visible_children(path: &Path) -> bool {
         if meta.file_type().is_symlink() {
             continue;
         }
-        if meta.is_dir() || classify_file(&item.path()).is_some() {
+        if meta.is_dir() && directory_contains_visible_item(&item.path()) {
+            return true;
+        }
+        if meta.is_file() && classify_file(&item.path()).is_some() {
             return true;
         }
     }
@@ -996,7 +1002,7 @@ mod tests {
     }
 
     #[test]
-    fn filters_hidden_unsupported_and_symlink_entries() {
+    fn filters_hidden_unsupported_empty_and_symlink_entries() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("readme.md"), "").unwrap();
         fs::write(dir.path().join("diagram.mmd"), "flowchart TD\nA-->B\n").unwrap();
@@ -1012,10 +1018,54 @@ mod tests {
             .iter()
             .map(|entry| entry.name.as_str())
             .collect::<Vec<_>>();
+        assert_eq!(names, vec!["diagram.mmd", "photo.png", "readme.md"]);
+    }
+
+    #[test]
+    fn keeps_only_directories_with_visible_descendants() {
+        let dir = tempdir().unwrap();
+        fs::create_dir(dir.path().join("docs")).unwrap();
+        fs::create_dir(dir.path().join("docs").join("guides")).unwrap();
+        fs::write(dir.path().join("docs").join("guides").join("readme.md"), "").unwrap();
+        fs::create_dir(dir.path().join("diagrams")).unwrap();
+        fs::create_dir(dir.path().join("diagrams").join("flows")).unwrap();
+        fs::write(
+            dir.path().join("diagrams").join("flows").join("system.mmd"),
+            "flowchart TD\nA-->B\n",
+        )
+        .unwrap();
+        fs::create_dir(dir.path().join("empty")).unwrap();
+        fs::write(dir.path().join("empty").join("notes.txt"), "").unwrap();
+        fs::create_dir(dir.path().join("unsupported")).unwrap();
+        fs::create_dir(dir.path().join("unsupported").join("nested")).unwrap();
+        fs::write(
+            dir.path()
+                .join("unsupported")
+                .join("nested")
+                .join("notes.txt"),
+            "",
+        )
+        .unwrap();
+
+        let (registry, root) = registry_with(dir.path());
+        let children = list_workspace_children_inner(&registry, &root.id, "").unwrap();
         assert_eq!(
-            names,
-            vec!["guides", "diagram.mmd", "photo.png", "readme.md"]
+            children
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["diagrams", "docs"]
         );
+        assert!(
+            children
+                .iter()
+                .all(|entry| entry.has_visible_children == Some(true))
+        );
+
+        let docs = list_workspace_children_inner(&registry, &root.id, "docs").unwrap();
+        assert_eq!(docs[0].name, "guides");
+        let guides = list_workspace_children_inner(&registry, &root.id, "docs/guides").unwrap();
+        assert_eq!(guides[0].name, "readme.md");
     }
 
     #[test]
