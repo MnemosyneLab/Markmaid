@@ -190,6 +190,15 @@ describe("tab state", () => {
     expect(restored.tabs[0]).toMatchObject({ scrollTop: 480 });
   });
 
+  it("restores the high-contrast color palette", () => {
+    const persisted = {
+      ...toPersistedSession(baseState()),
+      colorTheme: "high-contrast",
+    };
+
+    expect(fromPersistedSession(persisted).colorTheme).toBe("high-contrast");
+  });
+
   it("defaults missing sidebar width and clamps invalid values", () => {
     expect(DEFAULT_STATE.tabPlacement).toBe("left");
     expect(DEFAULT_STATE.sidebarView).toBe("tabs");

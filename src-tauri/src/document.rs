@@ -59,6 +59,7 @@ pub enum ColorTheme {
     Nord,
     Gruvbox,
     Catppuccin,
+    HighContrast,
 }
 
 struct MermaidPalette {
@@ -200,6 +201,36 @@ impl ColorTheme {
                 warning: "#f9e2af",
                 error: "#f38ba8",
                 series: ["#89b4fa", "#a6e3a1", "#cba6f7", "#fab387", "#f38ba8"],
+            },
+            (Self::HighContrast, false) => MermaidPalette {
+                canvas: "#ffffff",
+                surface: "#ffffff",
+                surface_alt: "#f2f2f2",
+                surface_muted: "#f2f2f2",
+                text: "#000000",
+                subtle_text: "#444444",
+                border: "#000000",
+                line: "#1a1a1a",
+                accent: "#0037da",
+                success: "#006b2d",
+                warning: "#7a3e00",
+                error: "#b10e1e",
+                series: ["#0037da", "#006b2d", "#8d008d", "#7a3e00", "#b10e1e"],
+            },
+            (Self::HighContrast, true) => MermaidPalette {
+                canvas: "#000000",
+                surface: "#000000",
+                surface_alt: "#262626",
+                surface_muted: "#000000",
+                text: "#ffffff",
+                subtle_text: "#d6d6d6",
+                border: "#ffffff",
+                line: "#ffffff",
+                accent: "#ffff00",
+                success: "#00ff00",
+                warning: "#ff9d00",
+                error: "#ff8c8c",
+                series: ["#ffff00", "#00ff00", "#00ffff", "#ff9d00", "#ff8c8c"],
             },
             (Self::Default, false) => MermaidPalette {
                 canvas: "#fbfcfd",
@@ -1160,6 +1191,16 @@ mod tests {
         assert_eq!(
             dark.as_value()["themeVariables"]["actorTextColor"],
             "#cdd6f4"
+        );
+
+        let high_contrast = MermaidTheme::Dark.config(ColorTheme::HighContrast);
+        assert_eq!(
+            high_contrast.as_value()["themeVariables"]["primaryBorderColor"],
+            "#ffffff"
+        );
+        assert_eq!(
+            high_contrast.as_value()["themeVariables"]["lineColor"],
+            "#ffffff"
         );
     }
 

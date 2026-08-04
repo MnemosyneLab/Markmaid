@@ -154,6 +154,11 @@ const COLOR_THEME_OPTIONS: ReadonlyArray<{
   { value: "nord", label: "Nord", description: "Cool Arctic" },
   { value: "gruvbox", label: "Gruvbox", description: "Warm retro" },
   { value: "catppuccin", label: "Catppuccin", description: "Soft pastel" },
+  {
+    value: "high-contrast",
+    label: "High Contrast",
+    description: "Accessible black and white",
+  },
 ];
 const UI = {
   frame: "h-full grid bg-window",

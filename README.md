@@ -19,7 +19,8 @@ Features include:
 - Same-named tabs and Open Recent entries disambiguated with the shortest useful parent path
 - Top or left tab placement, resizable workspace sidebar, and tab context actions
 - Persistent bottom status bar with preview stats, file size, modified time, and theme
-- System, light, and dark appearance with multiple color palettes
+- System, light, and dark appearance with multiple color palettes, including
+  high-contrast black and white variants
 - Configurable text font, code font, and reading width
 - Finder file associations, multi-select Open, drag and drop, and single-instance
   file forwarding

@@ -32,6 +32,12 @@ describe("status bar formatting", () => {
     expect(label.includes("2026")).toBe(true);
   });
 
+  it("formats the high-contrast palette label", () => {
+    expect(formatThemeLabel("high-contrast", "dark")).toBe(
+      "High Contrast · Dark",
+    );
+  });
+
   it("builds markdown, mermaid, image, loading, error, and empty states", () => {
     expect(
       buildStatusBar(null, {

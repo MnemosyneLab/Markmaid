@@ -1,5 +1,11 @@
 export type ThemeMode = "system" | "light" | "dark";
-export type ColorTheme = "default" | "solarized" | "nord" | "gruvbox" | "catppuccin";
+export type ColorTheme =
+  | "default"
+  | "solarized"
+  | "nord"
+  | "gruvbox"
+  | "catppuccin"
+  | "high-contrast";
 export type TabPlacement = "top" | "left";
 export type SidebarView = "files" | "tabs";
 export type TextFont = string;

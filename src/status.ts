@@ -30,6 +30,7 @@ const COLOR_THEME_LABELS: Record<ColorTheme, string> = {
   nord: "Nord",
   gruvbox: "Gruvbox",
   catppuccin: "Catppuccin",
+  "high-contrast": "High Contrast",
 };
 
 export function resolveAppearance(

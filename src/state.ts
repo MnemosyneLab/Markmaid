@@ -688,7 +688,7 @@ function isMermaidLightTheme(value: unknown): value is MermaidLightTheme {
 }
 
 function isColorTheme(value: unknown): value is ColorTheme {
-  return ["default", "solarized", "nord", "gruvbox", "catppuccin"].includes(
+  return ["default", "solarized", "nord", "gruvbox", "catppuccin", "high-contrast"].includes(
     value as string,
   );
 }
