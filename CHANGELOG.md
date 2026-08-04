@@ -2,6 +2,14 @@
 
 All notable changes to MarkMaid are documented in this file.
 
+## [0.1.3] - Unreleased
+
+### Added
+
+### Changed
+
+### Fixed
+
 ## [0.1.2] - 2026-08-03
 
 ### Added
@@ -56,6 +64,7 @@ All notable changes to MarkMaid are documented in this file.
 - Manual reload that preserves the previous preview when reloading fails
 - Local release tooling for version sync, ARM builds, and GitHub Releases
 
+[0.1.3]: https://github.com/Weichen-LF/Markmaid/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/Weichen-LF/Markmaid/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/Weichen-LF/Markmaid/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Weichen-LF/Markmaid/releases/tag/v0.1.0
