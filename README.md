@@ -99,14 +99,18 @@ local Apple Silicon Mac; this repository does not require GitHub Actions.
 
 ## Structure
 
-- `src/main.ts`: Tauri event wiring and read-only preview UI
-- `src/state.ts`: tab and persisted-session state model
+- `src/main.ts`: Tauri event wiring, workspace UI, and read-only preview chrome
+- `src/state.ts`: tab, workspace-root, and persisted-session state model
+- `src/workspace.ts` / `src/status.ts` / `src/ui-logic.ts`: workspace helpers, status bar, Quick Open matching
 - `src/search.ts`: source-backed in-document Find matching
 - `src/freshness.ts`: external-change probe and Reload / Ignore state
-- `src-tauri/src/document.rs`: validated file loading and GFM rendering
+- `src/diagram-viewer.ts`: Mermaid and Markdown-image fullscreen viewers
+- `src-tauri/src/document.rs`: validated file loading and GFM / Mermaid rendering
+- `src-tauri/src/workspace.rs`: pinned roots, tree listing, file ops, and Markdown index for Quick Open
 - `src-tauri/src/lib.rs`: menus, plugins, single-instance, and macOS open events
 - `src-tauri/capabilities/`: Tauri permission capabilities
 - `src-tauri/tauri.conf.json`: window, bundle, and build configuration
+- `docs/examples/`: sample Markdown / Mermaid / image files for manual preview
 - `scripts/`: local quality, versioning, release build, and publishing tools
 
 ## License

@@ -2,13 +2,30 @@
 
 All notable changes to MarkMaid are documented in this file.
 
-## [0.1.3] - Unreleased
+## [0.1.3] - 2026-08-04
 
 ### Added
 
+- Workspace sidebar with pinned folders, a lazy Files tree, and an Open Tabs view
+- In-folder file management for pinned roots: create empty Markdown or folders, rename, move to Trash, and Reveal in Finder
+- Standalone Mermaid (`.mmd`) and image preview tabs opened from the Files tree
+- Persistent bottom status bar with preview stats, file size, modified time, theme, and Reload / Ignore for external document changes
+- Quick Open (`⌘P`) recursive search over Markdown under pinned folders (path and file-name match only; refreshes on each open)
+- `docs/examples` sample set for Markdown, GFM/code, Mermaid fences, standalone `.mmd`, and local images
+- Extended syntax highlighting coverage via two-face language packs
+
 ### Changed
 
+- Default sidebar switch order is Open Tabs → Files, with Open Tabs as the default view
+- Markdown-embedded images use the Mermaid-style framed preview and fullscreen zoom / pan viewer
+- Restore ordered and unordered list markers in Markdown preview (Tailwind reset)
+- Surface external-change and reload-failure alerts in the status bar instead of an in-document banner
+- Keep dependency pins current for the 0.1.3 release line
+
 ### Fixed
+
+- Preserve previous Markdown preview when reload fails, with a clear status-bar failure notice
+- Ignore stale Quick Open workspace index responses after folder mutations or closing the overlay
 
 ## [0.1.2] - 2026-08-03
 
