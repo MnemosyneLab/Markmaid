@@ -308,4 +308,14 @@ describe("tab state", () => {
     expect(state.recentDocuments.filter((path) => path === "/docs/3.md")).toHaveLength(1);
     expect(clearRecentDocuments(state).recentDocuments).toEqual([]);
   });
+
+  it("keeps recent entries limited to reopenable Markdown documents", () => {
+    const state = addRecentDocuments(baseState(), [
+      "/docs/readme.md",
+      "/docs/diagram.mmd",
+      "/docs/image.png",
+    ]);
+
+    expect(state.recentDocuments).toEqual(["/docs/readme.md"]);
+  });
 });

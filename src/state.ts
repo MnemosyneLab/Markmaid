@@ -676,10 +676,8 @@ function rewriteImageTab(tab: ImageTab, nextPath: string): ImageTab {
     };
   }
   return {
-    ...tab,
+    ...loadingImageTab(nextPath, tab.scrollTop),
     key: imageKey(nextPath),
-    canonicalPath: nextPath,
-    displayName: fileName(nextPath),
   };
 }
 
@@ -744,10 +742,22 @@ function normalizeRecentDocuments(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   const seen = new Set<string>();
   return value.filter((path): path is string => {
-    if (typeof path !== "string" || !path.trim() || seen.has(path)) return false;
+    if (
+      typeof path !== "string" ||
+      !path.trim() ||
+      !isMarkdownDocumentPath(path) ||
+      seen.has(path)
+    ) {
+      return false;
+    }
     seen.add(path);
     return true;
   }).slice(0, MAX_RECENT_DOCUMENTS);
+}
+
+function isMarkdownDocumentPath(path: string): boolean {
+  const extension = path.split(".").at(-1)?.toLowerCase();
+  return extension === "md" || extension === "markdown" || extension === "mdown" || extension === "mkd";
 }
 
 function normalizeWorkspaceRoots(value: unknown): WorkspaceRoot[] {

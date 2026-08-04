@@ -112,7 +112,7 @@ describe("workspace helpers", () => {
     expect(state.recentDocuments).toEqual(["/docs/keep.md"]);
   });
 
-  it("rewrites open preview paths after a folder rename", () => {
+  it("rewrites loading preview paths after a folder rename", () => {
     const state = applyWorkspaceRename(
       baseState({
         tabs: [
@@ -137,7 +137,39 @@ describe("workspace helpers", () => {
       requestedPath: "/docs/new/pic.png",
     });
     expect(state.activeTabKey).toBe("image:/docs/new/pic.png");
-    expect(state.recentDocuments).toEqual(["/docs/new/pic.png"]);
+    expect(state.recentDocuments).toEqual([]);
+  });
+
+  it("reloads a ready image after rename so its asset URL is reauthorized", () => {
+    const state = applyWorkspaceRename(
+      baseState({
+        tabs: [
+          {
+            kind: "image",
+            key: "image:/docs/pic.png",
+            status: "ready",
+            canonicalPath: "/docs/pic.png",
+            displayName: "pic.png",
+            assetUrl: "asset://localhost/docs/pic.png",
+            sizeBytes: 1,
+            modifiedAtMs: 1,
+            dimensions: { width: 1, height: 1 },
+            scrollTop: 42,
+          },
+        ],
+        activeTabKey: "image:/docs/pic.png",
+      }),
+      "/docs/pic.png",
+      "/docs/renamed.png",
+    );
+
+    expect(state.tabs[0]).toMatchObject({
+      kind: "image",
+      key: "image:/docs/renamed.png",
+      status: "loading",
+      requestedPath: "/docs/renamed.png",
+      scrollTop: 42,
+    });
   });
 
   it("restores missing workspace session fields with defaults", () => {

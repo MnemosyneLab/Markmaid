@@ -83,6 +83,8 @@ import type {
   DocumentTab,
   ImagePreview,
   ImageTab,
+  LoadingImageTab,
+  LoadingMermaidTab,
   MermaidDarkTheme,
   MermaidLightTheme,
   MermaidPreview,
@@ -691,13 +693,13 @@ async function loadMermaidPreviewTab(tab: MermaidTab & { status: "loading" }): P
       mermaidTheme: activeMermaidTheme(),
       colorTheme: state.colorTheme,
     });
+    if (!isCurrentLoadingPreview(tab)) return;
     state = upsertPreviewTab(
       state,
       tabFromMermaidPreview(preview, tab.scrollTop),
     );
-    state = addRecentDocuments(state, [preview.canonicalPath]);
-    await syncRecentDocuments();
   } catch (error) {
+    if (!isCurrentLoadingPreview(tab)) return;
     state = upsertPreviewTab(state, {
       kind: "mermaid",
       key: tab.key,
@@ -733,13 +735,13 @@ async function loadImagePreviewTab(tab: ImageTab & { status: "loading" }): Promi
       rootId: rootMatch.root.id,
       relativePath: rootMatch.relativePath,
     });
+    if (!isCurrentLoadingPreview(tab)) return;
     state = upsertPreviewTab(
       state,
       tabFromImagePreview(preview, convertFileSrc(preview.path), tab.scrollTop),
     );
-    state = addRecentDocuments(state, [preview.canonicalPath]);
-    await syncRecentDocuments();
   } catch (error) {
+    if (!isCurrentLoadingPreview(tab)) return;
     state = upsertPreviewTab(state, {
       kind: "image",
       key: tab.key,
@@ -752,6 +754,18 @@ async function loadImagePreviewTab(tab: ImageTab & { status: "loading" }): Promi
       scrollTop: tab.scrollTop,
     });
   }
+}
+
+function isCurrentLoadingPreview(
+  expected: LoadingMermaidTab | LoadingImageTab,
+): boolean {
+  return state.tabs.some(
+    (candidate) =>
+      candidate.kind === expected.kind &&
+      candidate.key === expected.key &&
+      candidate.status === "loading" &&
+      candidate.requestedPath === expected.requestedPath,
+  );
 }
 
 function findWorkspaceRootForPath(
@@ -1277,8 +1291,7 @@ function bindWorkspaceInteractions(): void {
       if (target.closest("[data-toggle-expand]")) return;
       const rootId = node.dataset.rootId ?? "";
       const relativePath = node.dataset.relativePath ?? "";
-      selectedWorkspaceNode = { rootId, relativePath };
-      render();
+      selectWorkspaceNode(rootId, relativePath);
     });
     node.addEventListener("dblclick", (event) => {
       event.preventDefault();
@@ -1297,6 +1310,16 @@ function bindWorkspaceInteractions(): void {
         event.stopPropagation();
         void toggleWorkspaceNode(node.dataset.rootId ?? "", node.dataset.relativePath ?? "");
       });
+  });
+}
+
+function selectWorkspaceNode(rootId: string, relativePath: string): void {
+  selectedWorkspaceNode = { rootId, relativePath };
+  root.querySelectorAll<HTMLElement>("[data-workspace-node]").forEach((node) => {
+    const selected =
+      node.dataset.rootId === rootId &&
+      node.dataset.relativePath === relativePath;
+    node.classList.toggle("is-selected", selected);
   });
 }
 
@@ -1710,6 +1733,7 @@ async function confirmWorkspaceDialog(): Promise<void> {
     workspaceNotice = null;
     render();
     schedulePersist();
+    void ensurePreviewLoaded(state.activeTabKey);
     await syncRecentDocuments();
   } catch (error) {
     workspaceNotice = workspaceInvokeError(error);
