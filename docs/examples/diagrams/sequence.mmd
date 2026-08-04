@@ -1,0 +1,14 @@
+%% Standalone sequence diagram for Mermaid tab preview
+sequenceDiagram
+  participant UI as Frontend
+  participant WS as workspace.rs
+  participant Doc as document.rs
+  participant MR as Merman
+
+  UI->>WS: load_workspace_mermaid(root, relative)
+  WS->>WS: validate .mmd under pin
+  WS->>Doc: render_standalone_mermaid
+  Doc->>MR: HeadlessRenderer
+  MR-->>Doc: SVG
+  Doc-->>WS: HTML figure
+  WS-->>UI: Mermaid preview tab

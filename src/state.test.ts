@@ -192,6 +192,8 @@ describe("tab state", () => {
 
   it("defaults missing sidebar width and clamps invalid values", () => {
     expect(DEFAULT_STATE.tabPlacement).toBe("left");
+    expect(DEFAULT_STATE.sidebarView).toBe("tabs");
+    expect(DEFAULT_STATE.workspaceRoots).toEqual([]);
     expect(
       fromPersistedSession({
         version: 1,
@@ -219,6 +221,15 @@ describe("tab state", () => {
         tabPlacement: "top",
       }).leftSidebarVisible,
     ).toBe(true);
+    expect(
+      fromPersistedSession({
+        version: 1,
+        tabs: [],
+        activeTabKey: null,
+        theme: "system",
+        tabPlacement: "top",
+      }).sidebarView,
+    ).toBe("tabs");
     expect(
       fromPersistedSession({
         version: 1,

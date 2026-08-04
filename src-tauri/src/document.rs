@@ -761,7 +761,7 @@ fn load_document_data(
     }
 }
 
-fn metadata_modified_at_ms(metadata: &fs::Metadata) -> u64 {
+pub(crate) fn metadata_modified_at_ms(metadata: &fs::Metadata) -> u64 {
     metadata
         .modified()
         .ok()
@@ -930,6 +930,21 @@ fn document_id(document_path: &Path) -> String {
     format!("{:x}", hasher.finish())
 }
 
+/// Render a standalone Mermaid source file to the same safe figure HTML used
+/// inside Markdown previews.
+pub fn render_standalone_mermaid(
+    source: &str,
+    document_path: &Path,
+    mermaid_theme: MermaidTheme,
+    color_theme: ColorTheme,
+) -> String {
+    let renderer = HeadlessRenderer::new()
+        .with_site_config(mermaid_theme.config(color_theme))
+        .with_vendored_text_measurer();
+    let diagram_id = format!("markmaid-mermaid-{}", document_id(document_path));
+    render_mermaid_figure(&renderer, source, &diagram_id, mermaid_theme)
+}
+
 fn render_mermaid_figure(
     renderer: &HeadlessRenderer,
     source: &str,
@@ -1049,7 +1064,7 @@ fn canonical_file(path: PathBuf) -> Option<PathBuf> {
         .filter(|canonical_path| canonical_path.is_file())
 }
 
-fn path_to_string(path: &Path) -> String {
+pub(crate) fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 

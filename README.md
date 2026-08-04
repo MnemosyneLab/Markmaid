@@ -1,33 +1,37 @@
 # MarkMaid
 
-MarkMaid is a focused, read-only Markdown reader for macOS. It opens local
-documents as tabs, renders GFM with Rust, and restores the reading session the
-next time the app starts.
+MarkMaid is a preview-first local document workspace for macOS. It pins folders,
+opens Markdown / Mermaid / images as tabs, renders with Rust, and restores the
+reading session the next time the app starts.
 
 Features include:
 
+- Workspace sidebar with pinned folders, lazy directory tree, and Open Tabs view
+- In-folder file management: create empty Markdown / folders, rename, Trash, Reveal in Finder
 - GFM tables, task lists, autolinks, strikethrough, and heading anchors
-- Native Rust Mermaid-to-SVG preview with configurable themes and fullscreen zoom
+- Native Rust Mermaid-to-SVG preview (fenced blocks and standalone `.mmd`) with themes and fullscreen zoom
+- In-app image preview for common formats via the Tauri asset protocol
 - Syntax-highlighted code blocks with copy, download, and progressive large-block expansion
 - Document outline navigation and source-backed in-document Find (`⌘F`)
 - Quick Open (`⌘P`) across open tabs and recent documents
-- Multiple reorderable document tabs plus a singleton Settings tab
+- Multiple reorderable preview tabs plus a singleton Settings tab
 - Same-named tabs and Open Recent entries disambiguated with the shortest useful parent path
-- Top or left tab placement, resizable left rail, and tab context actions
+- Top or left tab placement, resizable workspace sidebar, and tab context actions
+- Persistent bottom status bar with preview stats, file size, modified time, and theme
 - System, light, and dark appearance with multiple color palettes
 - Configurable text font, code font, and reading width
 - Finder file associations, multi-select Open, drag and drop, and single-instance
   file forwarding
-- Lazy session restoration with persisted scroll positions and window state
+- Lazy session restoration with persisted scroll positions, pinned folders, and window state
 - Local and HTTPS images with per-file Tauri asset authorization
 - External-change alerts on window focus and tab activation, with Reload or Ignore
-- Manual reload that preserves the previous preview when reloading fails
+- Manual reload that preserves the previous Markdown preview when reloading fails
 
-Mermaid fenced code blocks are compiled to SVG by
-[Merman](https://github.com/Latias94/merman) while the document is loaded.
-MarkMaid does not watch the filesystem continuously; on window focus and tab
-activation it probes the active file and offers Reload or Ignore when the file
-changed or became unavailable.
+MarkMaid does not include a Markdown editor, continuous filesystem watching, or
+file management outside pinned workspace folders. Mermaid fenced code blocks and
+`.mmd` files are compiled to SVG by [Merman](https://github.com/Latias94/merman).
+On window focus and tab activation it probes the active Markdown file and offers
+Reload or Ignore when the file changed or became unavailable.
 
 ## Install
 

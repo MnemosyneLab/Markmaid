@@ -1,0 +1,21 @@
+%% Standalone Mermaid file — open as a Mermaid preview tab
+flowchart TB
+  subgraph Workspace
+    Pin[Pinned folders]
+    Tree[Lazy Files tree]
+  end
+
+  subgraph Preview
+    Md[Markdown]
+    Mmd[.mmd Mermaid]
+    Img[Images]
+  end
+
+  Pin --> Tree
+  Tree -->|double-click .md| Md
+  Tree -->|double-click .mmd| Mmd
+  Tree -->|double-click image| Img
+
+  Md --> Status[Status bar stats]
+  Mmd --> Zoom[Zoom / pan / fullscreen]
+  Img --> Fit[In-app fit preview]

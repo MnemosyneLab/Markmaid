@@ -1,4 +1,5 @@
 mod document;
+mod workspace;
 
 use std::{
     path::{Path, PathBuf},
@@ -12,6 +13,11 @@ use document::{
 use tauri::{
     AppHandle, Emitter, Manager, RunEvent, State,
     menu::{Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder},
+};
+use workspace::{
+    WorkspaceRegistry, create_workspace_item, list_workspace_children, load_workspace_image,
+    load_workspace_mermaid, register_workspace_root, rename_workspace_item, trash_workspace_item,
+    unregister_workspace_root,
 };
 
 const OPEN_FILES_EVENT: &str = "markmaid://open-files";
@@ -344,6 +350,7 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .manage(PendingOpenPaths::default())
         .manage(RecentDocuments::default())
+        .manage(WorkspaceRegistry::default())
         .plugin(tauri_plugin_single_instance::init(
             |app, arguments, current_directory| {
                 let paths = paths_from_arguments(&arguments, &current_directory);
@@ -379,7 +386,15 @@ pub fn run() {
             export_svg,
             highlight_code_chunk,
             take_pending_open_paths,
-            sync_recent_documents
+            sync_recent_documents,
+            register_workspace_root,
+            unregister_workspace_root,
+            list_workspace_children,
+            create_workspace_item,
+            rename_workspace_item,
+            trash_workspace_item,
+            load_workspace_mermaid,
+            load_workspace_image
         ]);
 
     let app = builder

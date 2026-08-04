@@ -1,4 +1,5 @@
-import type { AppTab, DocumentTab } from "./types";
+import type { AppTab, PreviewTab } from "./types";
+import { previewPath } from "./state";
 
 export interface QuickSwitcherItem {
   id: string;
@@ -9,23 +10,15 @@ export interface QuickSwitcherItem {
   path?: string;
 }
 
-export function documentPath(tab: DocumentTab): string {
-  if (tab.status === "ready") return tab.canonicalPath;
-  if (tab.status === "error") {
-    return tab.canonicalPath ?? tab.requestedPath;
-  }
-  return tab.requestedPath;
-}
-
 export function disambiguatedTabLabels(tabs: AppTab[]): Map<string, string> {
-  const documents = tabs.filter(
-    (tab): tab is DocumentTab => tab.kind === "document",
+  const previews = tabs.filter(
+    (tab): tab is PreviewTab => tab.kind !== "settings",
   );
-  const labelsByPath = disambiguatePathLabels(documents.map(documentPath));
+  const labelsByPath = disambiguatePathLabels(previews.map(previewPath));
   return new Map(
-    documents.map((tab) => [
+    previews.map((tab) => [
       tab.key,
-      labelsByPath.get(documentPath(tab)) ?? tab.displayName,
+      labelsByPath.get(previewPath(tab)) ?? tab.displayName,
     ]),
   );
 }
@@ -84,7 +77,7 @@ export function buildQuickSwitcherItems(
       });
       continue;
     }
-    const path = documentPath(tab);
+    const path = previewPath(tab);
     openPaths.add(path);
     items.push({
       id: `tab:${tab.key}`,

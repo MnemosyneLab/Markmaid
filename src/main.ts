@@ -39,21 +39,41 @@ import {
   DEFAULT_SIDEBAR_WIDTH,
   DEFAULT_STATE,
   fromPersistedSession,
+  loadingImageTab,
+  loadingMermaidTab,
   loadingTab,
+  mermaidKey,
+  imageKey,
   moveTab,
   openSettings,
+  previewPath,
   replaceDocumentResult,
   setPreferences,
+  tabFromImagePreview,
+  tabFromMermaidPreview,
   tabFromResult,
   toPersistedSession,
   updateScroll,
+  upsertPreviewTab,
 } from "./state";
+import { buildStatusBar } from "./status";
 import {
   buildQuickSwitcherItems,
   disambiguatedTabLabels,
   type QuickSwitcherItem,
   shouldSuppressTabClick,
 } from "./ui-logic";
+import {
+  applyWorkspaceRename,
+  applyWorkspaceTrash,
+  expandedPathsForRoot,
+  parentRelativePath,
+  setExpandedPathsForRoot,
+  toggleExpandedPath,
+  upsertWorkspaceRoot,
+  removeWorkspaceRoot,
+  workspaceErrorMessage,
+} from "./workspace";
 import "./styles.css";
 import type {
   AppState,
@@ -61,13 +81,23 @@ import type {
   ColorTheme,
   DocumentLoadResult,
   DocumentTab,
+  ImagePreview,
+  ImageTab,
   MermaidDarkTheme,
   MermaidLightTheme,
+  MermaidPreview,
+  MermaidTab,
   MermaidTheme,
   PageWidth,
+  PreviewTab,
   ReadyDocumentTab,
+  ReadyMermaidTab,
+  SidebarView,
   TabPlacement,
   ThemeMode,
+  WorkspaceEntry,
+  WorkspaceMutation,
+  WorkspaceRoot,
 } from "./types";
 
 const OPEN_FILES_EVENT = "markmaid://open-files";
@@ -136,8 +166,10 @@ const UI = {
     "min-h-8 rounded-app bg-transparent px-2.5 text-xs font-semibold text-app-secondary transition-[background,color,transform] duration-120 active:translate-y-px hover:bg-surface-hover hover:text-app-text max-[820px]:hidden",
   workspace: "flex min-h-0 min-w-0",
   sidebar:
-    "relative min-w-0 flex-[0_0_var(--sidebar-width)] overflow-hidden border-r border-app-border bg-sidebar px-2 py-2.5",
+    "relative flex min-h-0 min-w-0 flex-[0_0_var(--sidebar-width)] flex-col overflow-hidden border-r border-app-border bg-sidebar",
   contentStage: "min-h-0 min-w-0 flex-1 overflow-hidden bg-surface",
+  statusBar:
+    "status-bar flex h-6 min-w-0 items-center justify-between gap-3 border-t border-app-border bg-chrome px-3 text-[11px] text-app-secondary",
   centeredState: "grid size-full place-items-center p-12",
   primaryButton:
     "min-h-8 whitespace-nowrap rounded-app border border-transparent bg-accent-strong px-3.5 font-semibold text-[#f5f9fc] shadow-[0_5px_16px_color-mix(in_srgb,var(--accent)_22%,transparent)] transition-[background,color,border-color,transform] duration-120 active:translate-y-px hover:bg-[color-mix(in_srgb,var(--accent-strong)_88%,#101820)]",
@@ -215,6 +247,20 @@ let persistTimer: number | null = null;
 let pendingAnchor: string | null = null;
 let mermaidThemeReloadSequence = 0;
 let appliedAppearance: MermaidAppearance | null = null;
+let workspaceChildrenCache = new Map<string, WorkspaceEntry[]>();
+let selectedWorkspaceNode: { rootId: string; relativePath: string } | null =
+  null;
+let workspaceDialog: {
+  kind: "create-markdown" | "create-folder" | "rename" | "confirm-trash";
+  rootId: string;
+  relativePath: string;
+  title: string;
+  label: string;
+  initialValue: string;
+  confirmLabel: string;
+  message?: string;
+} | null = null;
+let workspaceNotice: string | null = null;
 let sidebarResizeSession: {
   pointerId: number;
   startX: number;
@@ -273,13 +319,40 @@ async function bootstrap(): Promise<void> {
   render();
   await registerNativeListeners();
   await syncRecentDocuments();
-
-  await ensureDocumentLoaded(state.activeTabKey);
+  await restoreWorkspaceRoots();
+  await ensurePreviewLoaded(state.activeTabKey);
 
   const pendingPaths = await invoke<string[]>("take_pending_open_paths");
   if (pendingPaths.length > 0) {
     await openDocumentPaths(pendingPaths);
   }
+}
+
+async function restoreWorkspaceRoots(): Promise<void> {
+  const restored: WorkspaceRoot[] = [];
+  const expanded: Record<string, string[]> = {};
+  for (const root of state.workspaceRoots) {
+    try {
+      const registered = await invoke<WorkspaceRoot>("register_workspace_root", {
+        path: root.canonicalPath,
+      });
+      restored.push(registered);
+      const previous = state.expandedWorkspacePaths[root.id] ?? [];
+      expanded[registered.id] = previous;
+      await ensureWorkspaceChildren(registered.id, "");
+      for (const relativePath of previous) {
+        await ensureWorkspaceChildren(registered.id, relativePath);
+      }
+    } catch {
+      // Drop roots that no longer exist.
+    }
+  }
+  state = setPreferences(state, {
+    workspaceRoots: restored,
+    expandedWorkspacePaths: expanded,
+  });
+  render();
+  schedulePersist();
 }
 
 async function registerNativeListeners(): Promise<void> {
@@ -398,7 +471,19 @@ async function openDocumentPaths(
 async function reloadActiveDocument(): Promise<void> {
   captureActiveScroll();
   const current = activeTab(state);
-  if (!current || current.kind !== "document") return;
+  if (!current || current.kind === "settings") return;
+
+  if (current.kind === "mermaid" || current.kind === "image") {
+    const path = previewPath(current);
+    const loading =
+      current.kind === "mermaid"
+        ? loadingMermaidTab(path, current.scrollTop)
+        : loadingImageTab(path, current.scrollTop);
+    state = upsertPreviewTab(state, loading);
+    render();
+    await ensurePreviewLoaded(loading.key);
+    return;
+  }
 
   const path =
     current.status === "ready"
@@ -526,7 +611,7 @@ function closeTabAndLoadNext(key: string): void {
   state = closeTab(state, key);
   render();
   schedulePersist();
-  void ensureDocumentLoaded(state.activeTabKey).then(() =>
+  void ensurePreviewLoaded(state.activeTabKey).then(() =>
     checkActiveDocumentFreshness(),
   );
 }
@@ -543,32 +628,39 @@ function selectRelativeTab(direction: 1 | -1): void {
   state = cycleTab(state, direction);
   render();
   schedulePersist();
-  void ensureDocumentLoaded(state.activeTabKey).then(() =>
+  void ensurePreviewLoaded(state.activeTabKey).then(() =>
     checkActiveDocumentFreshness(),
   );
 }
 
-async function ensureDocumentLoaded(key: string | null): Promise<void> {
+async function ensurePreviewLoaded(key: string | null): Promise<void> {
   if (!key || pendingDocumentLoads.has(key)) return;
-  const tab = state.tabs.find(
-    (candidate): candidate is DocumentTab =>
-      candidate.kind === "document" && candidate.key === key,
-  );
-  if (!tab || tab.status !== "loading") return;
+  const tab = state.tabs.find((candidate) => candidate.key === key);
+  if (!tab || tab.kind === "settings" || tab.status !== "loading") return;
 
   pendingDocumentLoads.add(key);
   try {
-    const [result] = await invoke<DocumentLoadResult[]>("load_documents", {
-      paths: [tab.requestedPath],
-      mermaidTheme: activeMermaidTheme(),
-      colorTheme: state.colorTheme,
-    });
-    const latest = state.tabs.find(
-      (candidate): candidate is DocumentTab =>
-        candidate.kind === "document" && candidate.key === key,
-    );
-    if (!result || !latest || latest.status !== "loading") return;
-    state = replaceDocumentResult(state, key, result);
+    if (tab.kind === "document") {
+      const [result] = await invoke<DocumentLoadResult[]>("load_documents", {
+        paths: [tab.requestedPath],
+        mermaidTheme: activeMermaidTheme(),
+        colorTheme: state.colorTheme,
+      });
+      const latest = state.tabs.find(
+        (candidate): candidate is DocumentTab =>
+          candidate.kind === "document" && candidate.key === key,
+      );
+      if (!result || !latest || latest.status !== "loading") return;
+      state = replaceDocumentResult(state, key, result);
+      if (result.status === "ready") {
+        state = addRecentDocuments(state, [result.canonicalPath]);
+        await syncRecentDocuments();
+      }
+    } else if (tab.kind === "mermaid") {
+      await loadMermaidPreviewTab(tab);
+    } else {
+      await loadImagePreviewTab(tab);
+    }
     render();
     schedulePersist();
   } finally {
@@ -576,30 +668,132 @@ async function ensureDocumentLoaded(key: string | null): Promise<void> {
   }
 }
 
+async function loadMermaidPreviewTab(tab: MermaidTab & { status: "loading" }): Promise<void> {
+  const rootMatch = findWorkspaceRootForPath(tab.requestedPath);
+  if (!rootMatch) {
+    state = upsertPreviewTab(state, {
+      kind: "mermaid",
+      key: tab.key,
+      status: "error",
+      requestedPath: tab.requestedPath,
+      canonicalPath: null,
+      displayName: tab.displayName,
+      code: "outside_root",
+      message: "Open Mermaid files from a pinned workspace folder.",
+      scrollTop: tab.scrollTop,
+    });
+    return;
+  }
+  try {
+    const preview = await invoke<MermaidPreview>("load_workspace_mermaid", {
+      rootId: rootMatch.root.id,
+      relativePath: rootMatch.relativePath,
+      mermaidTheme: activeMermaidTheme(),
+      colorTheme: state.colorTheme,
+    });
+    state = upsertPreviewTab(
+      state,
+      tabFromMermaidPreview(preview, tab.scrollTop),
+    );
+    state = addRecentDocuments(state, [preview.canonicalPath]);
+    await syncRecentDocuments();
+  } catch (error) {
+    state = upsertPreviewTab(state, {
+      kind: "mermaid",
+      key: tab.key,
+      status: "error",
+      requestedPath: tab.requestedPath,
+      canonicalPath: null,
+      displayName: tab.displayName,
+      code: String(error).split(":", 1)[0] || "preview_failed",
+      message: workspaceInvokeError(error),
+      scrollTop: tab.scrollTop,
+    });
+  }
+}
+
+async function loadImagePreviewTab(tab: ImageTab & { status: "loading" }): Promise<void> {
+  const rootMatch = findWorkspaceRootForPath(tab.requestedPath);
+  if (!rootMatch) {
+    state = upsertPreviewTab(state, {
+      kind: "image",
+      key: tab.key,
+      status: "error",
+      requestedPath: tab.requestedPath,
+      canonicalPath: null,
+      displayName: tab.displayName,
+      code: "outside_root",
+      message: "Open images from a pinned workspace folder.",
+      scrollTop: tab.scrollTop,
+    });
+    return;
+  }
+  try {
+    const preview = await invoke<ImagePreview>("load_workspace_image", {
+      rootId: rootMatch.root.id,
+      relativePath: rootMatch.relativePath,
+    });
+    state = upsertPreviewTab(
+      state,
+      tabFromImagePreview(preview, convertFileSrc(preview.path), tab.scrollTop),
+    );
+    state = addRecentDocuments(state, [preview.canonicalPath]);
+    await syncRecentDocuments();
+  } catch (error) {
+    state = upsertPreviewTab(state, {
+      kind: "image",
+      key: tab.key,
+      status: "error",
+      requestedPath: tab.requestedPath,
+      canonicalPath: null,
+      displayName: tab.displayName,
+      code: String(error).split(":", 1)[0] || "preview_failed",
+      message: workspaceInvokeError(error),
+      scrollTop: tab.scrollTop,
+    });
+  }
+}
+
+function findWorkspaceRootForPath(
+  path: string,
+): { root: WorkspaceRoot; relativePath: string } | null {
+  for (const rootEntry of state.workspaceRoots) {
+    if (path === rootEntry.canonicalPath) {
+      return { root: rootEntry, relativePath: "" };
+    }
+    const prefix = rootEntry.canonicalPath.endsWith("/")
+      ? rootEntry.canonicalPath
+      : `${rootEntry.canonicalPath}/`;
+    if (path.startsWith(prefix)) {
+      return {
+        root: rootEntry,
+        relativePath: path.slice(prefix.length),
+      };
+    }
+  }
+  return null;
+}
+
 function captureActiveScroll(): void {
   const current = activeTab(state);
-  const scroller = root.querySelector<HTMLElement>(".document-scroll");
-  if (!current || current.kind !== "document" || !scroller) return;
+  const scroller = root.querySelector<HTMLElement>(".document-scroll, .preview-scroll");
+  if (!current || current.kind === "settings" || !scroller) return;
   state = updateScroll(state, current.key, scroller.scrollTop);
 }
 
 function render(): void {
   dismissTabContextMenu();
+  dismissWorkspaceContextMenu();
   applyTheme();
   const current = activeTab(state);
   const topTabs =
     state.tabPlacement === "top" ? renderTabList(state.tabs) : "";
-  const sideTabs =
-    state.tabPlacement === "left" ? renderTabList(state.tabs) : "";
   const title = escapeHtml(windowTitle(current));
   const sidebarWidth = clampSidebarWidth(state.sidebarWidth);
-  const sidebarToggle =
-    state.tabPlacement === "left"
-      ? `<button class="icon-button ${UI.iconButton}" type="button" data-action="toggle-left-sidebar" title="${state.leftSidebarVisible ? "Hide" : "Show"} left sidebar" aria-label="${state.leftSidebarVisible ? "Hide" : "Show"} left sidebar" aria-pressed="${state.leftSidebarVisible}">
+  const sidebarToggle = `<button class="icon-button ${UI.iconButton}" type="button" data-action="toggle-left-sidebar" title="${state.leftSidebarVisible ? "Hide" : "Show"} sidebar" aria-label="${state.leftSidebarVisible ? "Hide" : "Show"} sidebar" aria-pressed="${state.leftSidebarVisible}">
           ${icon(state.leftSidebarVisible ? "panel-left-close" : "panel-left-open")}
-          <span class="sr-only">${state.leftSidebarVisible ? "Hide" : "Show"} left sidebar</span>
-        </button>`
-      : "";
+          <span class="sr-only">${state.leftSidebarVisible ? "Hide" : "Show"} sidebar</span>
+        </button>`;
   const outlineToggle =
     current?.kind === "document" && current.status === "ready"
       ? `<button class="icon-button ${UI.iconButton}" type="button" data-action="toggle-outline" title="${state.tableOfContentsVisible ? "Hide" : "Show"} document outline" aria-label="${state.tableOfContentsVisible ? "Hide" : "Show"} document outline" aria-pressed="${state.tableOfContentsVisible}">
@@ -607,6 +801,11 @@ function render(): void {
           <span class="sr-only">${state.tableOfContentsVisible ? "Hide" : "Show"} document outline</span>
         </button>`
       : "";
+  const status = buildStatusBar(current, {
+    colorTheme: state.colorTheme,
+    theme: state.theme,
+    systemDark: colorScheme.matches,
+  });
 
   root.innerHTML = `
     <div
@@ -635,15 +834,26 @@ function render(): void {
       }
       <div class="workspace ${UI.workspace}">
         ${
-          state.tabPlacement === "left" && state.leftSidebarVisible
-            ? `<aside class="sidebar ${UI.sidebar}" aria-label="Open tabs">
-                ${sideTabs}
-                <div class="sidebar-resize" role="separator" aria-orientation="vertical" aria-label="Resize tab rail" tabindex="0"></div>
+          state.leftSidebarVisible
+            ? `<aside class="sidebar ${UI.sidebar}" aria-label="Workspace sidebar">
+                ${renderSidebarChrome()}
+                <div class="sidebar-body">
+                  ${
+                    state.sidebarView === "files"
+                      ? renderFilesSidebar()
+                      : renderTabList(state.tabs)
+                  }
+                </div>
+                <div class="sidebar-resize" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabindex="0"></div>
               </aside>`
             : ""
         }
         <main class="content-stage ${UI.contentStage}" id="content-stage" aria-live="polite"></main>
       </div>
+      <footer class="${UI.statusBar}" aria-label="Status">
+        <span class="status-left truncate">${escapeHtml(status.left)}</span>
+        <span class="status-right truncate max-[720px]:hidden">${escapeHtml(status.right)}</span>
+      </footer>
       <div class="drop-overlay ${UI.dropOverlay}" aria-hidden="true">
         <div class="drop-message ${UI.dropMessage}">
           <strong class="text-lg">Drop Markdown files here</strong>
@@ -652,10 +862,13 @@ function render(): void {
       </div>
       ${documentSearch.visible ? renderDocumentSearch() : ""}
       ${quickSwitcher.visible ? renderQuickSwitcher() : ""}
+      ${workspaceDialog ? renderWorkspaceDialog() : ""}
     </div>
   `;
 
   bindShellInteractions();
+  bindWorkspaceInteractions();
+  bindWorkspaceDialog();
   renderContent(
     root.querySelector<HTMLElement>("#content-stage"),
     current,
@@ -785,7 +998,7 @@ async function activateQuickSwitcherItem(item: QuickSwitcherItem): Promise<void>
     state = { ...state, activeTabKey: item.tabKey };
     render();
     schedulePersist();
-    await ensureDocumentLoaded(item.tabKey);
+    await ensurePreviewLoaded(item.tabKey);
     await checkActiveDocumentFreshness();
     return;
   }
@@ -807,6 +1020,211 @@ function renderDocumentSearch(): string {
   `;
 }
 
+function renderSidebarChrome(): string {
+  return `
+    <div class="sidebar-chrome">
+      <div class="sidebar-view-switch" role="tablist" aria-label="Sidebar view">
+        <button class="sidebar-view-button ${state.sidebarView === "tabs" ? "is-active" : ""}" type="button" role="tab" aria-selected="${state.sidebarView === "tabs"}" data-sidebar-view="tabs">Open Tabs</button>
+        <button class="sidebar-view-button ${state.sidebarView === "files" ? "is-active" : ""}" type="button" role="tab" aria-selected="${state.sidebarView === "files"}" data-sidebar-view="files">Files</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderFilesSidebar(): string {
+  return `
+    <div class="workspace-panel">
+      <div class="workspace-header">
+        <strong>Workspace</strong>
+        <button class="icon-button ${UI.iconButton}" type="button" data-action="add-workspace-root" title="Add Folder" aria-label="Add Folder">
+          ${icon("folder-plus")}
+        </button>
+      </div>
+      ${
+        workspaceNotice
+          ? `<div class="workspace-notice" role="status">${escapeHtml(workspaceNotice)}</div>`
+          : ""
+      }
+      ${
+        state.workspaceRoots.length === 0
+          ? `<div class="workspace-empty">
+              <p>Pin folders to browse Markdown, Mermaid, and images.</p>
+              <button class="primary-button ${UI.primaryButton}" type="button" data-action="add-workspace-root">Add Folder</button>
+            </div>`
+          : `<div class="workspace-tree" role="tree" aria-label="Workspace files">
+              ${state.workspaceRoots.map((rootEntry) => renderWorkspaceRoot(rootEntry)).join("")}
+            </div>`
+      }
+    </div>
+  `;
+}
+
+function renderWorkspaceRoot(rootEntry: WorkspaceRoot): string {
+  const expanded = expandedPathsForRoot(
+    state.expandedWorkspacePaths,
+    rootEntry.id,
+  ).includes("");
+  const selected =
+    selectedWorkspaceNode?.rootId === rootEntry.id &&
+    selectedWorkspaceNode.relativePath === "";
+  return `
+    <div class="workspace-root" data-root-id="${escapeAttribute(rootEntry.id)}">
+      <div
+        class="workspace-node is-directory ${selected ? "is-selected" : ""} ${expanded ? "is-expanded" : ""}"
+        role="treeitem"
+        tabindex="0"
+        aria-expanded="${expanded}"
+        data-workspace-node
+        data-root-id="${escapeAttribute(rootEntry.id)}"
+        data-relative-path=""
+        data-kind="directory"
+        data-canonical-path="${escapeAttribute(rootEntry.canonicalPath)}"
+        title="${escapeAttribute(rootEntry.canonicalPath)}"
+      >
+        <button class="workspace-twistie" type="button" data-toggle-expand aria-label="${expanded ? "Collapse" : "Expand"}">${icon(expanded ? "chevron-down" : "chevron-right")}</button>
+        <span class="workspace-label">${escapeHtml(rootEntry.displayName)}</span>
+      </div>
+      ${expanded ? renderWorkspaceChildren(rootEntry.id, "", 1) : ""}
+    </div>
+  `;
+}
+
+function renderWorkspaceChildren(
+  rootId: string,
+  parentRelativePath: string,
+  depth: number,
+): string {
+  const cacheKey = workspaceCacheKey(rootId, parentRelativePath);
+  const children = workspaceChildrenCache.get(cacheKey);
+  if (!children) {
+    return `<div class="workspace-children" style="--depth: ${depth}"><div class="workspace-empty-branch">Loading…</div></div>`;
+  }
+  if (children.length === 0) {
+    return `<div class="workspace-children" style="--depth: ${depth}"><div class="workspace-empty-branch">No visible items</div></div>`;
+  }
+  const expanded = new Set(
+    expandedPathsForRoot(state.expandedWorkspacePaths, rootId),
+  );
+  return `
+    <div class="workspace-children" style="--depth: ${depth}">
+      ${children
+        .map((entry) => {
+          const isDirectory = entry.kind === "directory";
+          const isExpanded = expanded.has(entry.relativePath);
+          const selected =
+            selectedWorkspaceNode?.rootId === entry.rootId &&
+            selectedWorkspaceNode.relativePath === entry.relativePath;
+          return `
+            <div>
+              <div
+                class="workspace-node ${isDirectory ? "is-directory" : "is-file"} ${selected ? "is-selected" : ""} ${isExpanded ? "is-expanded" : ""}"
+                role="treeitem"
+                tabindex="0"
+                ${isDirectory ? `aria-expanded="${isExpanded}"` : ""}
+                data-workspace-node
+                data-root-id="${escapeAttribute(entry.rootId)}"
+                data-relative-path="${escapeAttribute(entry.relativePath)}"
+                data-kind="${escapeAttribute(entry.kind)}"
+                data-canonical-path="${escapeAttribute(entry.canonicalPath)}"
+                title="${escapeAttribute(entry.canonicalPath)}"
+              >
+                ${
+                  isDirectory
+                    ? `<button class="workspace-twistie" type="button" data-toggle-expand aria-label="${isExpanded ? "Collapse" : "Expand"}">${icon(isExpanded ? "chevron-down" : "chevron-right")}</button>`
+                    : `<span class="workspace-twistie-spacer" aria-hidden="true"></span>`
+                }
+                <span class="workspace-label">${escapeHtml(entry.name)}</span>
+              </div>
+              ${
+                isDirectory && isExpanded
+                  ? renderWorkspaceChildren(rootId, entry.relativePath, depth + 1)
+                  : ""
+              }
+            </div>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
+function renderWorkspaceDialog(): string {
+  if (!workspaceDialog) return "";
+  if (workspaceDialog.kind === "confirm-trash") {
+    return `
+      <div class="workspace-dialog-backdrop" data-dialog-backdrop>
+        <section class="workspace-dialog" role="dialog" aria-modal="true" aria-label="${escapeAttribute(workspaceDialog.title)}">
+          <h2>${escapeHtml(workspaceDialog.title)}</h2>
+          <p>${escapeHtml(workspaceDialog.message ?? "")}</p>
+          <div class="button-row ${UI.buttonRow}">
+            <button class="secondary-button ${UI.secondaryButton}" type="button" data-dialog-cancel>Cancel</button>
+            <button class="primary-button ${UI.primaryButton}" type="button" data-dialog-confirm>${escapeHtml(workspaceDialog.confirmLabel)}</button>
+          </div>
+        </section>
+      </div>
+    `;
+  }
+  return `
+    <div class="workspace-dialog-backdrop" data-dialog-backdrop>
+      <section class="workspace-dialog" role="dialog" aria-modal="true" aria-label="${escapeAttribute(workspaceDialog.title)}">
+        <h2>${escapeHtml(workspaceDialog.title)}</h2>
+        <label class="workspace-dialog-label" for="workspace-dialog-input">${escapeHtml(workspaceDialog.label)}</label>
+        <input id="workspace-dialog-input" class="workspace-dialog-input" type="text" value="${escapeAttribute(workspaceDialog.initialValue)}" autocomplete="off" spellcheck="false">
+        <div class="button-row ${UI.buttonRow}">
+          <button class="secondary-button ${UI.secondaryButton}" type="button" data-dialog-cancel>Cancel</button>
+          <button class="primary-button ${UI.primaryButton}" type="button" data-dialog-confirm>${escapeHtml(workspaceDialog.confirmLabel)}</button>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function workspaceCacheKey(rootId: string, relativePath: string): string {
+  return `${rootId}:${relativePath}`;
+}
+
+async function ensureWorkspaceChildren(
+  rootId: string,
+  relativePath: string,
+): Promise<WorkspaceEntry[]> {
+  const key = workspaceCacheKey(rootId, relativePath);
+  const cached = workspaceChildrenCache.get(key);
+  if (cached) return cached;
+  try {
+    const children = await invoke<WorkspaceEntry[]>("list_workspace_children", {
+      rootId,
+      relativePath,
+    });
+    workspaceChildrenCache.set(key, children);
+    return children;
+  } catch (error) {
+    workspaceNotice = workspaceInvokeError(error);
+    workspaceChildrenCache.set(key, []);
+    return [];
+  }
+}
+
+function invalidateWorkspaceCache(
+  rootId: string,
+  relativePaths: string[] = [],
+): void {
+  if (relativePaths.length === 0) {
+    for (const key of [...workspaceChildrenCache.keys()]) {
+      if (key.startsWith(`${rootId}:`)) workspaceChildrenCache.delete(key);
+    }
+    return;
+  }
+  for (const relativePath of relativePaths) {
+    workspaceChildrenCache.delete(workspaceCacheKey(rootId, relativePath));
+  }
+}
+
+function workspaceInvokeError(error: unknown): string {
+  const text = error instanceof Error ? error.message : String(error);
+  const code = text.split(":", 1)[0] ?? "";
+  return workspaceErrorMessage(code || "permission_denied");
+}
+
 function renderTabList(tabs: AppTab[]): string {
   const labels = disambiguatedTabLabels(tabs);
   return `
@@ -818,10 +1236,8 @@ function renderTabList(tabs: AppTab[]): string {
               ? "Settings"
               : (labels.get(tab.key) ?? tab.displayName);
           const active = tab.key === state.activeTabKey;
-          const error =
-            tab.kind === "document" && tab.status === "error";
-          const loading =
-            tab.kind === "document" && tab.status === "loading";
+          const error = tab.kind !== "settings" && tab.status === "error";
+          const loading = tab.kind !== "settings" && tab.status === "loading";
           return `
             <div class="tab ${active ? "is-active" : ""}" role="presentation" data-drag-tab="${escapeAttribute(tab.key)}">
               <button
@@ -849,6 +1265,459 @@ function renderTabList(tabs: AppTab[]): string {
   `;
 }
 
+
+function bindWorkspaceInteractions(): void {
+  root.querySelectorAll<HTMLElement>('[data-action="add-workspace-root"]').forEach((button) => {
+    button.addEventListener("click", () => void addWorkspaceRoot());
+  });
+
+  root.querySelectorAll<HTMLElement>("[data-workspace-node]").forEach((node) => {
+    node.addEventListener("click", (event) => {
+      const target = event.target as HTMLElement;
+      if (target.closest("[data-toggle-expand]")) return;
+      const rootId = node.dataset.rootId ?? "";
+      const relativePath = node.dataset.relativePath ?? "";
+      selectedWorkspaceNode = { rootId, relativePath };
+      render();
+    });
+    node.addEventListener("dblclick", (event) => {
+      event.preventDefault();
+      void handleWorkspaceActivate(node);
+    });
+    node.addEventListener("keydown", (event) => {
+      void handleWorkspaceNodeKeydown(event, node);
+    });
+    node.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      showWorkspaceContextMenu(event, node);
+    });
+    node
+      .querySelector<HTMLElement>("[data-toggle-expand]")
+      ?.addEventListener("click", (event) => {
+        event.stopPropagation();
+        void toggleWorkspaceNode(node.dataset.rootId ?? "", node.dataset.relativePath ?? "");
+      });
+  });
+}
+
+function bindWorkspaceDialog(): void {
+  if (!workspaceDialog) return;
+  const input = root.querySelector<HTMLInputElement>("#workspace-dialog-input");
+  input?.focus();
+  input?.select();
+  root
+    .querySelector<HTMLElement>("[data-dialog-cancel]")
+    ?.addEventListener("click", () => {
+      workspaceDialog = null;
+      render();
+    });
+  root
+    .querySelector<HTMLElement>("[data-dialog-confirm]")
+    ?.addEventListener("click", () => void confirmWorkspaceDialog());
+  root
+    .querySelector<HTMLElement>("[data-dialog-backdrop]")
+    ?.addEventListener("click", (event) => {
+      if (event.target === event.currentTarget) {
+        workspaceDialog = null;
+        render();
+      }
+    });
+  input?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void confirmWorkspaceDialog();
+    }
+    if (event.key === "Escape") {
+      workspaceDialog = null;
+      render();
+    }
+  });
+}
+
+let workspaceContextMenu: HTMLElement | null = null;
+let dismissWorkspaceContextMenuListener: ((event: PointerEvent) => void) | null = null;
+
+function dismissWorkspaceContextMenu(): void {
+  workspaceContextMenu?.remove();
+  workspaceContextMenu = null;
+  if (dismissWorkspaceContextMenuListener) {
+    document.removeEventListener("pointerdown", dismissWorkspaceContextMenuListener, true);
+    dismissWorkspaceContextMenuListener = null;
+  }
+}
+
+async function addWorkspaceRoot(): Promise<void> {
+  const selected = await open({
+    directory: true,
+    multiple: false,
+    title: "Add Folder to Workspace",
+  });
+  if (!selected || Array.isArray(selected)) return;
+  try {
+    const rootEntry = await invoke<WorkspaceRoot>("register_workspace_root", {
+      path: selected,
+    });
+    state = setPreferences(state, {
+      workspaceRoots: upsertWorkspaceRoot(state.workspaceRoots, rootEntry),
+      sidebarView: "files",
+      leftSidebarVisible: true,
+      expandedWorkspacePaths: setExpandedPathsForRoot(
+        state.expandedWorkspacePaths,
+        rootEntry.id,
+        [""],
+      ),
+    });
+    invalidateWorkspaceCache(rootEntry.id);
+    await ensureWorkspaceChildren(rootEntry.id, "");
+    workspaceNotice = null;
+    render();
+    schedulePersist();
+  } catch (error) {
+    workspaceNotice = workspaceInvokeError(error);
+    render();
+  }
+}
+
+async function toggleWorkspaceNode(
+  rootId: string,
+  relativePath: string,
+): Promise<void> {
+  const nextExpanded = toggleExpandedPath(
+    state.expandedWorkspacePaths,
+    rootId,
+    relativePath,
+  );
+  state = setPreferences(state, { expandedWorkspacePaths: nextExpanded });
+  if (expandedPathsForRoot(nextExpanded, rootId).includes(relativePath)) {
+    invalidateWorkspaceCache(rootId, [relativePath]);
+    await ensureWorkspaceChildren(rootId, relativePath);
+  }
+  render();
+  schedulePersist();
+}
+
+async function handleWorkspaceActivate(node: HTMLElement): Promise<void> {
+  const kind = node.dataset.kind ?? "";
+  const rootId = node.dataset.rootId ?? "";
+  const relativePath = node.dataset.relativePath ?? "";
+  const canonicalPath = node.dataset.canonicalPath ?? "";
+  selectedWorkspaceNode = { rootId, relativePath };
+  if (kind === "directory") {
+    await toggleWorkspaceNode(rootId, relativePath);
+    return;
+  }
+  if (kind === "markdown") {
+    await openDocumentPaths([canonicalPath]);
+    return;
+  }
+  if (kind === "mermaid") {
+    state = upsertPreviewTab(state, loadingMermaidTab(canonicalPath));
+    render();
+    schedulePersist();
+    await ensurePreviewLoaded(mermaidKey(canonicalPath));
+    return;
+  }
+  if (kind === "image") {
+    state = upsertPreviewTab(state, loadingImageTab(canonicalPath));
+    render();
+    schedulePersist();
+    await ensurePreviewLoaded(imageKey(canonicalPath));
+  }
+}
+
+async function handleWorkspaceNodeKeydown(
+  event: KeyboardEvent,
+  node: HTMLElement,
+): Promise<void> {
+  const rootId = node.dataset.rootId ?? "";
+  const relativePath = node.dataset.relativePath ?? "";
+  const kind = node.dataset.kind ?? "";
+  if (event.key === "Enter") {
+    event.preventDefault();
+    await handleWorkspaceActivate(node);
+    return;
+  }
+  if (event.key === "ArrowRight" && kind === "directory") {
+    event.preventDefault();
+    if (!expandedPathsForRoot(state.expandedWorkspacePaths, rootId).includes(relativePath)) {
+      await toggleWorkspaceNode(rootId, relativePath);
+    }
+    return;
+  }
+  if (event.key === "ArrowLeft" && kind === "directory") {
+    event.preventDefault();
+    if (expandedPathsForRoot(state.expandedWorkspacePaths, rootId).includes(relativePath)) {
+      await toggleWorkspaceNode(rootId, relativePath);
+    }
+    return;
+  }
+  if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+    event.preventDefault();
+    const rect = node.getBoundingClientRect();
+    showWorkspaceContextMenu(
+      {
+        preventDefault() {},
+        clientX: rect.left + 8,
+        clientY: rect.bottom,
+      } as MouseEvent,
+      node,
+    );
+  }
+}
+
+function showWorkspaceContextMenu(event: MouseEvent, node: HTMLElement): void {
+  dismissWorkspaceContextMenu();
+  const rootId = node.dataset.rootId ?? "";
+  const relativePath = node.dataset.relativePath ?? "";
+  const kind = node.dataset.kind ?? "";
+  const canonicalPath = node.dataset.canonicalPath ?? "";
+  const isRoot = relativePath === "";
+  const menu = document.createElement("div");
+  menu.className = "context-menu workspace-context-menu";
+  menu.style.left = `${event.clientX}px`;
+  menu.style.top = `${event.clientY}px`;
+
+  const items: Array<{ label: string; action: string }> = [];
+  if (kind === "directory") {
+    items.push(
+      { label: "New Markdown File", action: "new-markdown" },
+      { label: "New Folder", action: "new-folder" },
+    );
+    if (!isRoot) items.push({ label: "Rename", action: "rename" });
+    if (!isRoot) items.push({ label: "Move to Trash", action: "trash" });
+    items.push(
+      { label: "Reveal in Finder", action: "reveal" },
+      { label: "Refresh", action: "refresh" },
+    );
+    if (isRoot) items.push({ label: "Remove from Workspace", action: "unregister" });
+  } else {
+    items.push(
+      { label: "Open Preview", action: "open" },
+      { label: "Rename", action: "rename" },
+      { label: "Move to Trash", action: "trash" },
+      { label: "Reveal in Finder", action: "reveal" },
+    );
+  }
+
+  menu.innerHTML = items
+    .map(
+      (item) =>
+        `<button type="button" data-workspace-action="${item.action}">${escapeHtml(item.label)}</button>`,
+    )
+    .join("");
+  document.body.append(menu);
+  workspaceContextMenu = menu;
+  menu.querySelectorAll<HTMLElement>("[data-workspace-action]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const action = button.dataset.workspaceAction ?? "";
+      dismissWorkspaceContextMenu();
+      void runWorkspaceAction(action, rootId, relativePath, kind, canonicalPath);
+    });
+  });
+  dismissWorkspaceContextMenuListener = (pointerEvent) => {
+    if (workspaceContextMenu && !workspaceContextMenu.contains(pointerEvent.target as Node)) {
+      dismissWorkspaceContextMenu();
+    }
+  };
+  document.addEventListener("pointerdown", dismissWorkspaceContextMenuListener, true);
+}
+
+async function runWorkspaceAction(
+  action: string,
+  rootId: string,
+  relativePath: string,
+  kind: string,
+  canonicalPath: string,
+): Promise<void> {
+  switch (action) {
+    case "open":
+      if (kind === "markdown") await openDocumentPaths([canonicalPath]);
+      if (kind === "mermaid") {
+        state = upsertPreviewTab(state, loadingMermaidTab(canonicalPath));
+        render();
+        await ensurePreviewLoaded(mermaidKey(canonicalPath));
+      }
+      if (kind === "image") {
+        state = upsertPreviewTab(state, loadingImageTab(canonicalPath));
+        render();
+        await ensurePreviewLoaded(imageKey(canonicalPath));
+      }
+      break;
+    case "new-markdown":
+      workspaceDialog = {
+        kind: "create-markdown",
+        rootId,
+        relativePath,
+        title: "New Markdown File",
+        label: "File name",
+        initialValue: "Untitled.md",
+        confirmLabel: "Create",
+      };
+      render();
+      break;
+    case "new-folder":
+      workspaceDialog = {
+        kind: "create-folder",
+        rootId,
+        relativePath,
+        title: "New Folder",
+        label: "Folder name",
+        initialValue: "New Folder",
+        confirmLabel: "Create",
+      };
+      render();
+      break;
+    case "rename": {
+      const name = canonicalPath.split("/").filter(Boolean).at(-1) ?? "";
+      workspaceDialog = {
+        kind: "rename",
+        rootId,
+        relativePath,
+        title: "Rename",
+        label: "Name",
+        initialValue: name,
+        confirmLabel: "Rename",
+      };
+      render();
+      break;
+    }
+    case "trash": {
+      const name = canonicalPath.split("/").filter(Boolean).at(-1) ?? "";
+      const isDirectory = kind === "directory";
+      workspaceDialog = {
+        kind: "confirm-trash",
+        rootId,
+        relativePath,
+        title: isDirectory ? "Move Folder to Trash?" : `Move "${name}" to Trash?`,
+        label: "",
+        initialValue: "",
+        confirmLabel: "Move to Trash",
+        message: isDirectory
+          ? "This folder and its contents will be moved to Trash."
+          : undefined,
+      };
+      render();
+      break;
+    }
+    case "reveal":
+      await revealItemInDir(canonicalPath);
+      break;
+    case "refresh":
+      invalidateWorkspaceCache(rootId, [relativePath]);
+      await ensureWorkspaceChildren(rootId, relativePath);
+      render();
+      break;
+    case "unregister":
+      await invoke("unregister_workspace_root", { rootId });
+      invalidateWorkspaceCache(rootId);
+      state = setPreferences(state, {
+        workspaceRoots: removeWorkspaceRoot(state.workspaceRoots, rootId),
+        expandedWorkspacePaths: setExpandedPathsForRoot(
+          state.expandedWorkspacePaths,
+          rootId,
+          [],
+        ),
+      });
+      render();
+      schedulePersist();
+      break;
+    default:
+      break;
+  }
+}
+
+async function confirmWorkspaceDialog(): Promise<void> {
+  if (!workspaceDialog) return;
+  const dialog = workspaceDialog;
+  if (dialog.kind === "confirm-trash") {
+    try {
+      const mutation = await invoke<WorkspaceMutation>("trash_workspace_item", {
+        rootId: dialog.rootId,
+        relativePath: dialog.relativePath,
+      });
+      if (mutation.removedPathPrefix) {
+        state = applyWorkspaceTrash(state, mutation.removedPathPrefix);
+      }
+      invalidateWorkspaceCache(dialog.rootId, [parentRelativePath(dialog.relativePath)]);
+      await ensureWorkspaceChildren(dialog.rootId, parentRelativePath(dialog.relativePath));
+      workspaceDialog = null;
+      workspaceNotice = null;
+      render();
+      schedulePersist();
+      await syncRecentDocuments();
+    } catch (error) {
+      workspaceNotice = workspaceInvokeError(error);
+      workspaceDialog = null;
+      render();
+    }
+    return;
+  }
+
+  const input = root.querySelector<HTMLInputElement>("#workspace-dialog-input");
+  const name = input?.value.trim() ?? "";
+  if (!name) {
+    workspaceNotice = "Enter a valid name.";
+    render();
+    return;
+  }
+
+  try {
+    if (dialog.kind === "create-markdown" || dialog.kind === "create-folder") {
+      const entry = await invoke<WorkspaceEntry>("create_workspace_item", {
+        rootId: dialog.rootId,
+        parentRelativePath: dialog.relativePath,
+        itemKind: dialog.kind === "create-markdown" ? "markdown" : "directory",
+        name,
+      });
+      let ensured = state.expandedWorkspacePaths;
+      if (!expandedPathsForRoot(ensured, dialog.rootId).includes(dialog.relativePath)) {
+        ensured = toggleExpandedPath(ensured, dialog.rootId, dialog.relativePath);
+      }
+      state = setPreferences(state, { expandedWorkspacePaths: ensured });
+      invalidateWorkspaceCache(dialog.rootId, [dialog.relativePath]);
+      await ensureWorkspaceChildren(dialog.rootId, dialog.relativePath);
+      selectedWorkspaceNode = {
+        rootId: entry.rootId,
+        relativePath: entry.relativePath,
+      };
+    } else if (dialog.kind === "rename") {
+      const mutation = await invoke<WorkspaceMutation>("rename_workspace_item", {
+        rootId: dialog.rootId,
+        relativePath: dialog.relativePath,
+        newName: name,
+      });
+      if (mutation.oldPath && mutation.newPath) {
+        state = applyWorkspaceRename(state, mutation.oldPath, mutation.newPath);
+      }
+      invalidateWorkspaceCache(dialog.rootId, [
+        parentRelativePath(dialog.relativePath),
+      ]);
+      await ensureWorkspaceChildren(
+        dialog.rootId,
+        parentRelativePath(dialog.relativePath),
+      );
+      if (mutation.newPath) {
+        const match = findWorkspaceRootForPath(mutation.newPath);
+        if (match) {
+          selectedWorkspaceNode = {
+            rootId: match.root.id,
+            relativePath: match.relativePath,
+          };
+        }
+      }
+    }
+    workspaceDialog = null;
+    workspaceNotice = null;
+    render();
+    schedulePersist();
+    await syncRecentDocuments();
+  } catch (error) {
+    workspaceNotice = workspaceInvokeError(error);
+    workspaceDialog = null;
+    render();
+  }
+}
+
 function bindShellInteractions(): void {
   root.querySelectorAll<HTMLElement>("[data-tab-key]").forEach((element) => {
     element.addEventListener("click", (event) => {
@@ -869,7 +1738,7 @@ function bindShellInteractions(): void {
       state = { ...state, activeTabKey: key };
       render();
       schedulePersist();
-      void ensureDocumentLoaded(state.activeTabKey).then(() =>
+      void ensurePreviewLoaded(state.activeTabKey).then(() =>
         checkActiveDocumentFreshness(),
       );
     });
@@ -909,6 +1778,16 @@ function bindShellInteractions(): void {
       render();
       schedulePersist();
     });
+
+  root.querySelectorAll<HTMLElement>("[data-sidebar-view]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const view = button.dataset.sidebarView as SidebarView;
+      if (view === state.sidebarView) return;
+      state = setPreferences(state, { sidebarView: view });
+      render();
+      schedulePersist();
+    });
+  });
 
   root.querySelectorAll<HTMLElement>(".sidebar .tab").forEach((tabElement) => {
     tabElement.addEventListener("pointerdown", (event) => {
@@ -1559,7 +2438,15 @@ function renderContent(
     renderError(container, tab);
     return;
   }
-  renderDocument(container, tab);
+  if (tab.kind === "document") {
+    renderDocument(container, tab);
+    return;
+  }
+  if (tab.kind === "mermaid") {
+    renderMermaidPreview(container, tab);
+    return;
+  }
+  renderImagePreview(container, tab);
 }
 
 function renderEmptyState(container: HTMLElement): void {
@@ -1567,19 +2454,25 @@ function renderEmptyState(container: HTMLElement): void {
     <section class="empty-state ${UI.centeredState}">
       <div class="empty-copy ${UI.emptyCopy}">
         <span class="empty-mark ${UI.emptyMark}" aria-hidden="true">M</span>
-        <h1 class="${UI.displayHeading}">Read Markdown without the editor.</h1>
-        <p class="${UI.displayCopy}">Open several documents, keep your place, and move between them as tabs.</p>
-        <button class="primary-button ${UI.primaryButton}" type="button" data-empty-open>Open Markdown</button>
-        <span class="shortcut-hint ${UI.shortcutHint}">⌘O or drag files into this window</span>
+        <h1 class="${UI.displayHeading}">Preview local documents in a workspace.</h1>
+        <p class="${UI.displayCopy}">Pin folders in the sidebar, or open Markdown files directly as tabs.</p>
+        <div class="button-row ${UI.buttonRow}">
+          <button class="primary-button ${UI.primaryButton}" type="button" data-empty-add-folder>Add Folder</button>
+          <button class="secondary-button ${UI.secondaryButton}" type="button" data-empty-open>Open Markdown</button>
+        </div>
+        <span class="shortcut-hint ${UI.shortcutHint}">⌘O or drag Markdown files into this window</span>
       </div>
     </section>
   `;
   container
     .querySelector<HTMLElement>("[data-empty-open]")
     ?.addEventListener("click", () => void chooseDocuments());
+  container
+    .querySelector<HTMLElement>("[data-empty-add-folder]")
+    ?.addEventListener("click", () => void addWorkspaceRoot());
 }
 
-function renderLoading(container: HTMLElement, tab: DocumentTab): void {
+function renderLoading(container: HTMLElement, tab: PreviewTab): void {
   container.innerHTML = `
     <section class="loading-state ${UI.centeredState}" aria-label="Loading ${escapeAttribute(tab.displayName)}">
       <div class="document-skeleton w-[min(720px,80%)]">
@@ -1593,7 +2486,7 @@ function renderLoading(container: HTMLElement, tab: DocumentTab): void {
   `;
 }
 
-function renderError(container: HTMLElement, tab: DocumentTab): void {
+function renderError(container: HTMLElement, tab: PreviewTab): void {
   if (tab.status !== "error") return;
   container.innerHTML = `
     <section class="error-state ${UI.centeredState}">
@@ -1615,6 +2508,92 @@ function renderError(container: HTMLElement, tab: DocumentTab): void {
   container
     .querySelector<HTMLElement>("[data-error-open]")
     ?.addEventListener("click", () => void chooseDocuments());
+}
+
+function renderMermaidPreview(
+  container: HTMLElement,
+  tab: MermaidTab & { status: "ready" },
+): void {
+  const scroller = document.createElement("div");
+  scroller.className = "preview-scroll document-scroll";
+  scroller.innerHTML = `
+    <header class="document-meta ${UI.documentMeta}">
+      <div class="document-identity ${UI.documentIdentity}">
+        <strong class="${UI.documentTitle}">${escapeHtml(tab.displayName)}</strong>
+        <span class="${UI.documentPath}" title="${escapeAttribute(tab.canonicalPath)}">${escapeHtml(tab.canonicalPath)}</span>
+      </div>
+    </header>
+    <article class="markdown-body mermaid-preview-body">${tab.html}</article>
+  `;
+  const article = scroller.querySelector<HTMLElement>("article");
+  if (article) enhanceDiagramViewers(article);
+  scroller.scrollTop = tab.scrollTop;
+  scroller.addEventListener("scroll", () => {
+    state = updateScroll(state, tab.key, scroller.scrollTop);
+    schedulePersist();
+  }, { passive: true });
+  container.replaceChildren(scroller);
+}
+
+function renderImagePreview(
+  container: HTMLElement,
+  tab: ImageTab & { status: "ready" },
+): void {
+  const scroller = document.createElement("div");
+  scroller.className = "preview-scroll image-preview-scroll";
+  scroller.innerHTML = `
+    <header class="document-meta ${UI.documentMeta}">
+      <div class="document-identity ${UI.documentIdentity}">
+        <strong class="${UI.documentTitle}">${escapeHtml(tab.displayName)}</strong>
+        <span class="${UI.documentPath}" title="${escapeAttribute(tab.canonicalPath)}">${escapeHtml(tab.canonicalPath)}</span>
+      </div>
+    </header>
+    <div class="image-preview-stage">
+      <img class="image-preview" alt="${escapeAttribute(tab.displayName)}" src="${escapeAttribute(tab.assetUrl)}">
+    </div>
+  `;
+  const image = scroller.querySelector<HTMLImageElement>("img");
+  image?.addEventListener("load", () => {
+    const width = image.naturalWidth;
+    const height = image.naturalHeight;
+    state = {
+      ...state,
+      tabs: state.tabs.map((candidate) =>
+        candidate.key === tab.key && candidate.kind === "image" && candidate.status === "ready"
+          ? { ...candidate, dimensions: { width, height } }
+          : candidate,
+      ),
+    };
+    const status = buildStatusBar(activeTab(state), {
+      colorTheme: state.colorTheme,
+      theme: state.theme,
+      systemDark: colorScheme.matches,
+    });
+    const left = root.querySelector(".status-left");
+    const right = root.querySelector(".status-right");
+    if (left) left.textContent = status.left;
+    if (right) right.textContent = status.right;
+  });
+  image?.addEventListener("error", () => {
+    state = upsertPreviewTab(state, {
+      kind: "image",
+      key: tab.key,
+      status: "error",
+      requestedPath: tab.canonicalPath,
+      canonicalPath: tab.canonicalPath,
+      displayName: tab.displayName,
+      code: "preview_failed",
+      message: "The image could not be previewed.",
+      scrollTop: tab.scrollTop,
+    });
+    render();
+  });
+  scroller.scrollTop = tab.scrollTop;
+  scroller.addEventListener("scroll", () => {
+    state = updateScroll(state, tab.key, scroller.scrollTop);
+    schedulePersist();
+  }, { passive: true });
+  container.replaceChildren(scroller);
 }
 
 function renderDocument(
@@ -2070,38 +3049,70 @@ async function rerenderDocumentsForMermaidTheme(
             ? (tab.canonicalPath ?? tab.requestedPath)
             : tab.requestedPath,
     }));
-  if (requests.length === 0) return;
+  const mermaidTabs = state.tabs.filter(
+    (tab): tab is ReadyMermaidTab =>
+      tab.kind === "mermaid" && tab.status === "ready",
+  );
 
   const sequence = ++mermaidThemeReloadSequence;
-  const results = await invoke<DocumentLoadResult[]>("load_documents", {
-    paths: requests.map((request) => request.path),
-    mermaidTheme,
-    colorTheme,
-  });
-  if (
-    sequence !== mermaidThemeReloadSequence ||
-    activeMermaidTheme() !== mermaidTheme ||
-    state.colorTheme !== colorTheme
-  ) {
-    return;
+  if (requests.length > 0) {
+    const results = await invoke<DocumentLoadResult[]>("load_documents", {
+      paths: requests.map((request) => request.path),
+      mermaidTheme,
+      colorTheme,
+    });
+    if (
+      sequence !== mermaidThemeReloadSequence ||
+      activeMermaidTheme() !== mermaidTheme ||
+      state.colorTheme !== colorTheme
+    ) {
+      return;
+    }
+    const resultsByKey = new Map(
+      requests.map((request, index) => [request.key, results[index]]),
+    );
+    const keyRemap = new Map<string, string>();
+    state = {
+      ...state,
+      tabs: state.tabs.map((tab) => {
+        if (tab.kind !== "document") return tab;
+        const result = resultsByKey.get(tab.key);
+        if (!result) return tab;
+        const replacement = tabFromResult(result, tab.scrollTop);
+        keyRemap.set(tab.key, replacement.key);
+        return replacement;
+      }),
+      activeTabKey:
+        keyRemap.get(state.activeTabKey ?? "") ?? state.activeTabKey,
+    };
   }
-  const resultsByKey = new Map(
-    requests.map((request, index) => [request.key, results[index]]),
-  );
-  const keyRemap = new Map<string, string>();
-  state = {
-    ...state,
-    tabs: state.tabs.map((tab) => {
-      if (tab.kind !== "document") return tab;
-      const result = resultsByKey.get(tab.key);
-      if (!result) return tab;
-      const replacement = tabFromResult(result, tab.scrollTop);
-      keyRemap.set(tab.key, replacement.key);
-      return replacement;
-    }),
-    activeTabKey:
-      keyRemap.get(state.activeTabKey ?? "") ?? state.activeTabKey,
-  };
+
+  for (const tab of mermaidTabs) {
+    if (
+      sequence !== mermaidThemeReloadSequence ||
+      activeMermaidTheme() !== mermaidTheme ||
+      state.colorTheme !== colorTheme
+    ) {
+      return;
+    }
+    const rootMatch = findWorkspaceRootForPath(tab.canonicalPath);
+    if (!rootMatch) continue;
+    try {
+      const preview = await invoke<MermaidPreview>("load_workspace_mermaid", {
+        rootId: rootMatch.root.id,
+        relativePath: rootMatch.relativePath,
+        mermaidTheme,
+        colorTheme,
+      });
+      state = upsertPreviewTab(
+        state,
+        tabFromMermaidPreview(preview, tab.scrollTop),
+      );
+    } catch {
+      // Keep the previous Mermaid preview if theme re-render fails.
+    }
+  }
+
   render();
   schedulePersist();
 }

@@ -6,16 +6,30 @@ import type {
   DocumentLoadResult,
   DocumentTab,
   ErrorDocumentTab,
+  ErrorImageTab,
+  ErrorMermaidTab,
+  ImagePreview,
+  ImageTab,
   LoadingDocumentTab,
+  LoadingImageTab,
+  LoadingMermaidTab,
   MermaidDarkTheme,
   MermaidLightTheme,
+  MermaidPreview,
+  MermaidTab,
   PageWidth,
   PersistedSessionV1,
+  PersistedTab,
+  PreviewTab,
   ReadyDocumentTab,
+  ReadyImageTab,
+  ReadyMermaidTab,
   SettingsTab,
+  SidebarView,
   TabPlacement,
   TextFont,
   ThemeMode,
+  WorkspaceRoot,
 } from "./types";
 
 export const DEFAULT_SIDEBAR_WIDTH = 232;
@@ -29,8 +43,11 @@ export const DEFAULT_STATE: AppState = {
   theme: "system",
   colorTheme: "default",
   tabPlacement: "left",
+  sidebarView: "tabs",
   sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
   leftSidebarVisible: true,
+  workspaceRoots: [],
+  expandedWorkspacePaths: {},
   mermaidLightTheme: "default",
   mermaidDarkTheme: "dark",
   textFont: "",
@@ -52,10 +69,43 @@ export function documentKey(path: string): string {
   return `document:${path}`;
 }
 
+export function mermaidKey(path: string): string {
+  return `mermaid:${path}`;
+}
+
+export function imageKey(path: string): string {
+  return `image:${path}`;
+}
+
 export function loadingTab(path: string, scrollTop = 0): LoadingDocumentTab {
   return {
     kind: "document",
     key: documentKey(path),
+    status: "loading",
+    requestedPath: path,
+    displayName: fileName(path),
+    scrollTop,
+  };
+}
+
+export function loadingMermaidTab(
+  path: string,
+  scrollTop = 0,
+): LoadingMermaidTab {
+  return {
+    kind: "mermaid",
+    key: mermaidKey(path),
+    status: "loading",
+    requestedPath: path,
+    displayName: fileName(path),
+    scrollTop,
+  };
+}
+
+export function loadingImageTab(path: string, scrollTop = 0): LoadingImageTab {
+  return {
+    kind: "image",
+    key: imageKey(path),
     status: "loading",
     requestedPath: path,
     displayName: fileName(path),
@@ -81,6 +131,71 @@ export function tabFromResult(
     ...result,
     kind: "document",
     key: documentKey(result.canonicalPath ?? result.requestedPath),
+    scrollTop,
+  };
+}
+
+export function tabFromMermaidPreview(
+  preview: MermaidPreview,
+  scrollTop = 0,
+): ReadyMermaidTab | ErrorMermaidTab {
+  if (preview.status === "ready") {
+    return {
+      kind: "mermaid",
+      key: mermaidKey(preview.canonicalPath),
+      status: "ready",
+      canonicalPath: preview.canonicalPath,
+      displayName: preview.displayName,
+      source: preview.source,
+      html: preview.html,
+      sizeBytes: preview.sizeBytes,
+      modifiedAtMs: preview.modifiedAtMs,
+      scrollTop,
+    };
+  }
+
+  return {
+    kind: "mermaid",
+    key: mermaidKey(preview.canonicalPath || preview.requestedPath),
+    status: "error",
+    requestedPath: preview.requestedPath,
+    canonicalPath: preview.canonicalPath || null,
+    displayName: preview.displayName,
+    code: preview.code ?? "preview_failed",
+    message: preview.message ?? "Mermaid preview failed.",
+    scrollTop,
+  };
+}
+
+export function tabFromImagePreview(
+  preview: ImagePreview,
+  assetUrl: string,
+  scrollTop = 0,
+): ReadyImageTab | ErrorImageTab {
+  if (preview.status === "ready") {
+    return {
+      kind: "image",
+      key: imageKey(preview.canonicalPath),
+      status: "ready",
+      canonicalPath: preview.canonicalPath,
+      displayName: preview.displayName,
+      assetUrl,
+      sizeBytes: preview.sizeBytes,
+      modifiedAtMs: preview.modifiedAtMs,
+      dimensions: null,
+      scrollTop,
+    };
+  }
+
+  return {
+    kind: "image",
+    key: imageKey(preview.canonicalPath || preview.requestedPath),
+    status: "error",
+    requestedPath: preview.requestedPath,
+    canonicalPath: preview.canonicalPath || null,
+    displayName: preview.displayName,
+    code: preview.code ?? "preview_failed",
+    message: preview.message ?? "Image preview failed.",
     scrollTop,
   };
 }
@@ -131,7 +246,27 @@ export function addDocumentResults(
     activeTabKey = nextTab.key;
   }
 
-  return deduplicateDocuments({ ...state, tabs, activeTabKey });
+  return deduplicatePreviewTabs({ ...state, tabs, activeTabKey });
+}
+
+export function upsertPreviewTab(state: AppState, nextTab: PreviewTab): AppState {
+  const existingIndex = state.tabs.findIndex((tab) => tab.key === nextTab.key);
+  const tabs = [...state.tabs];
+  if (existingIndex >= 0) {
+    const existing = tabs[existingIndex];
+    const scrollTop =
+      existing.kind !== "settings" && "scrollTop" in existing
+        ? (existing as PreviewTab).scrollTop
+        : nextTab.scrollTop;
+    tabs[existingIndex] = { ...nextTab, scrollTop };
+  } else {
+    tabs.push(nextTab);
+  }
+  return deduplicatePreviewTabs({
+    ...state,
+    tabs,
+    activeTabKey: nextTab.key,
+  });
 }
 
 export function hydrateRestoredTabs(
@@ -151,7 +286,7 @@ export function hydrateRestoredTabs(
     return hydrated;
   });
 
-  return deduplicateDocuments({
+  return deduplicatePreviewTabs({
     ...state,
     tabs,
     activeTabKey:
@@ -169,7 +304,7 @@ export function replaceDocumentResult(
   );
   if (!current) return state;
   const replacement = tabFromResult(result, current.scrollTop);
-  return deduplicateDocuments({
+  return deduplicatePreviewTabs({
     ...state,
     tabs: state.tabs.map((tab) => (tab.key === key ? replacement : tab)),
     activeTabKey:
@@ -205,6 +340,71 @@ export function closeTab(state: AppState, key: string): AppState {
     tabs,
     activeTabKey: fallback?.key ?? null,
   };
+}
+
+export function closeTabsMatchingPaths(
+  state: AppState,
+  matcher: (path: string) => boolean,
+): AppState {
+  const removedKeys = new Set<string>();
+  const tabs = state.tabs.filter((tab) => {
+    if (tab.kind === "settings") return true;
+    const path = previewPath(tab);
+    if (!matcher(path)) return true;
+    removedKeys.add(tab.key);
+    return false;
+  });
+  if (removedKeys.size === 0) return state;
+
+  let activeTabKey = state.activeTabKey;
+  if (activeTabKey && removedKeys.has(activeTabKey)) {
+    const previousIndex = state.tabs.findIndex((tab) => tab.key === activeTabKey);
+    const fallback =
+      tabs[Math.min(Math.max(previousIndex, 0), tabs.length - 1)] ?? null;
+    activeTabKey = fallback?.key ?? null;
+  }
+
+  const recentDocuments = state.recentDocuments.filter((path) => !matcher(path));
+  return { ...state, tabs, activeTabKey, recentDocuments };
+}
+
+export function rewritePreviewPaths(
+  state: AppState,
+  rewrite: (path: string) => string | null,
+): AppState {
+  const keyRemap = new Map<string, string>();
+  const tabs = state.tabs.map((tab) => {
+    if (tab.kind === "settings") return tab;
+    const currentPath = previewPath(tab);
+    const nextPath = rewrite(currentPath);
+    if (!nextPath || nextPath === currentPath) return tab;
+
+    if (tab.kind === "document") {
+      const next = rewriteDocumentTab(tab, nextPath);
+      keyRemap.set(tab.key, next.key);
+      return next;
+    }
+    if (tab.kind === "mermaid") {
+      const next = rewriteMermaidTab(tab, nextPath);
+      keyRemap.set(tab.key, next.key);
+      return next;
+    }
+    const next = rewriteImageTab(tab, nextPath);
+    keyRemap.set(tab.key, next.key);
+    return next;
+  });
+
+  const recentDocuments = state.recentDocuments.map(
+    (path) => rewrite(path) ?? path,
+  );
+
+  return deduplicatePreviewTabs({
+    ...state,
+    tabs,
+    recentDocuments: normalizeRecentDocuments(recentDocuments),
+    activeTabKey:
+      keyRemap.get(state.activeTabKey ?? "") ?? state.activeTabKey,
+  });
 }
 
 export function cycleTab(state: AppState, direction: 1 | -1): AppState {
@@ -245,7 +445,7 @@ export function updateScroll(
   return {
     ...state,
     tabs: state.tabs.map((tab) =>
-      tab.kind === "document" && tab.key === key
+      tab.kind !== "settings" && tab.key === key
         ? { ...tab, scrollTop }
         : tab,
     ),
@@ -258,8 +458,11 @@ export function setPreferences(
     theme?: ThemeMode;
     colorTheme?: ColorTheme;
     tabPlacement?: TabPlacement;
+    sidebarView?: SidebarView;
     sidebarWidth?: number;
     leftSidebarVisible?: boolean;
+    workspaceRoots?: WorkspaceRoot[];
+    expandedWorkspacePaths?: Record<string, string[]>;
     mermaidLightTheme?: MermaidLightTheme;
     mermaidDarkTheme?: MermaidDarkTheme;
     textFont?: TextFont;
@@ -290,26 +493,16 @@ export function clearRecentDocuments(state: AppState): AppState {
 export function toPersistedSession(state: AppState): PersistedSessionV1 {
   return {
     version: 1,
-    tabs: state.tabs.map((tab) =>
-      tab.kind === "settings"
-        ? { kind: "settings" as const }
-        : {
-            kind: "document" as const,
-            path:
-              tab.status === "ready"
-                ? tab.canonicalPath
-                : tab.status === "error"
-                  ? (tab.canonicalPath ?? tab.requestedPath)
-                  : tab.requestedPath,
-            scrollTop: tab.scrollTop,
-          },
-    ),
+    tabs: state.tabs.map(persistTab),
     activeTabKey: state.activeTabKey,
     theme: state.theme,
     colorTheme: state.colorTheme,
     tabPlacement: state.tabPlacement,
+    sidebarView: state.sidebarView,
     sidebarWidth: clampSidebarWidth(state.sidebarWidth),
     leftSidebarVisible: state.leftSidebarVisible,
+    workspaceRoots: state.workspaceRoots,
+    expandedWorkspacePaths: state.expandedWorkspacePaths,
     mermaidLightTheme: state.mermaidLightTheme,
     mermaidDarkTheme: state.mermaidDarkTheme,
     textFont: state.textFont,
@@ -323,17 +516,16 @@ export function toPersistedSession(state: AppState): PersistedSessionV1 {
 export function fromPersistedSession(value: unknown): AppState {
   if (!isPersistedSession(value)) return { ...DEFAULT_STATE };
   return {
-    tabs: value.tabs.map((tab) =>
-      tab.kind === "settings"
-        ? ({ kind: "settings", key: "settings" } satisfies SettingsTab)
-        : loadingTab(tab.path, tab.scrollTop),
-    ),
+    tabs: value.tabs.map(restoreTab),
     activeTabKey: value.activeTabKey,
     theme: value.theme,
     colorTheme: isColorTheme(value.colorTheme)
       ? value.colorTheme
       : DEFAULT_STATE.colorTheme,
     tabPlacement: value.tabPlacement,
+    sidebarView: isSidebarView(value.sidebarView)
+      ? value.sidebarView
+      : DEFAULT_STATE.sidebarView,
     sidebarWidth: clampSidebarWidth(
       typeof value.sidebarWidth === "number"
         ? value.sidebarWidth
@@ -343,6 +535,10 @@ export function fromPersistedSession(value: unknown): AppState {
       typeof value.leftSidebarVisible === "boolean"
         ? value.leftSidebarVisible
         : DEFAULT_STATE.leftSidebarVisible,
+    workspaceRoots: normalizeWorkspaceRoots(value.workspaceRoots),
+    expandedWorkspacePaths: normalizeExpandedPaths(
+      value.expandedWorkspacePaths,
+    ),
     mermaidLightTheme: isMermaidLightTheme(value.mermaidLightTheme)
       ? value.mermaidLightTheme
       : DEFAULT_STATE.mermaidLightTheme,
@@ -366,6 +562,127 @@ export function fromPersistedSession(value: unknown): AppState {
   };
 }
 
+export function previewPath(tab: PreviewTab): string {
+  if (tab.kind === "document") {
+    if (tab.status === "ready") return tab.canonicalPath;
+    if (tab.status === "error") return tab.canonicalPath ?? tab.requestedPath;
+    return tab.requestedPath;
+  }
+  if (tab.status === "ready") return tab.canonicalPath;
+  if (tab.status === "error") return tab.canonicalPath ?? tab.requestedPath;
+  return tab.requestedPath;
+}
+
+export function activeTab(state: AppState): AppTab | null {
+  return state.tabs.find((tab) => tab.key === state.activeTabKey) ?? null;
+}
+
+function persistTab(tab: AppTab): PersistedTab {
+  if (tab.kind === "settings") return { kind: "settings" };
+  if (tab.kind === "document") {
+    return {
+      kind: "document",
+      path: previewPath(tab),
+      scrollTop: tab.scrollTop,
+    };
+  }
+  if (tab.kind === "mermaid") {
+    return {
+      kind: "mermaid",
+      path: previewPath(tab),
+      scrollTop: tab.scrollTop,
+    };
+  }
+  return {
+    kind: "image",
+    path: previewPath(tab),
+    scrollTop: tab.scrollTop,
+  };
+}
+
+function restoreTab(tab: PersistedTab): AppTab {
+  if (tab.kind === "settings") {
+    return { kind: "settings", key: "settings" } satisfies SettingsTab;
+  }
+  if (tab.kind === "mermaid") return loadingMermaidTab(tab.path, tab.scrollTop);
+  if (tab.kind === "image") return loadingImageTab(tab.path, tab.scrollTop);
+  return loadingTab(tab.path, tab.scrollTop);
+}
+
+function rewriteDocumentTab(tab: DocumentTab, nextPath: string): DocumentTab {
+  if (tab.status === "loading") {
+    return { ...tab, key: documentKey(nextPath), requestedPath: nextPath, displayName: fileName(nextPath) };
+  }
+  if (tab.status === "error") {
+    return {
+      ...tab,
+      key: documentKey(nextPath),
+      requestedPath: nextPath,
+      canonicalPath: nextPath,
+      displayName: fileName(nextPath),
+    };
+  }
+  return {
+    ...tab,
+    key: documentKey(nextPath),
+    requestedPath: nextPath,
+    canonicalPath: nextPath,
+    displayName: fileName(nextPath),
+  };
+}
+
+function rewriteMermaidTab(tab: MermaidTab, nextPath: string): MermaidTab {
+  if (tab.status === "loading") {
+    return {
+      ...tab,
+      key: mermaidKey(nextPath),
+      requestedPath: nextPath,
+      displayName: fileName(nextPath),
+    };
+  }
+  if (tab.status === "error") {
+    return {
+      ...tab,
+      key: mermaidKey(nextPath),
+      requestedPath: nextPath,
+      canonicalPath: nextPath,
+      displayName: fileName(nextPath),
+    };
+  }
+  return {
+    ...tab,
+    key: mermaidKey(nextPath),
+    canonicalPath: nextPath,
+    displayName: fileName(nextPath),
+  };
+}
+
+function rewriteImageTab(tab: ImageTab, nextPath: string): ImageTab {
+  if (tab.status === "loading") {
+    return {
+      ...tab,
+      key: imageKey(nextPath),
+      requestedPath: nextPath,
+      displayName: fileName(nextPath),
+    };
+  }
+  if (tab.status === "error") {
+    return {
+      ...tab,
+      key: imageKey(nextPath),
+      requestedPath: nextPath,
+      canonicalPath: nextPath,
+      displayName: fileName(nextPath),
+    };
+  }
+  return {
+    ...tab,
+    key: imageKey(nextPath),
+    canonicalPath: nextPath,
+    displayName: fileName(nextPath),
+  };
+}
+
 function isMermaidLightTheme(value: unknown): value is MermaidLightTheme {
   return ["default", "base", "forest", "neutral", "neo", "redux", "redux-color"].includes(
     value as string,
@@ -382,6 +699,10 @@ function isMermaidDarkTheme(value: unknown): value is MermaidDarkTheme {
   return ["dark", "neo-dark", "redux-dark", "redux-dark-color"].includes(
     value as string,
   );
+}
+
+function isSidebarView(value: unknown): value is SidebarView {
+  return value === "files" || value === "tabs";
 }
 
 function isTextFont(value: unknown): value is TextFont {
@@ -429,7 +750,50 @@ function normalizeRecentDocuments(value: unknown): string[] {
   }).slice(0, MAX_RECENT_DOCUMENTS);
 }
 
-function deduplicateDocuments(state: AppState): AppState {
+function normalizeWorkspaceRoots(value: unknown): WorkspaceRoot[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const roots: WorkspaceRoot[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const candidate = item as Partial<WorkspaceRoot>;
+    if (
+      typeof candidate.id !== "string" ||
+      typeof candidate.canonicalPath !== "string" ||
+      typeof candidate.displayName !== "string" ||
+      !candidate.canonicalPath.trim() ||
+      seen.has(candidate.canonicalPath)
+    ) {
+      continue;
+    }
+    seen.add(candidate.canonicalPath);
+    roots.push({
+      id: candidate.id,
+      canonicalPath: candidate.canonicalPath,
+      displayName: candidate.displayName,
+    });
+  }
+  return roots;
+}
+
+function normalizeExpandedPaths(
+  value: unknown,
+): Record<string, string[]> {
+  if (!value || typeof value !== "object") return {};
+  const result: Record<string, string[]> = {};
+  for (const [rootId, paths] of Object.entries(value)) {
+    if (!Array.isArray(paths)) continue;
+    const seen = new Set<string>();
+    result[rootId] = paths.filter((path): path is string => {
+      if (typeof path !== "string" || seen.has(path)) return false;
+      seen.add(path);
+      return true;
+    });
+  }
+  return result;
+}
+
+function deduplicatePreviewTabs(state: AppState): AppState {
   const seen = new Set<string>();
   const tabs = state.tabs.filter((tab) => {
     if (tab.kind === "settings") return true;
@@ -455,15 +819,7 @@ function isPersistedSession(value: unknown): value is PersistedSessionV1 {
   return (
     candidate.version === 1 &&
     Array.isArray(candidate.tabs) &&
-    candidate.tabs.every(
-      (tab) =>
-        !!tab &&
-        typeof tab === "object" &&
-        ((tab as { kind?: string }).kind === "settings" ||
-          ((tab as { kind?: string }).kind === "document" &&
-            typeof (tab as { path?: unknown }).path === "string" &&
-            typeof (tab as { scrollTop?: unknown }).scrollTop === "number")),
-    ) &&
+    candidate.tabs.every(isPersistedTab) &&
     (candidate.activeTabKey === null ||
       typeof candidate.activeTabKey === "string") &&
     ["system", "light", "dark"].includes(candidate.theme ?? "") &&
@@ -471,10 +827,19 @@ function isPersistedSession(value: unknown): value is PersistedSessionV1 {
   );
 }
 
-function fileName(path: string): string {
-  return path.split("/").filter(Boolean).at(-1) ?? path;
+function isPersistedTab(tab: unknown): tab is PersistedTab {
+  if (!tab || typeof tab !== "object") return false;
+  const candidate = tab as Partial<PersistedTab>;
+  if (candidate.kind === "settings") return true;
+  return (
+    (candidate.kind === "document" ||
+      candidate.kind === "mermaid" ||
+      candidate.kind === "image") &&
+    typeof (candidate as { path?: unknown }).path === "string" &&
+    typeof (candidate as { scrollTop?: unknown }).scrollTop === "number"
+  );
 }
 
-export function activeTab(state: AppState): AppTab | null {
-  return state.tabs.find((tab) => tab.key === state.activeTabKey) ?? null;
+function fileName(path: string): string {
+  return path.split("/").filter(Boolean).at(-1) ?? path;
 }

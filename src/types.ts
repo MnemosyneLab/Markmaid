@@ -1,6 +1,7 @@
 export type ThemeMode = "system" | "light" | "dark";
 export type ColorTheme = "default" | "solarized" | "nord" | "gruvbox" | "catppuccin";
 export type TabPlacement = "top" | "left";
+export type SidebarView = "files" | "tabs";
 export type TextFont = string;
 export type CodeFont = string;
 export type PageWidth =
@@ -85,7 +86,132 @@ export type DocumentTab =
   | ReadyDocumentTab
   | ErrorDocumentTab
   | LoadingDocumentTab;
-export type AppTab = DocumentTab | SettingsTab;
+
+export interface ReadyMermaidTab {
+  kind: "mermaid";
+  key: string;
+  status: "ready";
+  canonicalPath: string;
+  displayName: string;
+  source: string;
+  html: string;
+  sizeBytes: number;
+  modifiedAtMs: number;
+  scrollTop: number;
+}
+
+export interface LoadingMermaidTab {
+  kind: "mermaid";
+  key: string;
+  status: "loading";
+  requestedPath: string;
+  displayName: string;
+  scrollTop: number;
+}
+
+export interface ErrorMermaidTab {
+  kind: "mermaid";
+  key: string;
+  status: "error";
+  requestedPath: string;
+  canonicalPath: string | null;
+  displayName: string;
+  code: string;
+  message: string;
+  scrollTop: number;
+}
+
+export type MermaidTab = ReadyMermaidTab | LoadingMermaidTab | ErrorMermaidTab;
+
+export interface ReadyImageTab {
+  kind: "image";
+  key: string;
+  status: "ready";
+  canonicalPath: string;
+  displayName: string;
+  assetUrl: string;
+  sizeBytes: number;
+  modifiedAtMs: number;
+  dimensions: { width: number; height: number } | null;
+  scrollTop: number;
+}
+
+export interface LoadingImageTab {
+  kind: "image";
+  key: string;
+  status: "loading";
+  requestedPath: string;
+  displayName: string;
+  scrollTop: number;
+}
+
+export interface ErrorImageTab {
+  kind: "image";
+  key: string;
+  status: "error";
+  requestedPath: string;
+  canonicalPath: string | null;
+  displayName: string;
+  code: string;
+  message: string;
+  scrollTop: number;
+}
+
+export type ImageTab = ReadyImageTab | LoadingImageTab | ErrorImageTab;
+
+export type PreviewTab = DocumentTab | MermaidTab | ImageTab;
+export type AppTab = PreviewTab | SettingsTab;
+
+export type WorkspaceEntryKind = "directory" | "markdown" | "mermaid" | "image";
+
+export interface WorkspaceRoot {
+  id: string;
+  canonicalPath: string;
+  displayName: string;
+}
+
+export interface WorkspaceEntry {
+  rootId: string;
+  relativePath: string;
+  canonicalPath: string;
+  name: string;
+  kind: WorkspaceEntryKind;
+  sizeBytes?: number;
+  modifiedAtMs?: number;
+  hasVisibleChildren?: boolean;
+}
+
+export interface WorkspaceMutation {
+  oldPath: string;
+  newPath: string | null;
+  affectedDirectoryPaths: string[];
+  removedPathPrefix: string | null;
+}
+
+export interface MermaidPreview {
+  status: "ready" | "error";
+  requestedPath: string;
+  canonicalPath: string;
+  displayName: string;
+  source: string;
+  html: string;
+  sizeBytes: number;
+  modifiedAtMs: number;
+  code?: string;
+  message?: string;
+}
+
+export interface ImagePreview {
+  status: "ready" | "error";
+  requestedPath: string;
+  canonicalPath: string;
+  displayName: string;
+  path: string;
+  sizeBytes: number;
+  modifiedAtMs: number;
+  code?: string;
+  message?: string;
+}
 
 export interface AppState {
   tabs: AppTab[];
@@ -93,8 +219,11 @@ export interface AppState {
   theme: ThemeMode;
   colorTheme: ColorTheme;
   tabPlacement: TabPlacement;
+  sidebarView: SidebarView;
   sidebarWidth: number;
   leftSidebarVisible: boolean;
+  workspaceRoots: WorkspaceRoot[];
+  expandedWorkspacePaths: Record<string, string[]>;
   mermaidLightTheme: MermaidLightTheme;
   mermaidDarkTheme: MermaidDarkTheme;
   textFont: TextFont;
@@ -106,6 +235,8 @@ export interface AppState {
 
 export type PersistedTab =
   | { kind: "document"; path: string; scrollTop: number }
+  | { kind: "mermaid"; path: string; scrollTop: number }
+  | { kind: "image"; path: string; scrollTop: number }
   | { kind: "settings" };
 
 export interface PersistedSessionV1 {
@@ -115,8 +246,11 @@ export interface PersistedSessionV1 {
   theme: ThemeMode;
   colorTheme?: ColorTheme;
   tabPlacement: TabPlacement;
+  sidebarView?: SidebarView;
   sidebarWidth?: number;
   leftSidebarVisible?: boolean;
+  workspaceRoots?: WorkspaceRoot[];
+  expandedWorkspacePaths?: Record<string, string[]>;
   mermaidLightTheme?: MermaidLightTheme;
   mermaidDarkTheme?: MermaidDarkTheme;
   textFont?: TextFont;
