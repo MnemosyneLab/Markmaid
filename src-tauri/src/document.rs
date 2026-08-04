@@ -1,9 +1,10 @@
 use std::{
     borrow::Cow,
     collections::{HashMap, hash_map::DefaultHasher},
-    fs,
+    fmt, fs,
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
+    sync::LazyLock,
     time::UNIX_EPOCH,
 };
 
@@ -17,7 +18,6 @@ use comrak::{
 use merman::{MermaidConfig, render::HeadlessRenderer};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::fmt;
 use tauri::{AppHandle, Manager};
 use url::Url;
 
@@ -25,6 +25,13 @@ const MARKDOWN_EXTENSIONS: &[&str] = &["md", "markdown", "mdown", "mkd"];
 const MERMAID_PLACEHOLDER_LANGUAGE: &str = "markmaid-mermaid-placeholder";
 const LONG_CODE_PLACEHOLDER_LANGUAGE: &str = "markmaid-long-code-placeholder";
 const INITIAL_CODE_LINES: usize = 200;
+
+static SYNTAX_HIGHLIGHTER: LazyLock<SyntectAdapter> = LazyLock::new(|| {
+    SyntectAdapterBuilder::new()
+        .css_with_class_prefix("syn-")
+        .syntax_set(two_face::syntax::extra_newlines())
+        .build()
+});
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -408,7 +415,7 @@ struct LongCodeRenderer<'a> {
 }
 
 struct SourceposSyntaxHighlighter {
-    inner: SyntectAdapter,
+    inner: &'static SyntectAdapter,
 }
 
 impl SyntaxHighlighterAdapter for SourceposSyntaxHighlighter {
@@ -418,7 +425,10 @@ impl SyntaxHighlighterAdapter for SourceposSyntaxHighlighter {
         lang: Option<&str>,
         code: &str,
     ) -> fmt::Result {
-        self.inner.write_highlighted(output, lang, code)
+        let normalized =
+            lang.map(|value| normalize_code_language(&value.to_ascii_lowercase()).to_string());
+        self.inner
+            .write_highlighted(output, normalized.as_deref(), code)
     }
 
     fn write_pre_tag(
@@ -437,8 +447,19 @@ impl SyntaxHighlighterAdapter for SourceposSyntaxHighlighter {
     fn write_code_tag(
         &self,
         output: &mut dyn fmt::Write,
-        attributes: HashMap<&'static str, Cow<'_, str>>,
+        mut attributes: HashMap<&'static str, Cow<'_, str>>,
     ) -> fmt::Result {
+        if let Some(class) = attributes
+            .get("class")
+            .map(|value| value.as_ref().to_string())
+            && let Some(language) = class.strip_prefix("language-")
+        {
+            let lowered = language.to_ascii_lowercase();
+            let normalized = normalize_code_language(&lowered);
+            if normalized != language {
+                attributes.insert("class", Cow::Owned(format!("language-{normalized}")));
+            }
+        }
         self.inner.write_code_tag(output, attributes)
     }
 }
@@ -580,12 +601,11 @@ fn check_document_revision(probe: DocumentRevisionProbe) -> DocumentRevisionResu
 
 #[tauri::command]
 pub fn highlight_code_chunk(language: String, source: String) -> Result<String, String> {
-    let highlighter = SyntectAdapterBuilder::new()
-        .css_with_class_prefix("syn-")
-        .build();
+    let normalized = language.to_ascii_lowercase();
+    let language = normalize_code_language(&normalized);
     let mut html = String::new();
-    highlighter
-        .write_highlighted(&mut html, Some(&language), &source)
+    SYNTAX_HIGHLIGHTER
+        .write_highlighted(&mut html, Some(language), &source)
         .map_err(|error| format!("Code highlighting failed: {error}"))?;
     Ok(html)
 }
@@ -847,9 +867,7 @@ fn render_markdown(
     }
 
     let syntax_highlighter = SourceposSyntaxHighlighter {
-        inner: SyntectAdapterBuilder::new()
-            .css_with_class_prefix("syn-")
-            .build(),
+        inner: &SYNTAX_HIGHLIGHTER,
     };
     let mut plugins = comrak::options::Plugins::default();
     plugins.render.codefence_syntax_highlighter = Some(&syntax_highlighter);
@@ -879,11 +897,20 @@ fn is_mermaid_info(info: &str) -> bool {
 }
 
 fn code_language(info: &str) -> String {
-    info.split_whitespace()
+    let language = info
+        .split_whitespace()
         .next()
         .filter(|language| !language.is_empty())
         .unwrap_or("text")
-        .to_ascii_lowercase()
+        .to_ascii_lowercase();
+    normalize_code_language(&language).to_string()
+}
+
+fn normalize_code_language(language: &str) -> &str {
+    match language {
+        "docker" => "dockerfile",
+        other => other,
+    }
 }
 
 fn code_line_count(source: &str) -> usize {
@@ -1167,6 +1194,50 @@ mod tests {
         );
         assert!(rendered.html.contains("syn-keyword"));
         assert!(rendered.html.contains("syn-string"));
+    }
+
+    #[test]
+    fn highlights_extended_code_fences_from_two_face() {
+        let rendered = render_markdown(
+            concat!(
+                "```typescript\nconst enabled: boolean = true;\n```\n\n",
+                "```ts\ntype Flag = boolean;\n```\n\n",
+                "```toml\nenabled = true\n```\n\n",
+                "```swift\nlet enabled = true\n```\n\n",
+                "```kotlin\nval enabled = true\n```\n\n",
+                "```dockerfile\nFROM alpine:3.20\n```\n\n",
+                "```docker\nFROM alpine:3.20\n```\n\n",
+                "```nginx\nserver { listen 80; }\n```\n"
+            ),
+            Path::new("/tmp/extended-highlight.md"),
+            MermaidTheme::Default,
+            ColorTheme::Default,
+        )
+        .unwrap();
+
+        for language in [
+            "typescript",
+            "ts",
+            "toml",
+            "swift",
+            "kotlin",
+            "dockerfile",
+            "nginx",
+        ] {
+            assert!(
+                rendered
+                    .html
+                    .contains(&format!("class=\"language-{language}\"")),
+                "missing language class for {language}: {}",
+                rendered.html,
+            );
+        }
+        assert!(
+            !rendered.html.contains("class=\"language-docker\""),
+            "docker fence should normalize to dockerfile: {}",
+            rendered.html,
+        );
+        assert!(rendered.html.contains("syn-keyword") || rendered.html.contains("syn-string"));
     }
 
     #[test]
