@@ -6,14 +6,15 @@ All notable changes to MarkMaid are documented in this file.
 
 ### Added
 
+- Find in Document (`⌘F`) overlay with match count, previous/next controls, Enter / Shift+Enter cycling, and Esc to close
+- Quick Open (`⌘P`) for open tabs and recent documents, with multi-term filtering and keyboard navigation
 - External-change alerts on window focus and tab activation, with explicit Reload and Ignore actions (continuous file watching remains deferred)
-- Quick Open (`⌘P`) for switching between open tabs and recent documents
-- Find in Document (`⌘F`) overlay with match count, previous/next navigation, and Enter / Shift+Enter cycling
 
 ### Changed
 
 - Keep Markdown source as the Find authority and map hits onto rendered blocks via source-position metadata
 - Disambiguate same-named document tabs and Open Recent entries with the shortest useful parent path
+- Make Find and Quick Open mutually exclusive so only one overlay is open at a time
 
 ### Fixed
 
