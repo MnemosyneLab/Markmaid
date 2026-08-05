@@ -2,6 +2,26 @@
 
 All notable changes to MarkMaid are documented in this file.
 
+## [0.1.4] - 2026-08-05
+
+### Added
+
+- Document export (`⌘E`) to standalone HTML or PDF, with page size, orientation, and margin options
+- Offline KaTeX math preview for inline `$...$` and block `$$...$$` (skips code and currency-like amounts)
+- Per-document Back / Forward navigation (`⌘[` / `⌘]`) for in-document and relative Markdown links
+- Reopen Closed Tab (`⇧⌘T`) for recently closed preview tabs (in-memory, not Settings)
+- High Contrast black-and-white color palette variants in Settings
+- `docs/examples/math-and-formulas.md` sample for math preview
+
+### Changed
+
+- Hide empty directories in the Files tree when they have no visible Markdown, Mermaid, or image children
+- File menu gains Export Document and Reopen Closed Tab (reopen enabled only when history is non-empty)
+
+### Fixed
+
+- Keep math and export HTML paths safe when preprocessing TeX or embedding local assets
+
 ## [0.1.3] - 2026-08-04
 
 ### Added
@@ -81,6 +101,7 @@ All notable changes to MarkMaid are documented in this file.
 - Manual reload that preserves the previous preview when reloading fails
 - Local release tooling for version sync, ARM builds, and GitHub Releases
 
+[0.1.4]: https://github.com/Weichen-LF/Markmaid/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/Weichen-LF/Markmaid/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/Weichen-LF/Markmaid/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/Weichen-LF/Markmaid/compare/v0.1.0...v0.1.1

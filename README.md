@@ -13,6 +13,10 @@ Features include:
 - In-app image preview for common formats via the Tauri asset protocol
 - Syntax-highlighted code blocks with copy, download, and progressive large-block expansion
 - Document outline navigation and source-backed in-document Find (`⌘F`)
+- Document Back / Forward (`⌘[` / `⌘]`) for in-document and relative Markdown links
+- Offline KaTeX math for inline `$...$` and block `$$...$$`
+- Export the current Markdown document to HTML or PDF (`⌘E`)
+- Reopen Closed Tab (`⇧⌘T`) for recently closed preview tabs
 - Quick Open (`⌘P`) across open tabs, pinned Markdown files, and recent documents
   (path/name match only; refreshes the pinned-folder index each time it opens)
 - Multiple reorderable preview tabs plus a singleton Settings tab
@@ -56,6 +60,9 @@ run the same command against that `.app` path instead.
 | --- | --- |
 | `⌘O` | Open Markdown files |
 | `⌘P` | Quick Open (open tabs, pinned Markdown, recent documents) |
+| `⌘E` | Export the current document (HTML or PDF) |
+| `⇧⌘T` | Reopen the last closed preview tab |
+| `⌘[` / `⌘]` | Back / Forward in the current document |
 | `⌘F` | Find in the current document |
 | `⌘R` | Reload the current document |
 | `⌘W` | Close the current tab |
@@ -104,6 +111,8 @@ local Apple Silicon Mac; this repository does not require GitHub Actions.
 - `src/state.ts`: tab, workspace-root, and persisted-session state model
 - `src/workspace.ts` / `src/status.ts` / `src/ui-logic.ts`: workspace helpers, status bar, Quick Open matching
 - `src/search.ts`: source-backed in-document Find matching
+- `src/math.ts`: offline KaTeX math enhancement for Markdown preview
+- `src/export.ts`: HTML / PDF export orchestration
 - `src/freshness.ts`: external-change probe and Reload / Ignore state
 - `src/diagram-viewer.ts`: Mermaid and Markdown-image fullscreen viewers
 - `src-tauri/src/document.rs`: validated file loading and GFM / Mermaid rendering
