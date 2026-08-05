@@ -97,6 +97,8 @@ describe("status bar formatting", () => {
         imageAssets: [],
         scrollTop: 0,
         reloadError: null,
+        history: [{ path: "/a.md", scrollTop: 0 }],
+        historyIndex: 0,
       },
       { colorTheme: "solarized", theme: "light", systemDark: false },
     );
@@ -119,6 +121,8 @@ describe("status bar formatting", () => {
         imageAssets: [],
         scrollTop: 0,
         reloadError: null,
+        history: [{ path: "/a.md", scrollTop: 0 }],
+        historyIndex: 0,
       },
       {
         colorTheme: "default",
@@ -152,6 +156,8 @@ describe("status bar formatting", () => {
         imageAssets: [],
         scrollTop: 0,
         reloadError: null,
+        history: [{ path: "/a.md", scrollTop: 0 }],
+        historyIndex: 0,
       },
       {
         colorTheme: "default",
@@ -185,6 +191,8 @@ describe("status bar formatting", () => {
         imageAssets: [],
         scrollTop: 0,
         reloadError: "Permission denied.",
+        history: [{ path: "/a.md", scrollTop: 0 }],
+        historyIndex: 0,
       },
       { colorTheme: "default", theme: "light", systemDark: false },
     );

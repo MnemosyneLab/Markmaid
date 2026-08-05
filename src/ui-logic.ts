@@ -200,6 +200,35 @@ export function shouldSuppressTabClick(
   return Boolean(key && key === suppressedKey && now < suppressedUntil);
 }
 
+export interface NavigationControlState {
+  isDocument: boolean;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  backTitle: string;
+  forwardTitle: string;
+  backAriaLabel: string;
+  forwardAriaLabel: string;
+}
+
+export function computeNavigationControlState(
+  tab: AppTab | null,
+): NavigationControlState {
+  const isDocument = tab?.kind === "document" && tab.status === "ready";
+  const canGoBack = isDocument && tab.historyIndex > 0;
+  const canGoForward =
+    isDocument && tab.historyIndex < tab.history.length - 1;
+
+  return {
+    isDocument,
+    canGoBack,
+    canGoForward,
+    backTitle: "Back (⌘[)",
+    forwardTitle: "Forward (⌘])",
+    backAriaLabel: "Back",
+    forwardAriaLabel: "Forward",
+  };
+}
+
 function workspaceMatchRank(name: string, queryText: string): number {
   const lowerName = name.toLocaleLowerCase();
   if (lowerName === queryText) return 0;

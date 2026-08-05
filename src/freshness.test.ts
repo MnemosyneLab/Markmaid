@@ -24,6 +24,8 @@ function ready(): ReadyDocumentTab {
     imageAssets: [],
     scrollTop: 120,
     reloadError: null,
+    history: [{ path: "/docs/guide.md", scrollTop: 120 }],
+    historyIndex: 0,
   };
 }
 

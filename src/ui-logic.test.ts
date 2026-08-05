@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   QUICK_SWITCHER_WORKSPACE_LIMIT,
   buildQuickSwitcherItems,
+  computeNavigationControlState,
   disambiguatePathLabels,
   shouldSuppressTabClick,
 } from "./ui-logic";
@@ -23,6 +24,8 @@ function ready(path: string): ReadyDocumentTab {
     imageAssets: [],
     scrollTop: 0,
     reloadError: null,
+    history: [{ path: "/docs/guide.md", scrollTop: 0 }],
+    historyIndex: 0,
   };
 }
 
@@ -208,5 +211,66 @@ describe("tab click suppression", () => {
     expect(shouldSuppressTabClick("one", "one", 1_300, 1_100)).toBe(true);
     expect(shouldSuppressTabClick("two", "one", 1_300, 1_100)).toBe(false);
     expect(shouldSuppressTabClick("one", "one", 1_300, 1_300)).toBe(false);
+  });
+});
+
+describe("navigation controls", () => {
+  it("returns disabled navigation state for null or non-document tabs", () => {
+    expect(computeNavigationControlState(null)).toEqual({
+      isDocument: false,
+      canGoBack: false,
+      canGoForward: false,
+      backTitle: "Back (⌘[)",
+      forwardTitle: "Forward (⌘])",
+      backAriaLabel: "Back",
+      forwardAriaLabel: "Forward",
+    });
+
+    expect(
+      computeNavigationControlState({ kind: "settings", key: "settings" }),
+    ).toMatchObject({
+      isDocument: false,
+      canGoBack: false,
+      canGoForward: false,
+    });
+  });
+
+  it("evaluates back/forward availability correctly across history positions", () => {
+    const single = ready("/doc.md");
+    expect(computeNavigationControlState(single)).toMatchObject({
+      isDocument: true,
+      canGoBack: false,
+      canGoForward: false,
+    });
+
+    const multiHistory: ReadyDocumentTab = {
+      ...single,
+      history: [
+        { path: "/doc.md", scrollTop: 0 },
+        { path: "/doc.md", scrollTop: 100, fragment: "section" },
+        { path: "/doc.md", scrollTop: 300 },
+      ],
+      historyIndex: 0,
+    };
+
+    expect(computeNavigationControlState(multiHistory)).toMatchObject({
+      isDocument: true,
+      canGoBack: false,
+      canGoForward: true,
+    });
+
+    const middleState = { ...multiHistory, historyIndex: 1 };
+    expect(computeNavigationControlState(middleState)).toMatchObject({
+      isDocument: true,
+      canGoBack: true,
+      canGoForward: true,
+    });
+
+    const endState = { ...multiHistory, historyIndex: 2 };
+    expect(computeNavigationControlState(endState)).toMatchObject({
+      isDocument: true,
+      canGoBack: true,
+      canGoForward: false,
+    });
   });
 });
