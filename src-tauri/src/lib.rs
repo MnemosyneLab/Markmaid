@@ -7,8 +7,8 @@ use std::{
 };
 
 use document::{
-    check_document_revisions, export_svg, highlight_code_chunk, is_markdown_path, load_documents,
-    reload_document,
+    check_document_revisions, export_html, export_svg, highlight_code_chunk, is_markdown_path,
+    load_documents, reload_document,
 };
 use tauri::{
     AppHandle, Emitter, Manager, RunEvent, State,
@@ -23,7 +23,9 @@ use workspace::{
 const OPEN_FILES_EVENT: &str = "markmaid://open-files";
 const MENU_OPEN_EVENT: &str = "markmaid://menu-open";
 const MENU_QUICK_OPEN_EVENT: &str = "markmaid://menu-quick-open";
+const MENU_EXPORT_EVENT: &str = "markmaid://menu-export";
 const MENU_CLOSE_TAB_EVENT: &str = "markmaid://menu-close-tab";
+const MENU_REOPEN_CLOSED_TAB_EVENT: &str = "markmaid://menu-reopen-closed-tab";
 const MENU_RELOAD_EVENT: &str = "markmaid://menu-reload";
 const MENU_SETTINGS_EVENT: &str = "markmaid://menu-settings";
 const MENU_NEXT_TAB_EVENT: &str = "markmaid://menu-next-tab";
@@ -37,6 +39,9 @@ struct PendingOpenPaths(Mutex<Vec<String>>);
 
 #[derive(Default)]
 struct RecentDocuments(Mutex<Vec<String>>);
+
+#[derive(Default)]
+struct ReopenClosedTabAvailability(Mutex<bool>);
 
 #[tauri::command]
 fn take_pending_open_paths(state: tauri::State<'_, PendingOpenPaths>) -> Vec<String> {
@@ -55,6 +60,21 @@ fn sync_recent_documents(
     Ok(())
 }
 
+#[tauri::command]
+fn sync_reopen_closed_tab_availability(
+    app: AppHandle,
+    state: State<'_, ReopenClosedTabAvailability>,
+    available: bool,
+) -> Result<(), String> {
+    *state
+        .0
+        .lock()
+        .expect("reopen closed tab availability lock poisoned") = available;
+    let menu = build_menu(&app).map_err(|error| error.to_string())?;
+    app.set_menu(menu).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let settings = MenuItemBuilder::with_id("settings", "Settings...")
         .accelerator("CmdOrCtrl+,")
@@ -65,8 +85,15 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let quick_open = MenuItemBuilder::with_id("quick-open", "Quick Open...")
         .accelerator("CmdOrCtrl+P")
         .build(app)?;
+    let export = MenuItemBuilder::with_id("export", "Export Document...")
+        .accelerator("CmdOrCtrl+E")
+        .build(app)?;
     let close_tab = MenuItemBuilder::with_id("close-tab", "Close Tab")
         .accelerator("CmdOrCtrl+W")
+        .build(app)?;
+    let reopen_closed_tab = MenuItemBuilder::with_id("reopen-closed-tab", "Reopen Closed Tab")
+        .accelerator("CmdOrCtrl+Shift+T")
+        .enabled(reopen_closed_tab_available(app))
         .build(app)?;
     let reload = MenuItemBuilder::with_id("reload", "Reload Document")
         .accelerator("CmdOrCtrl+R")
@@ -122,7 +149,10 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         .item(&quick_open)
         .item(&recent_menu)
         .separator()
+        .item(&export)
+        .separator()
         .item(&close_tab)
+        .item(&reopen_closed_tab)
         .build()?;
     let edit_menu = SubmenuBuilder::new(app, "Edit")
         .undo()
@@ -190,18 +220,34 @@ fn on_menu_event(app: &AppHandle, id: &str) {
         return;
     }
 
-    let event = match id {
+    let event = menu_event_for_id(id);
+    if let Some(event) = event {
+        let _ = app.emit(event, ());
+    }
+}
+
+fn reopen_closed_tab_available(app: &AppHandle) -> bool {
+    app.try_state::<ReopenClosedTabAvailability>()
+        .is_some_and(|state| {
+            *state
+                .0
+                .lock()
+                .expect("reopen closed tab availability lock poisoned")
+        })
+}
+
+fn menu_event_for_id(id: &str) -> Option<&'static str> {
+    match id {
         "open" => Some(MENU_OPEN_EVENT),
         "quick-open" => Some(MENU_QUICK_OPEN_EVENT),
+        "export" => Some(MENU_EXPORT_EVENT),
         "close-tab" => Some(MENU_CLOSE_TAB_EVENT),
+        "reopen-closed-tab" => Some(MENU_REOPEN_CLOSED_TAB_EVENT),
         "reload" => Some(MENU_RELOAD_EVENT),
         "settings" => Some(MENU_SETTINGS_EVENT),
         "next-tab" => Some(MENU_NEXT_TAB_EVENT),
         "previous-tab" => Some(MENU_PREVIOUS_TAB_EVENT),
         _ => None,
-    };
-    if let Some(event) = event {
-        let _ = app.emit(event, ());
     }
 }
 
@@ -350,6 +396,7 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .manage(PendingOpenPaths::default())
         .manage(RecentDocuments::default())
+        .manage(ReopenClosedTabAvailability::default())
         .manage(WorkspaceRegistry::default())
         .plugin(tauri_plugin_single_instance::init(
             |app, arguments, current_directory| {
@@ -383,10 +430,12 @@ pub fn run() {
             load_documents,
             reload_document,
             check_document_revisions,
+            export_html,
             export_svg,
             highlight_code_chunk,
             take_pending_open_paths,
             sync_recent_documents,
+            sync_reopen_closed_tab_availability,
             register_workspace_root,
             unregister_workspace_root,
             list_workspace_children,
@@ -436,6 +485,16 @@ mod tests {
                 "/tmp/design.markdown".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn routes_file_menu_actions_to_their_native_events() {
+        assert_eq!(menu_event_for_id("close-tab"), Some(MENU_CLOSE_TAB_EVENT));
+        assert_eq!(
+            menu_event_for_id("reopen-closed-tab"),
+            Some(MENU_REOPEN_CLOSED_TAB_EVENT)
+        );
+        assert_eq!(menu_event_for_id("export"), Some(MENU_EXPORT_EVENT));
     }
 
     #[test]
