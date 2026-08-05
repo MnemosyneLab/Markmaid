@@ -23,6 +23,9 @@ importers:
       '@tauri-apps/plugin-window-state':
         specifier: ^2
         version: 2.4.1
+      katex:
+        specifier: 0.18.1
+        version: 0.18.1
       lucide:
         specifier: ^1.28.0
         version: 1.28.0
@@ -601,6 +604,10 @@ packages:
     resolution: {integrity: sha512-NUPRluOfOiTKBKvWPtSD4PhFvWCqOi0BGStNWs57X9js7XGTprSmFoz5F0tWhR4WPjNeR9jXqdC7/UpSJTnlRg==}
     engines: {node: '>=18'}
 
+  commander@8.3.0:
+    resolution: {integrity: sha512-OkTL9umf+He2DZkUq8f8J9of7yL6RJKI24dVITBmNfZBmri9zYZQrKkuXiKhyfPSu8tUhnVBB1iKXevvnlR4Ww==}
+    engines: {node: '>= 12'}
+
   convert-source-map@2.0.0:
     resolution: {integrity: sha512-Kvp459HrV2FEJ1CAsi1Ku+MY3kasH19TFykTz2xWmMeq6bk2NU3XXvfJ+Q61m0xktWwt+1HSYf3JZsTms3aRJg==}
 
@@ -694,6 +701,10 @@ packages:
     peerDependenciesMeta:
       canvas:
         optional: true
+
+  katex@0.18.1:
+    resolution: {integrity: sha512-Td8GCYSxDAoMhHOlKmCFMJ/hz5qlAAb71n66Dryw9nfCVfumLo7nhuotbvKom/XPADmrYC3O5QR71EPq4DarJQ==}
+    hasBin: true
 
   lightningcss-android-arm64@1.32.0:
     resolution: {integrity: sha512-YK7/ClTt4kAK0vo6w3X+Pnm0D2cf2vPHbhOXdoNti1Ga0al1P4TBZhwjATvjNwLEBCnKvjJc2jQgHXH0NEwlAg==}
@@ -1507,6 +1518,8 @@ snapshots:
 
   chai@6.2.2: {}
 
+  commander@8.3.0: {}
+
   convert-source-map@2.0.0: {}
 
   css-tree@3.2.1:
@@ -1620,6 +1633,10 @@ snapshots:
       - supports-color
       - utf-8-validate
     optional: true
+
+  katex@0.18.1:
+    dependencies:
+      commander: 8.3.0
 
   lightningcss-android-arm64@1.32.0:
     optional: true
