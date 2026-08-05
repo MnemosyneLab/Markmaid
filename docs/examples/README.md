@@ -32,6 +32,7 @@ Quick Open (`⌘P`) against a small pinned folder.
    | --- | --- |
    | `markdown-basics.md` | Headings, lists, quotes, links, emphasis |
    | `gfm-and-code.md` | Tables, task lists, strikethrough, autolinks, code |
+   | `math-and-formulas.md` | Inline and block math rendering with KaTeX |
    | `mermaid-fences.md` | Mermaid diagrams inside Markdown fences |
    | `images.md` | Relative local image / SVG with fullscreen expand |
    | `diagrams/flowchart.mmd` | Standalone Mermaid tab |
