@@ -1,9 +1,11 @@
 import type {
   AppState,
   AppTab,
+  ClosedTab,
   ColorTheme,
   CodeFont,
   DocumentLoadResult,
+  DocumentNavigationEntry,
   DocumentTab,
   ErrorDocumentTab,
   ErrorImageTab,
@@ -36,10 +38,13 @@ export const DEFAULT_SIDEBAR_WIDTH = 232;
 export const MIN_SIDEBAR_WIDTH = 160;
 export const MAX_SIDEBAR_WIDTH = 420;
 export const MAX_RECENT_DOCUMENTS = 10;
+export const MAX_CLOSED_TABS_HISTORY = 20;
+export const MAX_DOCUMENT_NAVIGATION_HISTORY = 50;
 
 export const DEFAULT_STATE: AppState = {
   tabs: [],
   activeTabKey: null,
+  closedTabsHistory: [],
   theme: "system",
   colorTheme: "default",
   tabPlacement: "left",
@@ -124,6 +129,8 @@ export function tabFromResult(
       key: documentKey(result.canonicalPath),
       scrollTop,
       reloadError: null,
+      history: [{ path: result.canonicalPath, scrollTop }],
+      historyIndex: 0,
     };
   }
 
@@ -225,6 +232,20 @@ export function addDocumentResults(
       tabs[targetIndex] = {
         ...nextTab,
         scrollTop: existing.scrollTop,
+        ...(existing.status === "ready" && nextTab.status === "ready"
+          ? {
+              history: normalizeDocumentHistory(
+                existing.history,
+                existing.historyIndex,
+                nextTab.canonicalPath,
+                existing.scrollTop,
+              ),
+              historyIndex: Math.min(
+                existing.historyIndex,
+                existing.history.length - 1,
+              ),
+            }
+          : {}),
       };
     } else {
       tabs.push(nextTab);
@@ -304,11 +325,27 @@ export function replaceDocumentResult(
   );
   if (!current) return state;
   const replacement = tabFromResult(result, current.scrollTop);
+  const nextTab =
+    current.status === "ready" && replacement.status === "ready"
+      ? {
+          ...replacement,
+          history: normalizeDocumentHistory(
+            current.history,
+            current.historyIndex,
+            replacement.canonicalPath,
+            current.scrollTop,
+          ),
+          historyIndex: Math.min(
+            current.historyIndex,
+            current.history.length - 1,
+          ),
+        }
+      : replacement;
   return deduplicatePreviewTabs({
     ...state,
-    tabs: state.tabs.map((tab) => (tab.key === key ? replacement : tab)),
+    tabs: state.tabs.map((tab) => (tab.key === key ? nextTab : tab)),
     activeTabKey:
-      state.activeTabKey === key ? replacement.key : state.activeTabKey,
+      state.activeTabKey === key ? nextTab.key : state.activeTabKey,
   });
 }
 
@@ -331,15 +368,40 @@ export function closeTab(state: AppState, key: string): AppState {
   const index = state.tabs.findIndex((tab) => tab.key === key);
   if (index < 0) return state;
 
+  const closed = state.tabs[index];
   const tabs = state.tabs.filter((tab) => tab.key !== key);
-  if (state.activeTabKey !== key) return { ...state, tabs };
+  const closedTabsHistory =
+    closed.kind === "settings"
+      ? state.closedTabsHistory
+      : [...state.closedTabsHistory, closedTabFromPreview(closed, index)].slice(
+          -MAX_CLOSED_TABS_HISTORY,
+        );
+  if (state.activeTabKey !== key) {
+    return { ...state, tabs, closedTabsHistory };
+  }
 
   const fallback = tabs[Math.min(index, tabs.length - 1)] ?? null;
   return {
     ...state,
     tabs,
+    closedTabsHistory,
     activeTabKey: fallback?.key ?? null,
   };
+}
+
+export function reopenClosedTab(state: AppState): AppState {
+  const closed = state.closedTabsHistory.at(-1);
+  if (!closed) return state;
+
+  const tabs = [...state.tabs];
+  const tab = restoreClosedTab(closed);
+  tabs.splice(Math.min(closed.index, tabs.length), 0, tab);
+  return deduplicatePreviewTabs({
+    ...state,
+    tabs,
+    activeTabKey: tab.key,
+    closedTabsHistory: state.closedTabsHistory.slice(0, -1),
+  });
 }
 
 export function closeTabsMatchingPaths(
@@ -354,7 +416,15 @@ export function closeTabsMatchingPaths(
     removedKeys.add(tab.key);
     return false;
   });
-  if (removedKeys.size === 0) return state;
+  const closedTabsHistory = state.closedTabsHistory.filter(
+    (tab) => !matcher(tab.path),
+  );
+  if (
+    removedKeys.size === 0 &&
+    closedTabsHistory.length === state.closedTabsHistory.length
+  ) {
+    return state;
+  }
 
   let activeTabKey = state.activeTabKey;
   if (activeTabKey && removedKeys.has(activeTabKey)) {
@@ -365,7 +435,7 @@ export function closeTabsMatchingPaths(
   }
 
   const recentDocuments = state.recentDocuments.filter((path) => !matcher(path));
-  return { ...state, tabs, activeTabKey, recentDocuments };
+  return { ...state, tabs, activeTabKey, recentDocuments, closedTabsHistory };
 }
 
 export function rewritePreviewPaths(
@@ -397,11 +467,16 @@ export function rewritePreviewPaths(
   const recentDocuments = state.recentDocuments.map(
     (path) => rewrite(path) ?? path,
   );
+  const closedTabsHistory = state.closedTabsHistory.map((tab) => {
+    const nextPath = rewrite(tab.path);
+    return nextPath ? { ...tab, path: nextPath } : tab;
+  });
 
   return deduplicatePreviewTabs({
     ...state,
     tabs,
     recentDocuments: normalizeRecentDocuments(recentDocuments),
+    closedTabsHistory,
     activeTabKey:
       keyRemap.get(state.activeTabKey ?? "") ?? state.activeTabKey,
   });
@@ -446,10 +521,69 @@ export function updateScroll(
     ...state,
     tabs: state.tabs.map((tab) =>
       tab.kind !== "settings" && tab.key === key
-        ? { ...tab, scrollTop }
+        ? updateTabScroll(tab, scrollTop)
         : tab,
     ),
   };
+}
+
+export function recordDocumentNavigation(
+  state: AppState,
+  key: string,
+  entry: DocumentNavigationEntry,
+): AppState {
+  const tab = readyDocumentTabForKey(state, key);
+  if (!tab) return state;
+
+  const history = [...tab.history.slice(0, tab.historyIndex + 1), entry].slice(
+    -MAX_DOCUMENT_NAVIGATION_HISTORY,
+  );
+  return replaceReadyDocumentTab(state, key, {
+    ...tab,
+    history,
+    historyIndex: history.length - 1,
+  });
+}
+
+export function moveDocumentNavigation(
+  state: AppState,
+  key: string,
+  direction: 1 | -1,
+): AppState {
+  const tab = readyDocumentTabForKey(state, key);
+  if (!tab) return state;
+  const historyIndex = tab.historyIndex + direction;
+  if (historyIndex < 0 || historyIndex >= tab.history.length) return state;
+  const entry = tab.history[historyIndex];
+  return replaceReadyDocumentTab(state, key, {
+    ...tab,
+    historyIndex,
+    scrollTop: entry ? entry.scrollTop : tab.scrollTop,
+  });
+}
+
+export function navigateDocument(
+  state: AppState,
+  sourceKey: string,
+  navigation: { key: string; entry: DocumentNavigationEntry },
+): AppState {
+  const source = readyDocumentTabForKey(state, sourceKey);
+  const destination = readyDocumentTabForKey(state, navigation.key);
+  if (!source || !destination) return state;
+
+  const current = source.history[source.historyIndex];
+  if (!current) return state;
+  const sourceHistory = source.history.slice(0, source.historyIndex + 1);
+  const history = [
+    ...sourceHistory.slice(0, -1),
+    { ...current, scrollTop: source.scrollTop },
+    navigation.entry,
+  ].slice(-MAX_DOCUMENT_NAVIGATION_HISTORY);
+  return replaceReadyDocumentTab(state, navigation.key, {
+    ...destination,
+    history,
+    historyIndex: history.length - 1,
+  });
 }
 
 export function setPreferences(
@@ -518,6 +652,7 @@ export function fromPersistedSession(value: unknown): AppState {
   return {
     tabs: value.tabs.map(restoreTab),
     activeTabKey: value.activeTabKey,
+    closedTabsHistory: [],
     theme: value.theme,
     colorTheme: isColorTheme(value.colorTheme)
       ? value.colorTheme
@@ -604,6 +739,76 @@ function restoreTab(tab: PersistedTab): AppTab {
   if (tab.kind === "settings") {
     return { kind: "settings", key: "settings" } satisfies SettingsTab;
   }
+  if (tab.kind === "mermaid") return loadingMermaidTab(tab.path, tab.scrollTop);
+  if (tab.kind === "image") return loadingImageTab(tab.path, tab.scrollTop);
+  return loadingTab(tab.path, tab.scrollTop);
+}
+
+export function readyDocumentTabForKey(
+  state: AppState,
+  key: string,
+): ReadyDocumentTab | null {
+  const tab = state.tabs.find(
+    (candidate): candidate is ReadyDocumentTab =>
+      candidate.kind === "document" &&
+      candidate.status === "ready" &&
+      candidate.key === key,
+  );
+  return tab ?? null;
+}
+
+function replaceReadyDocumentTab(
+  state: AppState,
+  key: string,
+  replacement: ReadyDocumentTab,
+): AppState {
+  return {
+    ...state,
+    tabs: state.tabs.map((tab) => (tab.key === key ? replacement : tab)),
+  };
+}
+
+function normalizeDocumentHistory(
+  history: DocumentNavigationEntry[],
+  historyIndex: number,
+  canonicalPath: string,
+  scrollTop: number,
+): DocumentNavigationEntry[] {
+  const current = history[historyIndex];
+  if (!current) return [{ path: canonicalPath, scrollTop }];
+  return history.map((entry, index) =>
+    index === historyIndex ? { ...entry, path: canonicalPath } : entry,
+  );
+}
+
+function updateTabScroll(
+  tab: Exclude<AppTab, SettingsTab>,
+  scrollTop: number,
+): Exclude<AppTab, SettingsTab> {
+  if (tab.kind !== "document" || tab.status !== "ready") {
+    return { ...tab, scrollTop };
+  }
+  const current = tab.history[tab.historyIndex];
+  if (!current) return { ...tab, scrollTop };
+  return {
+    ...tab,
+    scrollTop,
+    history: tab.history.map((entry, index) =>
+      index === tab.historyIndex ? { ...entry, scrollTop } : entry,
+    ),
+  };
+}
+
+function closedTabFromPreview(tab: PreviewTab, index: number): ClosedTab {
+  return {
+    kind: tab.kind,
+    path: previewPath(tab),
+    scrollTop: tab.scrollTop,
+    index,
+  };
+}
+
+function restoreClosedTab(tab: ClosedTab): PreviewTab {
   if (tab.kind === "mermaid") return loadingMermaidTab(tab.path, tab.scrollTop);
   if (tab.kind === "image") return loadingImageTab(tab.path, tab.scrollTop);
   return loadingTab(tab.path, tab.scrollTop);

@@ -61,11 +61,19 @@ export interface ErrorDocumentResult {
 
 export type DocumentLoadResult = ReadyDocumentResult | ErrorDocumentResult;
 
+export interface DocumentNavigationEntry {
+  path: string;
+  scrollTop: number;
+  fragment?: string;
+}
+
 export interface ReadyDocumentTab extends ReadyDocumentResult {
   kind: "document";
   key: string;
   scrollTop: number;
   reloadError: string | null;
+  history: DocumentNavigationEntry[];
+  historyIndex: number;
 }
 
 export interface ErrorDocumentTab extends ErrorDocumentResult {
@@ -168,6 +176,13 @@ export type ImageTab = ReadyImageTab | LoadingImageTab | ErrorImageTab;
 export type PreviewTab = DocumentTab | MermaidTab | ImageTab;
 export type AppTab = PreviewTab | SettingsTab;
 
+export interface ClosedTab {
+  kind: PreviewTab["kind"];
+  path: string;
+  scrollTop: number;
+  index: number;
+}
+
 export type WorkspaceEntryKind = "directory" | "markdown" | "mermaid" | "image";
 
 export interface WorkspaceRoot {
@@ -234,6 +249,7 @@ export interface WorkspaceMarkdownIndex {
 export interface AppState {
   tabs: AppTab[];
   activeTabKey: string | null;
+  closedTabsHistory: ClosedTab[];
   theme: ThemeMode;
   colorTheme: ColorTheme;
   tabPlacement: TabPlacement;
@@ -278,4 +294,16 @@ export interface PersistedSessionV1 {
   recentDocuments?: string[];
   // Kept for one-time migration from the earlier light/dark selector.
   mermaidTheme?: "light" | "dark";
+}
+
+export type ExportFormat = "html" | "pdf";
+export type ExportPaperSize = "a4" | "a5";
+export type ExportOrientation = "portrait" | "landscape";
+export type ExportMargins = "normal" | "compact" | "wide";
+
+export interface ExportConfig {
+  format: ExportFormat;
+  paperSize: ExportPaperSize;
+  orientation: ExportOrientation;
+  margins: ExportMargins;
 }
