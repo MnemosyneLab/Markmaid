@@ -1,6 +1,7 @@
 import {
   CircleAlert,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   ChevronUp,
   Code2,
@@ -27,6 +28,7 @@ import {
 const ICONS = {
   CircleAlert,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   ChevronUp,
   Code2,
@@ -52,6 +54,7 @@ const ICONS = {
 export type IconName =
   | "circle-alert"
   | "chevron-down"
+  | "chevron-left"
   | "chevron-right"
   | "chevron-up"
   | "code-2"
