@@ -11,8 +11,15 @@ import {
   enhanceCodeBlocks,
   revealDeferredCodeLine,
 } from "./code-block";
+import {
+  exportDocument,
+  exportFailureMessage,
+  registerExportHandler,
+  updateExportConfig,
+} from "./export";
 import { enhanceDiagramViewers, wrapMarkdownImages } from "./diagram-viewer";
 import { icon, renderIcons } from "./icons";
+import { enhanceMath } from "./math";
 import {
   matchesRevisionBaseline,
   noticeForRevision,
@@ -38,15 +45,21 @@ import {
   cycleTab,
   DEFAULT_SIDEBAR_WIDTH,
   DEFAULT_STATE,
+  documentKey,
   fromPersistedSession,
   loadingImageTab,
   loadingMermaidTab,
   loadingTab,
   mermaidKey,
   imageKey,
+  moveDocumentNavigation,
   moveTab,
   openSettings,
+  navigateDocument,
   previewPath,
+  readyDocumentTabForKey,
+  recordDocumentNavigation,
+  reopenClosedTab,
   replaceDocumentResult,
   setPreferences,
   tabFromImagePreview,
@@ -59,6 +72,7 @@ import {
 import { buildStatusBar, type StatusBarModel } from "./status";
 import {
   buildQuickSwitcherItems,
+  computeNavigationControlState,
   disambiguatedTabLabels,
   type QuickSwitcherItem,
   shouldSuppressTabClick,
@@ -81,6 +95,7 @@ import type {
   ColorTheme,
   DocumentLoadResult,
   DocumentTab,
+  ExportConfig,
   ImagePreview,
   ImageTab,
   LoadingImageTab,
@@ -102,11 +117,18 @@ import type {
   WorkspaceMutation,
   WorkspaceRoot,
 } from "./types";
+import {
+  DEFAULT_EXPORT_CONFIG,
+  delegateExport,
+  isReadyDocumentTab,
+} from "./export";
 
 const OPEN_FILES_EVENT = "markmaid://open-files";
 const MENU_OPEN_EVENT = "markmaid://menu-open";
 const MENU_QUICK_OPEN_EVENT = "markmaid://menu-quick-open";
+const MENU_EXPORT_EVENT = "markmaid://menu-export";
 const MENU_CLOSE_TAB_EVENT = "markmaid://menu-close-tab";
+const MENU_REOPEN_CLOSED_TAB_EVENT = "markmaid://menu-reopen-closed-tab";
 const MENU_RELOAD_EVENT = "markmaid://menu-reload";
 const MENU_SETTINGS_EVENT = "markmaid://menu-settings";
 const MENU_NEXT_TAB_EVENT = "markmaid://menu-next-tab";
@@ -250,7 +272,7 @@ const root: HTMLElement = rootElement;
 let state: AppState = { ...DEFAULT_STATE };
 let stateStore: Store | null = null;
 let persistTimer: number | null = null;
-let pendingAnchor: string | null = null;
+const pendingAnchors = new Map<string, string>();
 let mermaidThemeReloadSequence = 0;
 let appliedAppearance: MermaidAppearance | null = null;
 let workspaceChildrenCache = new Map<string, WorkspaceEntry[]>();
@@ -315,9 +337,15 @@ const quickSwitcher = {
   index: null as WorkspaceMarkdownIndex | null,
   indexError: null as string | null,
 };
+let exportModalVisible = false;
+let exportModalConfig: ExportConfig = { ...DEFAULT_EXPORT_CONFIG };
+let exportModalTabKey: string | null = null;
+let previousActiveElementBeforeExport: HTMLElement | null = null;
+let exportNotice: string | null = null;
 let documentSearchRevealSequence = 0;
 const colorScheme = window.matchMedia("(prefers-color-scheme: dark)");
 
+registerExportHandler(exportDocument);
 void bootstrap();
 document.addEventListener("keydown", handleDocumentSearchShortcut);
 
@@ -330,6 +358,7 @@ async function bootstrap(): Promise<void> {
   render();
   await registerNativeListeners();
   await syncRecentDocuments();
+  await syncReopenClosedTabAvailability();
   await restoreWorkspaceRoots();
   await ensurePreviewLoaded(state.activeTabKey);
 
@@ -373,7 +402,9 @@ async function registerNativeListeners(): Promise<void> {
     }),
     listen(MENU_OPEN_EVENT, () => void chooseDocuments()),
     listen(MENU_QUICK_OPEN_EVENT, openQuickSwitcher),
+    listen(MENU_EXPORT_EVENT, openExportModal),
     listen(MENU_CLOSE_TAB_EVENT, () => closeActiveTab()),
+    listen(MENU_REOPEN_CLOSED_TAB_EVENT, () => reopenLastClosedTab()),
     listen(MENU_RELOAD_EVENT, () => void reloadActiveDocument()),
     listen(MENU_SETTINGS_EVENT, () => showSettings()),
     listen(MENU_NEXT_TAB_EVENT, () => selectRelativeTab(1)),
@@ -424,6 +455,7 @@ async function chooseDocuments(): Promise<void> {
 async function openDocumentPaths(
   paths: string[],
   anchor: string | null = null,
+  sourceKey: string | null = null,
 ): Promise<void> {
   const uniquePaths = [...new Set(paths)].filter(isMarkdownPath);
   if (uniquePaths.length === 0) return;
@@ -439,6 +471,7 @@ async function openDocumentPaths(
     );
     if (existing) {
       state = { ...state, activeTabKey: existing.key };
+      if (anchor) pendingAnchors.set(existing.key, anchor);
       existingPaths.push(
         existing.status === "ready"
           ? existing.canonicalPath
@@ -449,6 +482,7 @@ async function openDocumentPaths(
       continue;
     }
     const placeholder = loadingTab(path);
+    if (anchor) pendingAnchors.set(placeholder.key, anchor);
     state = {
       ...state,
       tabs: [...state.tabs, placeholder],
@@ -459,7 +493,6 @@ async function openDocumentPaths(
     state = addRecentDocuments(state, existingPaths);
     void syncRecentDocuments();
   }
-  pendingAnchor = anchor;
   render();
 
   const results = await invoke<DocumentLoadResult[]>("load_documents", {
@@ -468,6 +501,34 @@ async function openDocumentPaths(
     colorTheme: state.colorTheme,
   });
   state = addDocumentResults(state, results);
+  for (const result of results) {
+    if (result.status !== "ready") continue;
+    const requestedKey = documentKey(result.requestedPath);
+    const anchorForRequest = pendingAnchors.get(requestedKey);
+    if (!anchorForRequest) continue;
+    pendingAnchors.delete(requestedKey);
+    pendingAnchors.set(documentKey(result.canonicalPath), anchorForRequest);
+  }
+  if (sourceKey) {
+    const target = results.find(
+      (result): result is Extract<DocumentLoadResult, { status: "ready" }> =>
+        result.status === "ready",
+    );
+    if (target) {
+      state = navigateDocument(
+        state,
+        sourceKey,
+        {
+          key: documentKey(target.canonicalPath),
+          entry: {
+            path: target.canonicalPath,
+            scrollTop: 0,
+            ...(anchor ? { fragment: anchor } : {}),
+          },
+        },
+      );
+    }
+  }
   state = addRecentDocuments(
     state,
     results.flatMap((result) =>
@@ -622,6 +683,17 @@ function closeTabAndLoadNext(key: string): void {
   state = closeTab(state, key);
   render();
   schedulePersist();
+  void syncReopenClosedTabAvailability();
+  void ensurePreviewLoaded(state.activeTabKey).then(() =>
+    checkActiveDocumentFreshness(),
+  );
+}
+
+function reopenLastClosedTab(): void {
+  state = reopenClosedTab(state);
+  render();
+  schedulePersist();
+  void syncReopenClosedTabAvailability();
   void ensurePreviewLoaded(state.activeTabKey).then(() =>
     checkActiveDocumentFreshness(),
   );
@@ -817,6 +889,17 @@ function render(): void {
           ${icon(state.leftSidebarVisible ? "panel-left-close" : "panel-left-open")}
           <span class="sr-only">${state.leftSidebarVisible ? "Hide" : "Show"} sidebar</span>
         </button>`;
+  const navState = computeNavigationControlState(current);
+  const navButtons = navState.isDocument
+    ? `<button class="icon-button ${UI.iconButton}" type="button" data-action="navigate-back" title="${navState.backTitle}" aria-label="${navState.backAriaLabel}" ${navState.canGoBack ? "" : "disabled"}>
+          ${icon("chevron-left")}
+          <span class="sr-only">${navState.backAriaLabel}</span>
+        </button>
+        <button class="icon-button ${UI.iconButton}" type="button" data-action="navigate-forward" title="${navState.forwardTitle}" aria-label="${navState.forwardAriaLabel}" ${navState.canGoForward ? "" : "disabled"}>
+          ${icon("chevron-right")}
+          <span class="sr-only">${navState.forwardAriaLabel}</span>
+        </button>`
+    : "";
   const outlineToggle =
     current?.kind === "document" && current.status === "ready"
       ? `<button class="icon-button ${UI.iconButton}" type="button" data-action="toggle-outline" title="${state.tableOfContentsVisible ? "Hide" : "Show"} document outline" aria-label="${state.tableOfContentsVisible ? "Hide" : "Show"} document outline" aria-pressed="${state.tableOfContentsVisible}">
@@ -840,7 +923,7 @@ function render(): void {
       style="--sidebar-width: ${sidebarWidth}px"
     >
       <header class="titlebar ${UI.titlebar}" data-tauri-drag-region>
-        <div class="titlebar-leading ${UI.titlebarLeading}">${sidebarToggle}</div>
+        <div class="titlebar-leading ${UI.titlebarLeading} gap-1.5">${sidebarToggle}${navButtons}</div>
         <div class="titlebar-title ${UI.title}" data-tauri-drag-region title="${escapeAttribute(windowTitle(current))}">${title}</div>
         <nav class="titlebar-actions ${UI.titlebarActions}" aria-label="Application actions">
           <button class="icon-button ${UI.iconButton}" type="button" data-action="open" title="Open Markdown (⌘O)">
@@ -887,6 +970,7 @@ function render(): void {
       ${documentSearch.visible ? renderDocumentSearch() : ""}
       ${quickSwitcher.visible ? renderQuickSwitcher() : ""}
       ${workspaceDialog ? renderWorkspaceDialog() : ""}
+      ${exportModalVisible ? renderExportModal() : ""}
     </div>
   `;
 
@@ -899,6 +983,7 @@ function render(): void {
   );
   bindDocumentSearch();
   bindQuickSwitcher();
+  bindExportModal();
   renderIcons(root);
   if (documentSearch.visible && documentSearch.query) {
     requestAnimationFrame(() => refreshDocumentSearch(false));
@@ -906,6 +991,19 @@ function render(): void {
 }
 
 function renderStatusBar(status: StatusBarModel): string {
+  if (exportNotice) {
+    return `
+      <footer class="${UI.statusBar} is-alert status-alert-reload-error" aria-label="Status">
+        <div class="status-alert">
+          <span class="status-alert-icon" aria-hidden="true">${icon("circle-alert")}</span>
+          <span class="status-alert-copy" role="status" aria-atomic="true">
+            <strong class="status-alert-title">Export failed.</strong>
+            <span class="status-alert-detail">${escapeHtml(exportNotice)}</span>
+          </span>
+        </div>
+      </footer>
+    `;
+  }
   if (status.alert) {
     const actions = status.alert.actions
       .map((action) => {
@@ -1086,6 +1184,138 @@ function updateQuickSwitcherResults(): void {
   if (!results) return;
   results.innerHTML = renderQuickSwitcherResults();
   bindQuickSwitcherItemClicks();
+}
+
+function openExportModal(): void {
+  const current = activeTab(state);
+  if (!isReadyDocumentTab(current)) return;
+
+  quickSwitcher.visible = false;
+  documentSearch.visible = false;
+  exportNotice = null;
+  exportModalVisible = true;
+  exportModalConfig = { ...DEFAULT_EXPORT_CONFIG };
+  exportModalTabKey = current.key;
+  previousActiveElementBeforeExport = document.activeElement as HTMLElement | null;
+
+  render();
+  requestAnimationFrame(() => {
+    root.querySelector<HTMLSelectElement>("#export-format")?.focus();
+  });
+}
+
+function closeExportModal(): void {
+  if (!exportModalVisible) return;
+  exportModalVisible = false;
+  exportModalTabKey = null;
+  render();
+  if (
+    previousActiveElementBeforeExport &&
+    document.contains(previousActiveElementBeforeExport)
+  ) {
+    previousActiveElementBeforeExport.focus();
+  }
+  previousActiveElementBeforeExport = null;
+}
+
+async function confirmExportModal(): Promise<void> {
+  if (!exportModalVisible || !exportModalTabKey) return;
+  const current = activeTab(state);
+  if (!isReadyDocumentTab(current) || current.key !== exportModalTabKey) {
+    closeExportModal();
+    return;
+  }
+  const tab = current;
+  const config = { ...exportModalConfig };
+  closeExportModal();
+  await delegateExport(tab, config);
+}
+
+async function submitExportModal(): Promise<void> {
+  try {
+    await confirmExportModal();
+  } catch (error) {
+    exportNotice = exportFailureMessage(error);
+    render();
+  }
+}
+
+function renderExportModal(): string {
+  if (!exportModalVisible) return "";
+  const current = activeTab(state);
+  const docName = isReadyDocumentTab(current) ? current.displayName : "Document";
+
+  return `
+    <div class="export-modal-backdrop" data-export-backdrop>
+      <section class="export-modal" role="dialog" aria-modal="true" aria-labelledby="export-modal-title">
+        <div class="export-modal-header">
+          <h2 id="export-modal-title">Export Document</h2>
+          <p class="export-modal-subtitle">Configure format and layout options for <strong>${escapeHtml(docName)}</strong></p>
+        </div>
+        <div class="export-modal-body">
+          <div class="export-field-group">
+            <label for="export-format" class="export-label">Export Format</label>
+            <select id="export-format" class="export-select" data-export-field="format">
+              <option value="html" ${exportModalConfig.format === "html" ? "selected" : ""}>HTML Document (.html)</option>
+              <option value="pdf" ${exportModalConfig.format === "pdf" ? "selected" : ""}>PDF Document (.pdf)</option>
+            </select>
+          </div>
+          <div class="export-field-group">
+            <label for="export-paper-size" class="export-label">Paper Size</label>
+            <select id="export-paper-size" class="export-select" data-export-field="paperSize">
+              <option value="a4" ${exportModalConfig.paperSize === "a4" ? "selected" : ""}>A4 (210 × 297 mm)</option>
+              <option value="a5" ${exportModalConfig.paperSize === "a5" ? "selected" : ""}>A5 (148 × 210 mm)</option>
+            </select>
+          </div>
+          <div class="export-field-group">
+            <label for="export-orientation" class="export-label">Orientation</label>
+            <select id="export-orientation" class="export-select" data-export-field="orientation">
+              <option value="portrait" ${exportModalConfig.orientation === "portrait" ? "selected" : ""}>Portrait</option>
+              <option value="landscape" ${exportModalConfig.orientation === "landscape" ? "selected" : ""}>Landscape</option>
+            </select>
+          </div>
+          <div class="export-field-group">
+            <label for="export-margins" class="export-label">Page Margins</label>
+            <select id="export-margins" class="export-select" data-export-field="margins">
+              <option value="normal" ${exportModalConfig.margins === "normal" ? "selected" : ""}>Normal (20 mm)</option>
+              <option value="compact" ${exportModalConfig.margins === "compact" ? "selected" : ""}>Compact (10 mm)</option>
+              <option value="wide" ${exportModalConfig.margins === "wide" ? "selected" : ""}>Wide (30 mm)</option>
+            </select>
+          </div>
+        </div>
+        <div class="button-row ${UI.buttonRow}">
+          <button class="secondary-button ${UI.secondaryButton}" type="button" data-export-cancel>Cancel</button>
+          <button class="primary-button ${UI.primaryButton}" type="button" data-export-submit>Export</button>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function bindExportModal(): void {
+  if (!exportModalVisible) return;
+  const backdrop = root.querySelector<HTMLElement>("[data-export-backdrop]");
+  backdrop?.addEventListener("click", (event) => {
+    if (event.target === backdrop) {
+      closeExportModal();
+    }
+  });
+
+  const cancelBtn = root.querySelector<HTMLButtonElement>("[data-export-cancel]");
+  cancelBtn?.addEventListener("click", closeExportModal);
+
+  const submitBtn = root.querySelector<HTMLButtonElement>("[data-export-submit]");
+  submitBtn?.addEventListener("click", () => void submitExportModal());
+
+  root.querySelectorAll<HTMLSelectElement>("[data-export-field]").forEach((select) => {
+    select.addEventListener("change", () => {
+      exportModalConfig = updateExportConfig(
+        exportModalConfig,
+        select.dataset.exportField,
+        select.value,
+      );
+    });
+  });
 }
 
 function openQuickSwitcher(): void {
@@ -1831,6 +2061,7 @@ async function confirmWorkspaceDialog(): Promise<void> {
       });
       if (mutation.removedPathPrefix) {
         state = applyWorkspaceTrash(state, mutation.removedPathPrefix);
+        void syncReopenClosedTabAvailability();
       }
       invalidateWorkspaceCache(dialog.rootId, [parentRelativePath(dialog.relativePath)]);
       await ensureWorkspaceChildren(dialog.rootId, parentRelativePath(dialog.relativePath));
@@ -1913,6 +2144,34 @@ async function confirmWorkspaceDialog(): Promise<void> {
   }
 }
 
+async function navigateActiveDocumentHistory(
+  direction: -1 | 1,
+): Promise<void> {
+  captureActiveScroll();
+  const current = activeTab(state);
+  if (!current || current.kind !== "document" || current.status !== "ready") return;
+
+  const nextState = moveDocumentNavigation(state, current.key, direction);
+  if (nextState === state) return;
+
+  state = nextState;
+  const updated = readyDocumentTabForKey(state, current.key);
+  if (!updated) return;
+
+  const targetEntry = updated.history[updated.historyIndex];
+  if (!targetEntry) return;
+
+  if (targetEntry.path !== current.canonicalPath) {
+    await openDocumentPaths([targetEntry.path], targetEntry.fragment ?? null);
+  } else {
+    if (targetEntry.fragment) {
+      pendingAnchors.set(current.key, targetEntry.fragment);
+    }
+    render();
+    schedulePersist();
+  }
+}
+
 function bindShellInteractions(): void {
   root.querySelectorAll<HTMLElement>("[data-tab-key]").forEach((element) => {
     element.addEventListener("click", (event) => {
@@ -1954,6 +2213,12 @@ function bindShellInteractions(): void {
   root
     .querySelector<HTMLElement>('[data-action="settings"]')
     ?.addEventListener("click", showSettings);
+  root
+    .querySelector<HTMLElement>('[data-action="navigate-back"]')
+    ?.addEventListener("click", () => void navigateActiveDocumentHistory(-1));
+  root
+    .querySelector<HTMLElement>('[data-action="navigate-forward"]')
+    ?.addEventListener("click", () => void navigateActiveDocumentHistory(1));
   root
     .querySelector<HTMLElement>('[data-action="toggle-outline"]')
     ?.addEventListener("click", () => {
@@ -2237,9 +2502,83 @@ function dismissTabContextMenu(): void {
 }
 
 function handleDocumentSearchShortcut(event: KeyboardEvent): void {
+  if (
+    (event.metaKey || event.ctrlKey) &&
+    !event.shiftKey &&
+    (event.key === "[" || event.code === "BracketLeft")
+  ) {
+    event.preventDefault();
+    void navigateActiveDocumentHistory(-1);
+    return;
+  }
+  if (
+    (event.metaKey || event.ctrlKey) &&
+    !event.shiftKey &&
+    (event.key === "]" || event.code === "BracketRight")
+  ) {
+    event.preventDefault();
+    void navigateActiveDocumentHistory(1);
+    return;
+  }
+  if (
+    (event.metaKey || event.ctrlKey) &&
+    event.shiftKey &&
+    event.key.toLowerCase() === "t"
+  ) {
+    event.preventDefault();
+    reopenLastClosedTab();
+    return;
+  }
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "p") {
     event.preventDefault();
     openQuickSwitcher();
+    return;
+  }
+  if (
+    (event.metaKey || event.ctrlKey) &&
+    !event.shiftKey &&
+    event.key.toLowerCase() === "e"
+  ) {
+    event.preventDefault();
+    openExportModal();
+    return;
+  }
+  if (exportModalVisible) {
+    if (event.isComposing) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeExportModal();
+    } else if (event.key === "Enter") {
+      const target = event.target as HTMLElement | null;
+      if (target?.matches("[data-export-cancel]")) {
+        event.preventDefault();
+        closeExportModal();
+      } else {
+        event.preventDefault();
+        void submitExportModal();
+      }
+    } else if (event.key === "Tab") {
+      const modal = root.querySelector<HTMLElement>(".export-modal");
+      if (modal) {
+        const focusables = Array.from(
+          modal.querySelectorAll<HTMLElement>(
+            'select, button, [tabindex]:not([tabindex="-1"])',
+          ),
+        ).filter((el) => !el.hasAttribute("disabled"));
+        if (focusables.length > 0) {
+          const first = focusables[0];
+          const last = focusables[focusables.length - 1];
+          const active = document.activeElement;
+          if (event.shiftKey && active === first) {
+            event.preventDefault();
+            last.focus();
+          } else if (!event.shiftKey && active === last) {
+            event.preventDefault();
+            first.focus();
+          }
+        }
+      }
+    }
     return;
   }
   if (quickSwitcher.visible) {
@@ -2821,6 +3160,7 @@ function renderDocument(
   prepareDocumentContent(article, tab);
   enhanceCodeBlocks(article);
   enhanceDiagramViewers(article);
+  enhanceMath(article);
 
   scroller.append(header, article);
   const outline = state.tableOfContentsVisible
@@ -2843,9 +3183,10 @@ function renderDocument(
 
   requestAnimationFrame(() => {
     scroller.scrollTop = tab.scrollTop;
+    const pendingAnchor = pendingAnchors.get(tab.key);
     if (pendingAnchor) {
+      pendingAnchors.delete(tab.key);
       scrollToAnchor(article, pendingAnchor);
-      pendingAnchor = null;
     }
     outline?.updateActiveHeading();
   });
@@ -2968,10 +3309,17 @@ async function handleDocumentLink(
   href: string,
 ): Promise<void> {
   if (href.startsWith("#")) {
+    const fragment = decodeFragment(href.slice(1));
     scrollToAnchor(
       root.querySelector<HTMLElement>(".markdown-body"),
-      href.slice(1),
+      fragment,
     );
+    state = recordDocumentNavigation(state, tab.key, {
+      path: tab.canonicalPath,
+      scrollTop:
+        root.querySelector<HTMLElement>(".document-scroll")?.scrollTop ?? 0,
+      fragment,
+    });
     return;
   }
 
@@ -2992,7 +3340,7 @@ async function handleDocumentLink(
   const path = resolveLocalPath(tab.canonicalPath, pathPart);
   if (!path) return;
   if (isMarkdownPath(path)) {
-    await openDocumentPaths([path], decodeFragment(fragment));
+    await openDocumentPaths([path], decodeFragment(fragment), tab.key);
   } else {
     await openPath(path);
   }
@@ -3453,6 +3801,12 @@ function schedulePersist(): void {
 
 async function syncRecentDocuments(): Promise<void> {
   await invoke("sync_recent_documents", { paths: state.recentDocuments });
+}
+
+async function syncReopenClosedTabAvailability(): Promise<void> {
+  await invoke("sync_reopen_closed_tab_availability", {
+    available: state.closedTabsHistory.length > 0,
+  });
 }
 
 function scrollToAnchor(
