@@ -25,6 +25,8 @@ const MARKDOWN_EXTENSIONS: &[&str] = &["md", "markdown", "mdown", "mkd"];
 const MERMAID_PLACEHOLDER_LANGUAGE: &str = "markmaid-mermaid-placeholder";
 const LONG_CODE_PLACEHOLDER_LANGUAGE: &str = "markmaid-long-code-placeholder";
 const INITIAL_CODE_LINES: usize = 200;
+const MATH_TOKEN_PREFIX: char = '\u{e000}';
+const MATH_TOKEN_SUFFIX: char = '\u{e001}';
 
 static SYNTAX_HIGHLIGHTER: LazyLock<SyntectAdapter> = LazyLock::new(|| {
     SyntectAdapterBuilder::new()
@@ -433,6 +435,14 @@ struct MermaidReplacement {
     sourcepos: comrak::nodes::Sourcepos,
 }
 
+#[derive(Debug)]
+struct MathReplacement {
+    token: String,
+    formula: String,
+    display: bool,
+    sourcepos: Option<String>,
+}
+
 struct LongCodeBlock {
     language: String,
     source: String,
@@ -656,6 +666,21 @@ pub fn export_svg(path: String, svg: String) -> Result<(), String> {
         .map_err(|error| format!("Could not export SVG to {}: {error}", path.display()))
 }
 
+#[tauri::command]
+pub fn export_html(path: String, html: String) -> Result<(), String> {
+    let path = PathBuf::from(path);
+    if !path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("html"))
+    {
+        return Err("The export filename must end in .html.".to_string());
+    }
+
+    fs::write(&path, html)
+        .map_err(|error| format!("Could not export HTML to {}: {error}", path.display()))
+}
+
 pub fn is_markdown_path(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
@@ -806,6 +831,7 @@ fn render_markdown(
     mermaid_theme: MermaidTheme,
     color_theme: ColorTheme,
 ) -> Result<RenderedMarkdown, String> {
+    let (source, math_replacements) = protect_math(source);
     let arena = Arena::new();
     let mut options = Options::default();
     options.extension.strikethrough = true;
@@ -820,7 +846,7 @@ fn render_markdown(
     options.render.sourcepos = true;
     options.render.r#unsafe = false;
 
-    let root = parse_document(&arena, source, &options);
+    let root = parse_document(&arena, &source, &options);
     let mut image_assets = Vec::new();
     let mut mermaid_replacements = Vec::new();
     let mut long_code_blocks = std::collections::HashMap::new();
@@ -917,8 +943,236 @@ fn render_markdown(
     for replacement in mermaid_replacements {
         replace_mermaid_placeholder(&mut html, &replacement)?;
     }
+    for replacement in math_replacements {
+        replace_math_placeholder(&mut html, &replacement)?;
+    }
 
     Ok(RenderedMarkdown { html, image_assets })
+}
+
+fn protect_math(source: &str) -> (String, Vec<MathReplacement>) {
+    let mut protected = String::with_capacity(source.len());
+    let mut replacements = Vec::new();
+    let mut fence = None;
+    let lines = source.split_inclusive('\n').collect::<Vec<_>>();
+    let mut line_index = 0;
+
+    while line_index < lines.len() {
+        let line = lines[line_index];
+        if let Some((marker, length)) = fence {
+            protected.push_str(line);
+            if is_fence_line(line, marker, length) {
+                fence = None;
+            }
+            line_index += 1;
+            continue;
+        }
+        if let Some(next_fence) = opening_fence(line) {
+            protected.push_str(line);
+            fence = Some(next_fence);
+            line_index += 1;
+            continue;
+        }
+        if let Some((formula, closing_line)) = block_formula(&lines, line_index) {
+            let token = math_token(replacements.len());
+            replacements.push(MathReplacement {
+                token: token.clone(),
+                formula,
+                display: true,
+                sourcepos: Some(block_sourcepos(&lines, line_index, closing_line)),
+            });
+            protected.push_str(&token);
+            if lines[closing_line].ends_with('\n') {
+                protected.push('\n');
+            }
+            line_index = closing_line + 1;
+            continue;
+        }
+        protect_inline_math(line, &mut protected, &mut replacements);
+        line_index += 1;
+    }
+
+    (protected, replacements)
+}
+
+fn block_sourcepos(lines: &[&str], start: usize, end: usize) -> String {
+    let start_column = lines[start]
+        .chars()
+        .take_while(|character| character.is_whitespace())
+        .count()
+        + 1;
+    let end_column = lines[end].trim_end_matches(['\r', '\n']).chars().count();
+    format!("{}:{start_column}-{}:{end_column}", start + 1, end + 1)
+}
+
+fn opening_fence(line: &str) -> Option<(char, usize)> {
+    let trimmed = line.trim_start_matches([' ', '\t']);
+    let marker = trimmed.chars().next()?;
+    if marker != '`' && marker != '~' {
+        return None;
+    }
+    let length = trimmed
+        .chars()
+        .take_while(|character| *character == marker)
+        .count();
+    (length >= 3).then_some((marker, length))
+}
+
+fn is_fence_line(line: &str, marker: char, minimum_length: usize) -> bool {
+    let trimmed = line.trim_start_matches([' ', '\t']).trim_end();
+    trimmed
+        .chars()
+        .take_while(|character| *character == marker)
+        .count()
+        >= minimum_length
+        && trimmed.chars().all(|character| character == marker)
+}
+
+fn block_formula(lines: &[&str], start: usize) -> Option<(String, usize)> {
+    let first = lines[start].trim_end_matches(['\r', '\n']);
+    if first.trim_start().starts_with("$$") && first.trim_start() != "$$" {
+        let trimmed = first.trim();
+        if trimmed.len() > 4 && trimmed.ends_with("$$") {
+            return Some((trimmed[2..trimmed.len() - 2].to_string(), start));
+        }
+    }
+    if first.trim() != "$$" {
+        return None;
+    }
+    let mut formula = String::new();
+    for (offset, line) in lines[start + 1..].iter().enumerate() {
+        if line.trim() == "$$" {
+            return Some((formula, start + offset + 1));
+        }
+        formula.push_str(line);
+    }
+    None
+}
+
+fn protect_inline_math(line: &str, output: &mut String, replacements: &mut Vec<MathReplacement>) {
+    let mut index = 0;
+    while index < line.len() {
+        let character = line[index..].chars().next().unwrap_or_default();
+        if character == '`' {
+            let length = line[index..]
+                .chars()
+                .take_while(|value| *value == '`')
+                .count();
+            let marker = "`".repeat(length);
+            if let Some(end) = line[index + length..].find(&marker) {
+                let end = index + length + end + length;
+                output.push_str(&line[index..end]);
+                index = end;
+                continue;
+            }
+        }
+        if character == '$'
+            && let Some((formula, end)) = inline_formula(line, index)
+        {
+            let token = math_token(replacements.len());
+            replacements.push(MathReplacement {
+                token: token.clone(),
+                formula: formula.to_string(),
+                display: false,
+                sourcepos: None,
+            });
+            output.push_str(&token);
+            index = end;
+            continue;
+        }
+        output.push(character);
+        index += character.len_utf8();
+    }
+}
+
+fn inline_formula(line: &str, opening: usize) -> Option<(&str, usize)> {
+    let after_opening = opening + 1;
+    let first = line[after_opening..].chars().next()?;
+    if first.is_whitespace() || first.is_ascii_digit() || line[..opening].ends_with('\\') {
+        return None;
+    }
+    let mut closing = after_opening;
+    while closing < line.len() {
+        let character = line[closing..].chars().next()?;
+        if character == '$' && line[..closing].ends_with('\\') {
+            return None;
+        }
+        if character == '$' && !line[..closing].ends_with('\\') {
+            let formula = &line[after_opening..closing];
+            if !formula.ends_with(char::is_whitespace) && !line[closing + 1..].starts_with('$') {
+                return Some((formula, closing + 1));
+            }
+        }
+        closing += character.len_utf8();
+    }
+    None
+}
+
+fn math_token(index: usize) -> String {
+    format!("{MATH_TOKEN_PREFIX}MARKMAID_MATH_{index}{MATH_TOKEN_SUFFIX}")
+}
+
+fn replace_math_placeholder(
+    html: &mut String,
+    replacement: &MathReplacement,
+) -> Result<(), String> {
+    let occurrences = html.match_indices(&replacement.token).count();
+    if occurrences != 1 {
+        return Err("Markdown rendering lost or duplicated a math placeholder.".to_string());
+    }
+    let math_html = if replacement.display {
+        format!(
+            r#"<div class="math-block" data-math="{}"></div>"#,
+            escape_html(&replacement.formula),
+        )
+    } else {
+        format!(
+            r#"<span class="math-inline" data-math="{}"></span>"#,
+            escape_html(&replacement.formula),
+        )
+    };
+    let token_position = html
+        .find(&replacement.token)
+        .ok_or_else(|| "Markdown rendering lost a math placeholder.".to_string())?;
+
+    if !replacement.display {
+        html.replace_range(
+            token_position..token_position + replacement.token.len(),
+            &math_html,
+        );
+        return Ok(());
+    }
+
+    let block_start = html[..token_position]
+        .rfind("<p")
+        .ok_or_else(|| "Markdown rendering produced an invalid math block.".to_string())?;
+    let block_end = html[token_position..]
+        .find("</p>")
+        .map(|offset| token_position + offset + "</p>".len())
+        .ok_or_else(|| "Markdown rendering produced an incomplete math block.".to_string())?;
+    let wrapper = &html[block_start..block_end];
+    if !wrapper.starts_with("<p")
+        || !wrapper.ends_with("</p>")
+        || wrapper.matches(&replacement.token).count() != 1
+    {
+        return Err("Markdown rendering produced an unexpected math block wrapper.".to_string());
+    }
+    let sourcepos = replacement
+        .sourcepos
+        .as_deref()
+        .or_else(|| sourcepos_attribute(wrapper))
+        .map(|value| format!(r#" data-sourcepos="{value}""#))
+        .unwrap_or_default();
+    let math_html = math_html.replacen("<div ", &format!("<div{sourcepos} "), 1);
+    html.replace_range(block_start..block_end, &math_html);
+    Ok(())
+}
+
+fn sourcepos_attribute(wrapper: &str) -> Option<&str> {
+    let prefix = "data-sourcepos=\"";
+    let start = wrapper.find(prefix)? + prefix.len();
+    let end = wrapper[start..].find('"')? + start;
+    Some(&wrapper[start..end])
 }
 
 fn is_mermaid_info(info: &str) -> bool {
@@ -1108,6 +1362,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn exports_html_only_to_html_paths() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("guide.html");
+        export_html(path_to_string(&path), "<h1>Guide</h1>".to_string()).unwrap();
+        assert_eq!(fs::read_to_string(path).unwrap(), "<h1>Guide</h1>");
+
+        let invalid_path = directory.path().join("guide.txt");
+        assert!(export_html(path_to_string(&invalid_path), "x".to_string()).is_err());
+    }
+
+    #[test]
     fn probes_document_revisions_without_reloading_content() {
         let directory = tempdir().unwrap();
         let document = directory.path().join("guide.md");
@@ -1222,6 +1487,88 @@ mod tests {
         assert!(rendered.html.contains("<table"), "{}", rendered.html);
         assert!(rendered.html.contains("type=\"checkbox\""));
         assert!(rendered.html.contains("disabled=\"\""));
+    }
+
+    #[test]
+    fn preserves_math_delimiters_without_touching_code_currency_or_html_safety() {
+        let rendered = render_markdown(
+            concat!(
+                "Inline $E = mc^2$ and invalid $\\\\notacommand{.$\n\n",
+                "$$\\int_0^\\infty e^{-x^2} dx$$\n\n",
+                "`$code$` and $5.00 + $10.00\n\n",
+                "```tex\n$code$\n$$block$$\n```\n\n",
+                "$\\\"<&'x$\n\n",
+                "<script>alert('no')</script>"
+            ),
+            Path::new("/tmp/math.md"),
+            MermaidTheme::Default,
+            ColorTheme::Default,
+        )
+        .unwrap();
+
+        assert!(
+            rendered
+                .html
+                .contains(r#"<span class="math-inline" data-math="E = mc^2"></span>"#),
+            "{}",
+            rendered.html,
+        );
+        assert!(
+            rendered
+                .html
+                .contains(r#"<div data-sourcepos="3:1-3:29" class="math-block" data-math="\int_0^\infty e^{-x^2} dx"></div>"#),
+            "{}",
+            rendered.html,
+        );
+        assert!(rendered.html.contains(r#"data-math="\\notacommand{.""#));
+        assert!(
+            rendered
+                .html
+                .contains(r#"data-math="\&quot;&lt;&amp;&#39;x""#)
+        );
+        assert!(rendered.html.contains(">$code$</code>"));
+        assert!(rendered.html.contains("$5.00 + $10.00"));
+        assert!(rendered.html.contains("class=\"language-tex\""));
+        assert_eq!(rendered.html.matches("math-inline").count(), 3);
+        assert_eq!(rendered.html.matches("math-block").count(), 1);
+        assert!(!rendered.html.contains("<script>alert('no')</script>"));
+        assert!(rendered.html.contains("raw HTML omitted"));
+    }
+
+    #[test]
+    fn preserves_multiline_math_and_leaves_unmatched_or_escaped_dollars_as_text() {
+        let rendered = render_markdown(
+            concat!(
+                "$$\n",
+                "a &= b\\\\\\n",
+                "c &= d\n",
+                "$$\n\n",
+                "Unmatched $x and escaped \\$y$ stay text.\n\n",
+                "  ```text\n",
+                "  $fenced$\n",
+                "  ```"
+            ),
+            Path::new("/tmp/math-boundaries.md"),
+            MermaidTheme::Default,
+            ColorTheme::Default,
+        )
+        .unwrap();
+
+        assert!(
+            rendered
+                .html
+                .contains(r#"class="math-block" data-math="a &amp;= b\\\nc &amp;= d"#),
+            "{}",
+            rendered.html,
+        );
+        assert!(
+            rendered
+                .html
+                .contains("Unmatched $x and escaped $y$ stay text.")
+        );
+        assert!(rendered.html.contains("class=\"language-text\""));
+        assert_eq!(rendered.html.matches("math-inline").count(), 0);
+        assert_eq!(rendered.html.matches("math-block").count(), 1);
     }
 
     #[test]
