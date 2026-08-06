@@ -271,7 +271,7 @@ Treat as a practical sequence for a post-0.1.4 release line:
 ## Sources
 
 - Product docs: `README.md`, `CHANGELOG.md`, `docs/plans/v0.1.4_plan.md`,
-  `docs/designs/v0.1.3_plan.md`, `docs/designs/quick_open_plan.md`
+  `docs/plans/v0.1.3_plan.md`, `docs/plans/quick_open_plan.md`
 - Frontend hotspots: `src/main.ts`, `src/state.ts`, `src/search.ts`,
   `src/code-block.ts`, `src/export.ts`, `src/freshness.ts`
 - Backend hotspots: `src-tauri/src/document.rs`, `src-tauri/src/workspace.rs`,
