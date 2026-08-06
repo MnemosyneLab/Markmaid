@@ -1095,7 +1095,8 @@ fn inline_formula(line: &str, opening: usize) -> Option<(&str, usize)> {
     while closing < line.len() {
         let character = line[closing..].chars().next()?;
         if character == '$' && line[..closing].ends_with('\\') {
-            return None;
+            closing += character.len_utf8();
+            continue;
         }
         if character == '$' && !line[..closing].ends_with('\\') {
             let formula = &line[after_opening..closing];
@@ -1543,7 +1544,7 @@ mod tests {
                 "a &= b\\\\\\n",
                 "c &= d\n",
                 "$$\n\n",
-                "Unmatched $x and escaped \\$y$ stay text.\n\n",
+                "Unmatched $x and escaped \\$y stay text.\n\n",
                 "  ```text\n",
                 "  $fenced$\n",
                 "  ```"
@@ -1564,11 +1565,19 @@ mod tests {
         assert!(
             rendered
                 .html
-                .contains("Unmatched $x and escaped $y$ stay text.")
+                .contains("Unmatched $x and escaped $y stay text.")
         );
         assert!(rendered.html.contains("class=\"language-text\""));
         assert_eq!(rendered.html.matches("math-inline").count(), 0);
         assert_eq!(rendered.html.matches("math-block").count(), 1);
+    }
+
+    #[test]
+    fn keeps_escaped_dollars_inside_inline_math() {
+        assert_eq!(
+            inline_formula("$a \\$ b$", 0),
+            Some(("a \\$ b", "$a \\$ b$".len()))
+        );
     }
 
     #[test]

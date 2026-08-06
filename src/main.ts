@@ -52,12 +52,12 @@ import {
   loadingTab,
   mermaidKey,
   imageKey,
-  moveDocumentNavigation,
+  moveDocumentVisit,
   moveTab,
   openSettings,
   navigateDocument,
   previewPath,
-  readyDocumentTabForKey,
+  recordDocumentVisit,
   recordDocumentNavigation,
   reopenClosedTab,
   replaceDocumentResult,
@@ -66,6 +66,7 @@ import {
   tabFromMermaidPreview,
   tabFromResult,
   toPersistedSession,
+  updateDocumentVisit,
   updateScroll,
   upsertPreviewTab,
 } from "./state";
@@ -133,7 +134,10 @@ const MENU_RELOAD_EVENT = "markmaid://menu-reload";
 const MENU_SETTINGS_EVENT = "markmaid://menu-settings";
 const MENU_NEXT_TAB_EVENT = "markmaid://menu-next-tab";
 const MENU_PREVIOUS_TAB_EVENT = "markmaid://menu-previous-tab";
+const MENU_NAVIGATE_BACK_EVENT = "markmaid://menu-navigate-back";
+const MENU_NAVIGATE_FORWARD_EVENT = "markmaid://menu-navigate-forward";
 const MENU_CLEAR_RECENT_EVENT = "markmaid://menu-clear-recent";
+const PRINT_EXPORT_ERROR_EVENT = "markmaid://print-export-error";
 const SESSION_KEY = "session";
 const MARKDOWN_EXTENSIONS = new Set(["md", "markdown", "mdown", "mkd"]);
 const LIGHT_MERMAID_THEMES: ReadonlyArray<MermaidLightTheme> = [
@@ -409,6 +413,16 @@ async function registerNativeListeners(): Promise<void> {
     listen(MENU_SETTINGS_EVENT, () => showSettings()),
     listen(MENU_NEXT_TAB_EVENT, () => selectRelativeTab(1)),
     listen(MENU_PREVIOUS_TAB_EVENT, () => selectRelativeTab(-1)),
+    listen(MENU_NAVIGATE_BACK_EVENT, () => {
+      if (!exportModalVisible) void navigateActiveDocumentHistory(-1);
+    }),
+    listen(MENU_NAVIGATE_FORWARD_EVENT, () => {
+      if (!exportModalVisible) void navigateActiveDocumentHistory(1);
+    }),
+    listen<string>(PRINT_EXPORT_ERROR_EVENT, (event) => {
+      exportNotice = event.payload;
+      render();
+    }),
     listen(MENU_CLEAR_RECENT_EVENT, () => {
       state = clearRecentDocuments(state);
       schedulePersist();
@@ -456,6 +470,7 @@ async function openDocumentPaths(
   paths: string[],
   anchor: string | null = null,
   sourceKey: string | null = null,
+  recordVisit = true,
 ): Promise<void> {
   const uniquePaths = [...new Set(paths)].filter(isMarkdownPath);
   if (uniquePaths.length === 0) return;
@@ -535,6 +550,7 @@ async function openDocumentPaths(
       result.status === "ready" ? [result.canonicalPath] : [],
     ),
   );
+  if (recordVisit) recordActiveDocumentVisit(anchor);
   render();
   schedulePersist();
   void syncRecentDocuments();
@@ -681,6 +697,7 @@ function closeTabAndLoadNext(key: string): void {
   ignoredExternalChangeSignatures.delete(key);
   lastFreshnessCheckAt.delete(key);
   state = closeTab(state, key);
+  recordActiveDocumentVisit();
   render();
   schedulePersist();
   void syncReopenClosedTabAvailability();
@@ -691,6 +708,7 @@ function closeTabAndLoadNext(key: string): void {
 
 function reopenLastClosedTab(): void {
   state = reopenClosedTab(state);
+  recordActiveDocumentVisit();
   render();
   schedulePersist();
   void syncReopenClosedTabAvailability();
@@ -709,6 +727,7 @@ function showSettings(): void {
 function selectRelativeTab(direction: 1 | -1): void {
   captureActiveScroll();
   state = cycleTab(state, direction);
+  recordActiveDocumentVisit();
   render();
   schedulePersist();
   void ensurePreviewLoaded(state.activeTabKey).then(() =>
@@ -874,6 +893,31 @@ function captureActiveScroll(): void {
   const scroller = root.querySelector<HTMLElement>(".document-scroll, .preview-scroll");
   if (!current || current.kind === "settings" || !scroller) return;
   state = updateScroll(state, current.key, scroller.scrollTop);
+  if (current.kind === "document" && current.status === "ready") {
+    const visit = state.documentVisitHistory[state.documentVisitHistoryIndex];
+    state = updateDocumentVisit(state, {
+      path: current.canonicalPath,
+      scrollTop: scroller.scrollTop,
+      ...(visit?.path === current.canonicalPath && visit.fragment
+        ? { fragment: visit.fragment }
+        : {}),
+    });
+  }
+}
+
+function recordActiveDocumentVisit(
+  fragment: string | null = null,
+  scrollTop?: number,
+): void {
+  const current = activeTab(state);
+  if (!current || current.kind !== "document" || current.status !== "ready") {
+    return;
+  }
+  state = recordDocumentVisit(state, {
+    path: current.canonicalPath,
+    scrollTop: scrollTop ?? current.scrollTop,
+    ...(fragment ? { fragment } : {}),
+  });
 }
 
 function render(): void {
@@ -889,7 +933,7 @@ function render(): void {
           ${icon(state.leftSidebarVisible ? "panel-left-close" : "panel-left-open")}
           <span class="sr-only">${state.leftSidebarVisible ? "Hide" : "Show"} sidebar</span>
         </button>`;
-  const navState = computeNavigationControlState(current);
+  const navState = computeNavigationControlState(state);
   const navButtons = navState.isDocument
     ? `<button class="icon-button ${UI.iconButton}" type="button" data-action="navigate-back" title="${navState.backTitle}" aria-label="${navState.backAriaLabel}" ${navState.canGoBack ? "" : "disabled"}>
           ${icon("chevron-left")}
@@ -1000,6 +1044,9 @@ function renderStatusBar(status: StatusBarModel): string {
             <strong class="status-alert-title">Export failed.</strong>
             <span class="status-alert-detail">${escapeHtml(exportNotice)}</span>
           </span>
+          <div class="status-alert-actions">
+            <button class="status-alert-button" type="button" data-export-notice-dismiss title="Dismiss export error">${icon("x")}<span>Dismiss</span></button>
+          </div>
         </div>
       </footer>
     `;
@@ -1251,6 +1298,11 @@ function renderExportModal(): string {
         <div class="export-modal-header">
           <h2 id="export-modal-title">Export Document</h2>
           <p class="export-modal-subtitle">Configure format and layout options for <strong>${escapeHtml(docName)}</strong></p>
+          <p class="export-modal-subtitle">${
+            exportModalConfig.format === "pdf"
+              ? "The macOS print sheet lets you choose Save as PDF, a filename, and a destination."
+              : "After confirming, choose the HTML filename and destination in the save dialog."
+          }</p>
         </div>
         <div class="export-modal-body">
           <div class="export-field-group">
@@ -1314,6 +1366,7 @@ function bindExportModal(): void {
         select.dataset.exportField,
         select.value,
       );
+      render();
     });
   });
 }
@@ -1410,6 +1463,7 @@ async function activateQuickSwitcherItem(item: QuickSwitcherItem): Promise<void>
   if (item.kind === "tab" && item.tabKey) {
     captureActiveScroll();
     state = { ...state, activeTabKey: item.tabKey };
+    recordActiveDocumentVisit();
     render();
     schedulePersist();
     await ensurePreviewLoaded(item.tabKey);
@@ -2151,25 +2205,41 @@ async function navigateActiveDocumentHistory(
   const current = activeTab(state);
   if (!current || current.kind !== "document" || current.status !== "ready") return;
 
-  const nextState = moveDocumentNavigation(state, current.key, direction);
+  const nextState = moveDocumentVisit(state, direction);
   if (nextState === state) return;
 
   state = nextState;
-  const updated = readyDocumentTabForKey(state, current.key);
-  if (!updated) return;
-
-  const targetEntry = updated.history[updated.historyIndex];
+  const targetEntry =
+    state.documentVisitHistory[state.documentVisitHistoryIndex];
   if (!targetEntry) return;
 
-  if (targetEntry.path !== current.canonicalPath) {
-    await openDocumentPaths([targetEntry.path], targetEntry.fragment ?? null);
+  const existing = state.tabs.find(
+    (tab): tab is ReadyDocumentTab =>
+      tab.kind === "document" &&
+      tab.status === "ready" &&
+      tab.canonicalPath === targetEntry.path,
+  );
+  if (existing) {
+    state = {
+      ...state,
+      activeTabKey: existing.key,
+    };
   } else {
-    if (targetEntry.fragment) {
-      pendingAnchors.set(current.key, targetEntry.fragment);
-    }
-    render();
-    schedulePersist();
+    await openDocumentPaths(
+      [targetEntry.path],
+      targetEntry.fragment ?? null,
+      null,
+      false,
+    );
   }
+  const target = activeTab(state);
+  if (!isReadyDocumentTab(target)) return;
+  state = updateScroll(state, target.key, targetEntry.scrollTop);
+  if (targetEntry.fragment) {
+    pendingAnchors.set(target.key, targetEntry.fragment);
+  }
+  render();
+  schedulePersist();
 }
 
 function bindShellInteractions(): void {
@@ -2190,6 +2260,7 @@ function bindShellInteractions(): void {
       }
       captureActiveScroll();
       state = { ...state, activeTabKey: key };
+      recordActiveDocumentVisit();
       render();
       schedulePersist();
       void ensurePreviewLoaded(state.activeTabKey).then(() =>
@@ -2255,6 +2326,12 @@ function bindShellInteractions(): void {
   root
     .querySelector<HTMLElement>("[data-status-ignore]")
     ?.addEventListener("click", () => ignoreActiveExternalChange());
+  root
+    .querySelector<HTMLElement>("[data-export-notice-dismiss]")
+    ?.addEventListener("click", () => {
+      exportNotice = null;
+      render();
+    });
 
   root.querySelectorAll<HTMLElement>(".sidebar .tab").forEach((tabElement) => {
     tabElement.addEventListener("pointerdown", (event) => {
@@ -2502,6 +2579,10 @@ function dismissTabContextMenu(): void {
 }
 
 function handleDocumentSearchShortcut(event: KeyboardEvent): void {
+  if (exportModalVisible && (event.metaKey || event.ctrlKey)) {
+    event.preventDefault();
+    return;
+  }
   if (
     (event.metaKey || event.ctrlKey) &&
     !event.shiftKey &&
@@ -3310,16 +3391,18 @@ async function handleDocumentLink(
 ): Promise<void> {
   if (href.startsWith("#")) {
     const fragment = decodeFragment(href.slice(1));
-    scrollToAnchor(
-      root.querySelector<HTMLElement>(".markdown-body"),
-      fragment,
-    );
+    captureActiveScroll();
+    const article = root.querySelector<HTMLElement>(".markdown-body");
+    if (!scrollToAnchor(article, fragment)) return;
+    const scrollTop =
+      root.querySelector<HTMLElement>(".document-scroll")?.scrollTop ?? 0;
     state = recordDocumentNavigation(state, tab.key, {
       path: tab.canonicalPath,
-      scrollTop:
-        root.querySelector<HTMLElement>(".document-scroll")?.scrollTop ?? 0,
+      scrollTop,
       fragment,
     });
+    recordActiveDocumentVisit(fragment, scrollTop);
+    schedulePersist();
     return;
   }
 
@@ -3812,13 +3895,15 @@ async function syncReopenClosedTabAvailability(): Promise<void> {
 function scrollToAnchor(
   article: HTMLElement | null,
   fragment: string,
-): void {
-  if (!article || !fragment) return;
+): boolean {
+  if (!article || !fragment) return false;
   const decoded = decodeFragment(fragment);
   const target = article.querySelector<HTMLElement>(
     `#${CSS.escape(decoded)}`,
   );
-  target?.scrollIntoView({ block: "start" });
+  if (!target) return false;
+  target.scrollIntoView({ block: "start" });
+  return true;
 }
 
 function resolveLocalPath(

@@ -148,10 +148,16 @@ async function embedCssAssets(css: string): Promise<string> {
   for (const match of urls) {
     const source = match[1]?.trim().replace(/^['"]|['"]$/g, "");
     if (!source || source.startsWith("data:")) continue;
-    const response = await fetch(source);
-    const blob = await response.blob();
-    const dataUrl = await blobToDataUrl(blob);
-    embedded = embedded.replace(match[0], `url("${dataUrl}")`);
+    try {
+      const response = await fetch(source);
+      if (!response.ok) {
+        throw new Error(`Could not load export stylesheet asset: ${source}`);
+      }
+      const dataUrl = await blobToDataUrl(await response.blob());
+      embedded = embedded.replace(match[0], `url("${dataUrl}")`);
+    } catch {
+      // Keep the original URL when a nonessential font asset is unavailable.
+    }
   }
   return embedded;
 }
@@ -178,8 +184,15 @@ async function renderedExportHtml(tab: ReadyDocumentTab): Promise<string> {
   for (const image of article.querySelectorAll<HTMLImageElement>("img")) {
     const asset = assets.get(image.getAttribute("src") ?? "");
     if (!asset?.path) continue;
-    const response = await fetch(convertFileSrc(asset.path));
-    image.src = await blobToDataUrl(await response.blob());
+    try {
+      const response = await fetch(convertFileSrc(asset.path));
+      if (!response.ok) {
+        throw new Error(`Could not load export image: ${asset.path}`);
+      }
+      image.src = await blobToDataUrl(await response.blob());
+    } catch {
+      image.src = asset.original;
+    }
     image.removeAttribute("loading");
     image.removeAttribute("decoding");
   }
@@ -188,47 +201,8 @@ async function renderedExportHtml(tab: ReadyDocumentTab): Promise<string> {
   return article.innerHTML;
 }
 
-function removeIframe(iframe: HTMLIFrameElement): void {
-  iframe.remove();
-}
-
-export function printExportHtml(html: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const iframe = document.createElement("iframe");
-    iframe.hidden = true;
-    iframe.setAttribute("aria-hidden", "true");
-    let settled = false;
-    const complete = (error?: Error): void => {
-      if (settled) return;
-      settled = true;
-      iframe.removeEventListener("load", onLoad);
-      iframe.removeEventListener("error", onError);
-      iframe.contentWindow?.removeEventListener("afterprint", onAfterPrint);
-      removeIframe(iframe);
-      if (error) reject(error);
-      else resolve();
-    };
-    const onAfterPrint = (): void => complete();
-    const onError = (): void => complete(new Error("Could not prepare the print document."));
-    const onLoad = (): void => {
-      const printWindow = iframe.contentWindow;
-      if (!printWindow) {
-        complete(new Error("Could not access the print document."));
-        return;
-      }
-      printWindow.addEventListener("afterprint", onAfterPrint, { once: true });
-      try {
-        printWindow.focus();
-        printWindow.print();
-      } catch (error) {
-        complete(error instanceof Error ? error : new Error("Could not open the print dialog."));
-      }
-    };
-    iframe.addEventListener("load", onLoad, { once: true });
-    iframe.addEventListener("error", onError, { once: true });
-    iframe.srcdoc = html;
-    document.body.append(iframe);
-  });
+export async function printExportHtml(html: string): Promise<void> {
+  await invoke("print_export_html", { html });
 }
 
 export async function exportDocument(

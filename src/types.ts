@@ -250,6 +250,8 @@ export interface AppState {
   tabs: AppTab[];
   activeTabKey: string | null;
   closedTabsHistory: ClosedTab[];
+  documentVisitHistory: DocumentNavigationEntry[];
+  documentVisitHistoryIndex: number;
   theme: ThemeMode;
   colorTheme: ColorTheme;
   tabPlacement: TabPlacement;

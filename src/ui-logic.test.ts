@@ -7,7 +7,8 @@ import {
   disambiguatePathLabels,
   shouldSuppressTabClick,
 } from "./ui-logic";
-import type { AppTab, ReadyDocumentTab, WorkspaceMarkdownEntry } from "./types";
+import { DEFAULT_STATE } from "./state";
+import type { AppState, AppTab, ReadyDocumentTab, WorkspaceMarkdownEntry } from "./types";
 
 function ready(path: string): ReadyDocumentTab {
   return {
@@ -215,8 +216,20 @@ describe("tab click suppression", () => {
 });
 
 describe("navigation controls", () => {
+  const navigationState = (
+    tab: AppTab | null,
+    documentVisitHistory = [] as ReadyDocumentTab["history"],
+    documentVisitHistoryIndex = -1,
+  ): AppState => ({
+    ...DEFAULT_STATE,
+    tabs: tab ? [tab] : [],
+    activeTabKey: tab?.key ?? null,
+    documentVisitHistory,
+    documentVisitHistoryIndex,
+  });
+
   it("returns disabled navigation state for null or non-document tabs", () => {
-    expect(computeNavigationControlState(null)).toEqual({
+    expect(computeNavigationControlState(navigationState(null))).toEqual({
       isDocument: false,
       canGoBack: false,
       canGoForward: false,
@@ -227,7 +240,9 @@ describe("navigation controls", () => {
     });
 
     expect(
-      computeNavigationControlState({ kind: "settings", key: "settings" }),
+      computeNavigationControlState(
+        navigationState({ kind: "settings", key: "settings" }),
+      ),
     ).toMatchObject({
       isDocument: false,
       canGoBack: false,
@@ -237,37 +252,35 @@ describe("navigation controls", () => {
 
   it("evaluates back/forward availability correctly across history positions", () => {
     const single = ready("/doc.md");
-    expect(computeNavigationControlState(single)).toMatchObject({
+    expect(
+      computeNavigationControlState(
+        navigationState(single, [{ path: "/doc.md", scrollTop: 0 }], 0),
+      ),
+    ).toMatchObject({
       isDocument: true,
       canGoBack: false,
       canGoForward: false,
     });
 
-    const multiHistory: ReadyDocumentTab = {
-      ...single,
-      history: [
-        { path: "/doc.md", scrollTop: 0 },
-        { path: "/doc.md", scrollTop: 100, fragment: "section" },
-        { path: "/doc.md", scrollTop: 300 },
-      ],
-      historyIndex: 0,
-    };
+    const visits = [
+      { path: "/doc.md", scrollTop: 0 },
+      { path: "/other.md", scrollTop: 100, fragment: "section" },
+      { path: "/doc.md", scrollTop: 300 },
+    ];
 
-    expect(computeNavigationControlState(multiHistory)).toMatchObject({
+    expect(computeNavigationControlState(navigationState(single, visits, 0))).toMatchObject({
       isDocument: true,
       canGoBack: false,
       canGoForward: true,
     });
 
-    const middleState = { ...multiHistory, historyIndex: 1 };
-    expect(computeNavigationControlState(middleState)).toMatchObject({
+    expect(computeNavigationControlState(navigationState(single, visits, 1))).toMatchObject({
       isDocument: true,
       canGoBack: true,
       canGoForward: true,
     });
 
-    const endState = { ...multiHistory, historyIndex: 2 };
-    expect(computeNavigationControlState(endState)).toMatchObject({
+    expect(computeNavigationControlState(navigationState(single, visits, 2))).toMatchObject({
       isDocument: true,
       canGoBack: true,
       canGoForward: false,

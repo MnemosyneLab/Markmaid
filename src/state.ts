@@ -45,6 +45,8 @@ export const DEFAULT_STATE: AppState = {
   tabs: [],
   activeTabKey: null,
   closedTabsHistory: [],
+  documentVisitHistory: [],
+  documentVisitHistoryIndex: -1,
   theme: "system",
   colorTheme: "default",
   tabPlacement: "left",
@@ -419,9 +421,13 @@ export function closeTabsMatchingPaths(
   const closedTabsHistory = state.closedTabsHistory.filter(
     (tab) => !matcher(tab.path),
   );
+  const documentVisitHistory = state.documentVisitHistory.filter(
+    (entry) => !matcher(entry.path),
+  );
   if (
     removedKeys.size === 0 &&
-    closedTabsHistory.length === state.closedTabsHistory.length
+    closedTabsHistory.length === state.closedTabsHistory.length &&
+    documentVisitHistory.length === state.documentVisitHistory.length
   ) {
     return state;
   }
@@ -435,7 +441,18 @@ export function closeTabsMatchingPaths(
   }
 
   const recentDocuments = state.recentDocuments.filter((path) => !matcher(path));
-  return { ...state, tabs, activeTabKey, recentDocuments, closedTabsHistory };
+  return {
+    ...state,
+    tabs,
+    activeTabKey,
+    recentDocuments,
+    closedTabsHistory,
+    documentVisitHistory,
+    documentVisitHistoryIndex: Math.min(
+      state.documentVisitHistoryIndex,
+      documentVisitHistory.length - 1,
+    ),
+  };
 }
 
 export function rewritePreviewPaths(
@@ -471,12 +488,17 @@ export function rewritePreviewPaths(
     const nextPath = rewrite(tab.path);
     return nextPath ? { ...tab, path: nextPath } : tab;
   });
+  const documentVisitHistory = state.documentVisitHistory.map((entry) => {
+    const nextPath = rewrite(entry.path);
+    return nextPath ? { ...entry, path: nextPath } : entry;
+  });
 
   return deduplicatePreviewTabs({
     ...state,
     tabs,
     recentDocuments: normalizeRecentDocuments(recentDocuments),
     closedTabsHistory,
+    documentVisitHistory,
     activeTabKey:
       keyRemap.get(state.activeTabKey ?? "") ?? state.activeTabKey,
   });
@@ -560,6 +582,63 @@ export function moveDocumentNavigation(
     historyIndex,
     scrollTop: entry ? entry.scrollTop : tab.scrollTop,
   });
+}
+
+export function recordDocumentVisit(
+  state: AppState,
+  entry: DocumentNavigationEntry,
+): AppState {
+  const current = state.documentVisitHistory[state.documentVisitHistoryIndex];
+  if (
+    current &&
+    current.path === entry.path &&
+    current.fragment === entry.fragment
+  ) {
+    return {
+      ...state,
+      documentVisitHistory: state.documentVisitHistory.map((candidate, index) =>
+        index === state.documentVisitHistoryIndex ? entry : candidate,
+      ),
+    };
+  }
+
+  const documentVisitHistory = [
+    ...state.documentVisitHistory.slice(0, state.documentVisitHistoryIndex + 1),
+    entry,
+  ].slice(-MAX_DOCUMENT_NAVIGATION_HISTORY);
+  return {
+    ...state,
+    documentVisitHistory,
+    documentVisitHistoryIndex: documentVisitHistory.length - 1,
+  };
+}
+
+export function updateDocumentVisit(
+  state: AppState,
+  entry: DocumentNavigationEntry,
+): AppState {
+  const current = state.documentVisitHistory[state.documentVisitHistoryIndex];
+  if (!current || current.path !== entry.path) return state;
+  return {
+    ...state,
+    documentVisitHistory: state.documentVisitHistory.map((candidate, index) =>
+      index === state.documentVisitHistoryIndex ? entry : candidate,
+    ),
+  };
+}
+
+export function moveDocumentVisit(
+  state: AppState,
+  direction: 1 | -1,
+): AppState {
+  const documentVisitHistoryIndex = state.documentVisitHistoryIndex + direction;
+  if (
+    documentVisitHistoryIndex < 0 ||
+    documentVisitHistoryIndex >= state.documentVisitHistory.length
+  ) {
+    return state;
+  }
+  return { ...state, documentVisitHistoryIndex };
 }
 
 export function navigateDocument(
@@ -653,6 +732,8 @@ export function fromPersistedSession(value: unknown): AppState {
     tabs: value.tabs.map(restoreTab),
     activeTabKey: value.activeTabKey,
     closedTabsHistory: [],
+    documentVisitHistory: [],
+    documentVisitHistoryIndex: -1,
     theme: value.theme,
     colorTheme: isColorTheme(value.colorTheme)
       ? value.colorTheme

@@ -8,6 +8,14 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(async () => ({
 
   plugins: [tailwindcss()],
+  build: {
+    rollupOptions: {
+      input: {
+        main: "index.html",
+        print: "print.html",
+      },
+    },
+  },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

@@ -1,4 +1,5 @@
 import type {
+  AppState,
   AppTab,
   PreviewTab,
   WorkspaceMarkdownEntry,
@@ -211,12 +212,14 @@ export interface NavigationControlState {
 }
 
 export function computeNavigationControlState(
-  tab: AppTab | null,
+  state: AppState,
 ): NavigationControlState {
+  const tab = state.tabs.find((candidate) => candidate.key === state.activeTabKey) ?? null;
   const isDocument = tab?.kind === "document" && tab.status === "ready";
-  const canGoBack = isDocument && tab.historyIndex > 0;
+  const canGoBack = isDocument && state.documentVisitHistoryIndex > 0;
   const canGoForward =
-    isDocument && tab.historyIndex < tab.history.length - 1;
+    isDocument &&
+    state.documentVisitHistoryIndex < state.documentVisitHistory.length - 1;
 
   return {
     isDocument,

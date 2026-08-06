@@ -2,6 +2,16 @@
 
 import { describe, expect, it, vi } from "vitest";
 import type { AppTab, ExportConfig, ReadyDocumentTab } from "./types";
+
+const { invokeMock } = vi.hoisted(() => ({
+  invokeMock: vi.fn(),
+}));
+
+vi.mock("@tauri-apps/api/core", () => ({
+  convertFileSrc: vi.fn((path: string) => path),
+  invoke: invokeMock,
+}));
+
 import {
   buildExportHtml,
   DEFAULT_EXPORT_CONFIG,
@@ -96,36 +106,24 @@ describe("export configuration and gating seam", () => {
     registerExportHandler(null);
   });
 
-  it("prints from a hidden iframe and removes it after the print sheet closes", async () => {
-    const iframe = document.createElement("iframe");
-    const print = vi.spyOn(window, "print").mockImplementation(() => undefined);
-    const focus = vi.spyOn(window, "focus").mockImplementation(() => undefined);
-    Object.defineProperty(iframe, "contentWindow", {
-      value: window,
-    });
-    vi.spyOn(document, "createElement").mockReturnValueOnce(iframe);
+  it("delegates PDF printing to the native export window command", async () => {
+    invokeMock.mockReset();
+    invokeMock.mockResolvedValueOnce(undefined);
+    const html = "<!doctype html><title>Print</title>";
 
-    const printed = printExportHtml("<!doctype html><title>Print</title>");
-    expect(document.body.contains(iframe)).toBe(true);
-    iframe.dispatchEvent(new Event("load"));
-    expect(focus).toHaveBeenCalledOnce();
-    expect(print).toHaveBeenCalledOnce();
-    window.dispatchEvent(new Event("afterprint"));
-    await printed;
-    expect(document.body.contains(iframe)).toBe(false);
+    await printExportHtml(html);
+
+    expect(invokeMock).toHaveBeenCalledOnce();
+    expect(invokeMock).toHaveBeenCalledWith("print_export_html", { html });
   });
 
-  it("removes a failed print iframe when its print document is unavailable", async () => {
-    const iframe = document.createElement("iframe");
-    Object.defineProperty(iframe, "contentWindow", {
-      value: null,
-    });
-    vi.spyOn(document, "createElement").mockReturnValueOnce(iframe);
+  it("propagates native print window creation failures", async () => {
+    invokeMock.mockReset();
+    invokeMock.mockRejectedValueOnce(new Error("Native print unavailable."));
 
-    const printed = printExportHtml("<!doctype html><title>Print</title>");
-    iframe.dispatchEvent(new Event("load"));
-    await expect(printed).rejects.toThrow("Could not access");
-    expect(document.body.contains(iframe)).toBe(false);
+    await expect(printExportHtml("<!doctype html>")).rejects.toThrow(
+      "Native print unavailable.",
+    );
   });
 
   it("provides correct DEFAULT_EXPORT_CONFIG", () => {

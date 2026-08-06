@@ -1,4 +1,5 @@
 mod document;
+mod printing;
 mod workspace;
 
 use std::{
@@ -10,6 +11,7 @@ use document::{
     check_document_revisions, export_html, export_svg, highlight_code_chunk, is_markdown_path,
     load_documents, reload_document,
 };
+use printing::{finish_print_export, print_export_html, start_print_export};
 use tauri::{
     AppHandle, Emitter, Manager, RunEvent, State,
     menu::{Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder},
@@ -30,6 +32,8 @@ const MENU_RELOAD_EVENT: &str = "markmaid://menu-reload";
 const MENU_SETTINGS_EVENT: &str = "markmaid://menu-settings";
 const MENU_NEXT_TAB_EVENT: &str = "markmaid://menu-next-tab";
 const MENU_PREVIOUS_TAB_EVENT: &str = "markmaid://menu-previous-tab";
+const MENU_NAVIGATE_BACK_EVENT: &str = "markmaid://menu-navigate-back";
+const MENU_NAVIGATE_FORWARD_EVENT: &str = "markmaid://menu-navigate-forward";
 const MENU_CLEAR_RECENT_EVENT: &str = "markmaid://menu-clear-recent";
 const RECENT_MENU_ITEM_PREFIX: &str = "recent-open-";
 const MAX_RECENT_DOCUMENTS: usize = 10;
@@ -104,6 +108,12 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let previous_tab = MenuItemBuilder::with_id("previous-tab", "Previous Tab")
         .accelerator("Ctrl+Shift+Tab")
         .build(app)?;
+    let navigate_back = MenuItemBuilder::with_id("navigate-back", "Back")
+        .accelerator("CmdOrCtrl+[")
+        .build(app)?;
+    let navigate_forward = MenuItemBuilder::with_id("navigate-forward", "Forward")
+        .accelerator("CmdOrCtrl+]")
+        .build(app)?;
 
     let recent_documents = app
         .try_state::<RecentDocuments>()
@@ -164,6 +174,9 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         .select_all()
         .build()?;
     let view_menu = SubmenuBuilder::new(app, "View")
+        .item(&navigate_back)
+        .item(&navigate_forward)
+        .separator()
         .item(&reload)
         .separator()
         .item(&next_tab)
@@ -247,6 +260,8 @@ fn menu_event_for_id(id: &str) -> Option<&'static str> {
         "settings" => Some(MENU_SETTINGS_EVENT),
         "next-tab" => Some(MENU_NEXT_TAB_EVENT),
         "previous-tab" => Some(MENU_PREVIOUS_TAB_EVENT),
+        "navigate-back" => Some(MENU_NAVIGATE_BACK_EVENT),
+        "navigate-forward" => Some(MENU_NAVIGATE_FORWARD_EVENT),
         _ => None,
     }
 }
@@ -432,6 +447,9 @@ pub fn run() {
             check_document_revisions,
             export_html,
             export_svg,
+            print_export_html,
+            start_print_export,
+            finish_print_export,
             highlight_code_chunk,
             take_pending_open_paths,
             sync_recent_documents,
@@ -495,6 +513,14 @@ mod tests {
             Some(MENU_REOPEN_CLOSED_TAB_EVENT)
         );
         assert_eq!(menu_event_for_id("export"), Some(MENU_EXPORT_EVENT));
+        assert_eq!(
+            menu_event_for_id("navigate-back"),
+            Some(MENU_NAVIGATE_BACK_EVENT)
+        );
+        assert_eq!(
+            menu_event_for_id("navigate-forward"),
+            Some(MENU_NAVIGATE_FORWARD_EVENT)
+        );
     }
 
     #[test]

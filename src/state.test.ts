@@ -15,16 +15,19 @@ import {
   loadingMermaidTab,
   loadingTab,
   moveDocumentNavigation,
+  moveDocumentVisit,
   moveTab,
   navigateDocument,
   openSettings,
   recordDocumentNavigation,
+  recordDocumentVisit,
   reopenClosedTab,
   replaceDocumentResult,
   rewritePreviewPaths,
   setPreferences,
   toPersistedSession,
   updateScroll,
+  updateDocumentVisit,
 } from "./state";
 import type { AppState, DocumentLoadResult } from "./types";
 
@@ -111,6 +114,62 @@ describe("tab state", () => {
     expect(back.activeTabKey).toBe("document:/one.md");
     expect(back.tabs[0]).toMatchObject({ historyIndex: 1, scrollTop: 0 });
     expect(forward.tabs[0]).toMatchObject({ historyIndex: 2, scrollTop: 0 });
+  });
+
+  it("records document visits across tabs and preserves a forward branch boundary", () => {
+    let state = addDocumentResults(baseState(), [ready("/one.md"), ready("/two.md")]);
+    state = recordDocumentVisit(state, { path: "/one.md", scrollTop: 48 });
+    state = recordDocumentVisit(state, {
+      path: "/two.md",
+      scrollTop: 120,
+      fragment: "details",
+    });
+
+    state = moveDocumentVisit(state, -1);
+    state = updateDocumentVisit(state, { path: "/one.md", scrollTop: 96 });
+    state = recordDocumentVisit(state, { path: "/three.md", scrollTop: 0 });
+
+    expect(state.documentVisitHistory).toEqual([
+      { path: "/one.md", scrollTop: 96 },
+      { path: "/three.md", scrollTop: 0 },
+    ]);
+    expect(state.documentVisitHistoryIndex).toBe(1);
+    expect(moveDocumentVisit(state, 1)).toBe(state);
+  });
+
+  it("moves backward and forward through same-document anchor visits", () => {
+    let state = addDocumentResults(baseState(), [ready("/guide.md")]);
+    state = recordDocumentVisit(state, { path: "/guide.md", scrollTop: 24 });
+    state = recordDocumentVisit(state, {
+      path: "/guide.md",
+      scrollTop: 360,
+      fragment: "emphasis",
+    });
+    state = recordDocumentVisit(state, {
+      path: "/guide.md",
+      scrollTop: 720,
+      fragment: "links",
+    });
+
+    state = moveDocumentVisit(state, -1);
+    expect(state.documentVisitHistory[state.documentVisitHistoryIndex]).toEqual({
+      path: "/guide.md",
+      scrollTop: 360,
+      fragment: "emphasis",
+    });
+
+    state = moveDocumentVisit(state, -1);
+    expect(state.documentVisitHistory[state.documentVisitHistoryIndex]).toEqual({
+      path: "/guide.md",
+      scrollTop: 24,
+    });
+
+    state = moveDocumentVisit(state, 1);
+    expect(state.documentVisitHistory[state.documentVisitHistoryIndex]).toEqual({
+      path: "/guide.md",
+      scrollTop: 360,
+      fragment: "emphasis",
+    });
   });
 
   it("restores target entry scroll position and treats boundary moves as no-ops", () => {
