@@ -117,6 +117,9 @@ For version preparation and uploading local artifacts to GitHub Release, see
 [docs/RELEASING.md](docs/RELEASING.md). Releases are intentionally built on a
 local Apple Silicon Mac; this repository does not require GitHub Actions.
 
+Future feature and optimization candidates are tracked in
+[docs/ROADMAP.md](docs/ROADMAP.md).
+
 ## Structure
 
 - `src/main.ts`: Tauri event wiring, workspace UI, and read-only preview chrome
