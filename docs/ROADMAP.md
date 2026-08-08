@@ -30,18 +30,22 @@ release policy until that decision changes.
 
 | Horizon | Theme | Outcome |
 | --- | --- | --- |
-| v0.1.5 release | Ship the hardened foundation | Complete manual QA, artifacts, dry-run, and publication gates |
-| v0.1.6 candidate | Workspace polish and diagnostics | Faster repeated navigation, clearer failures, and lower maintenance cost |
+| v0.1.5 | Released | Hardened preview opening, navigation, workspace bounds, local assets, and printing |
+| v0.1.6 planned | Workspace polish and diagnostics | Reorder roots, copy safe diagnostics, cancel stale work, split the shell, and improve accessibility |
 | v0.2 candidate | On-demand knowledge discovery | Search document contents and understand relationships without a background watcher |
 | Later | Reading depth and scale | Better long-document performance, export control, and optional local metadata |
 
-## v0.1.5 release gate
+## v0.1.5 release
 
-Finish the dedicated
-[`v0.1.5 release checklist`](releases/v0.1.5-checklist.md) before starting a
-feature release. Post-release regressions take priority over every item below.
+v0.1.5 has been published. Its
+[`release checklist`](releases/v0.1.5-checklist.md) remains as the historical
+release-preparation record. Post-release regressions still take priority over
+every item below.
 
-## v0.1.6 candidate — workspace polish and diagnostics
+## v0.1.6 planned — workspace polish and diagnostics
+
+The selected implementation scope is documented in the
+[`v0.1.6 plan`](plans/v0.1.6_plan.md).
 
 Do not treat every checkbox in this section as v0.1.6 scope. The recommended
 first cut is pinned-folder reorder, Copy Diagnostics, backend cancellation, the
