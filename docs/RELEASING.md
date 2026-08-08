@@ -40,6 +40,8 @@ Before committing, refresh the user-facing docs for that version:
 
 - Add a dated section in `CHANGELOG.md` and keep the compare links at the bottom
   accurate (`vPREV...vNEW`).
+- Add public release notes at `docs/releases/v<version>.md` and a separate
+  mutable signoff record at `docs/releases/v<version>-checklist.md`.
 - Update `README.md` feature bullets, keyboard shortcuts, and any behavior notes
   so they match the menus and overlays in `src-tauri/src/lib.rs` and
   `src/main.ts`.
@@ -107,6 +109,14 @@ Also confirm:
   permissions.
 
 ## 4. Publish the GitHub Release
+
+Review `docs/releases/v<version>.md` as the final public release body. The
+publishing script generates GitHub notes by default; after creation, replace
+them with the reviewed release copy when curated notes are present:
+
+```sh
+gh release edit v<version> --notes-file docs/releases/v<version>.md
+```
 
 Run the interactive command:
 
