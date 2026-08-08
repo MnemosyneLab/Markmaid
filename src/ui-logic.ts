@@ -3,6 +3,7 @@ import type {
   AppTab,
   PreviewTab,
   WorkspaceMarkdownEntry,
+  WorkspaceMarkdownIndex,
   WorkspaceRoot,
 } from "./types";
 import { previewPath } from "./state";
@@ -28,6 +29,20 @@ export interface QuickSwitcherBuildResult {
   items: QuickSwitcherItem[];
   workspaceMatchCount: number;
   truncated: boolean;
+}
+
+export function workspaceIndexNotices(index: WorkspaceMarkdownIndex | null): string[] {
+  if (!index) return [];
+  const notices: string[] = [];
+  if (index.unavailableRootIds.length > 0) {
+    notices.push("Some pinned folders were unavailable");
+  }
+  if (index.truncatedRootIds.length > 0) {
+    notices.push(
+      "Some pinned folders are capped — use a narrower query to reveal more matches",
+    );
+  }
+  return notices;
 }
 
 export function disambiguatedTabLabels(tabs: AppTab[]): Map<string, string> {

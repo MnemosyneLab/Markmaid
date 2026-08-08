@@ -11,7 +11,7 @@ Features include:
 - GFM tables, task lists, autolinks, strikethrough, and heading anchors
 - Native Rust Mermaid-to-SVG preview (fenced blocks and standalone `.mmd`) with themes and fullscreen zoom
 - In-app image preview for common formats via the Tauri asset protocol
-- Syntax-highlighted code blocks with copy, download, and progressive large-block expansion
+- Syntax-highlighted code blocks with copy and progressive large-block expansion
 - Document outline navigation and source-backed in-document Find (`⌘F`)
 - Document Back / Forward (`⌘[` / `⌘]`) for in-document and relative Markdown links
 - Offline KaTeX math for inline `$...$` and block `$$...$$`
@@ -29,7 +29,7 @@ Features include:
 - Finder file associations, multi-select Open, drag and drop, and single-instance
   file forwarding
 - Lazy session restoration with persisted scroll positions, pinned folders, and window state
-- Local and HTTPS images with per-file Tauri asset authorization
+- Local and HTTPS images with scoped, session-lifetime Tauri asset authorization
 - External-change alerts on window focus and tab activation, with Reload or Ignore
 - Manual reload that preserves the previous Markdown preview when reloading fails
 
@@ -58,7 +58,7 @@ run the same command against that `.app` path instead.
 
 | Shortcut | Action |
 | --- | --- |
-| `⌘O` | Open Markdown files |
+| `⌘O` | Open Markdown, Mermaid, or image files |
 | `⌘P` | Quick Open (open tabs, pinned Markdown, recent documents) |
 | `⌘E` | Export the current document (HTML or PDF) |
 | `⇧⌘T` | Reopen the last closed preview tab |
@@ -75,6 +75,18 @@ collapsed code blocks expand when you navigate to them. In Quick Open: `↑` /
 only (not Markdown body text), includes Markdown under pinned folders, and
 excludes `.mmd` / image files. The pinned-folder list refreshes each time you
 open it.
+
+## Preview limits and local assets
+
+Markdown and standalone Mermaid previews are limited to 16 MiB per file; direct
+image previews are limited to 100 MiB. Workspace traversal and Quick Open are
+also bounded so unusually large folder trees remain responsive, and the UI
+reports when an index was truncated.
+
+Local image access is granted only for explicitly opened images, a document's
+directory subtree, or the shared pinned workspace root containing the document.
+These grants last for the current app session; closing a tab does not revoke a
+grant early.
 
 ## Requirements
 

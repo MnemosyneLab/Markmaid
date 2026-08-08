@@ -10,15 +10,18 @@ import {
   cycleTab,
   DEFAULT_SIDEBAR_WIDTH,
   DEFAULT_STATE,
+  errorTabForLoading,
   fromPersistedSession,
   loadingImageTab,
   loadingMermaidTab,
   loadingTab,
+  MAX_DOCUMENT_NAVIGATION_HISTORY,
   moveDocumentVisit,
   moveTab,
   openSettings,
   recordDocumentVisit,
   reopenClosedTab,
+  replacePreviewTab,
   replaceDocumentResult,
   rewritePreviewPaths,
   setPreferences,
@@ -114,6 +117,40 @@ describe("tab state", () => {
     });
   });
 
+  it("bounds global document history to the newest visits", () => {
+    let state = baseState();
+    for (let index = 0; index < MAX_DOCUMENT_NAVIGATION_HISTORY + 5; index += 1) {
+      state = recordDocumentVisit(state, {
+        path: `/document-${index}.md`,
+        scrollTop: index,
+      });
+    }
+
+    expect(state.documentVisitHistory).toHaveLength(MAX_DOCUMENT_NAVIGATION_HISTORY);
+    expect(state.documentVisitHistory[0]?.path).toBe("/document-5.md");
+    expect(state.documentVisitHistoryIndex).toBe(MAX_DOCUMENT_NAVIGATION_HISTORY - 1);
+  });
+
+  it("maps rejected first loads to the matching preview error kind", () => {
+    const failures = [
+      errorTabForLoading(loadingTab("/guide.md"), "backend failed"),
+      errorTabForLoading(loadingMermaidTab("/flow.mmd"), "backend failed"),
+      errorTabForLoading(loadingImageTab("/photo.png"), "backend failed"),
+    ];
+
+    expect(
+      failures.map((tab) => [
+        tab.kind,
+        tab.status,
+        tab.status === "error" ? tab.code : null,
+      ]),
+    ).toEqual([
+      ["document", "error", "load_failed"],
+      ["mermaid", "error", "load_failed"],
+      ["image", "error", "load_failed"],
+    ]);
+  });
+
   it("removes multiple loading aliases that resolve to one canonical path", () => {
     const state = baseState({
       tabs: [
@@ -134,6 +171,54 @@ describe("tab state", () => {
       status: "ready",
     });
     expect(resolved.activeTabKey).toBe("document:/real/README.md");
+  });
+
+  it("replaces a background preview without stealing the active tab", () => {
+    const state = baseState({
+      tabs: [loadingMermaidTab("/diagram.mmd"), loadingTab("/active.md")],
+      activeTabKey: "document:/active.md",
+    });
+
+    const replaced = replacePreviewTab(state, "mermaid:/diagram.mmd", {
+      kind: "mermaid",
+      key: "mermaid:/canonical/diagram.mmd",
+      status: "ready",
+      canonicalPath: "/canonical/diagram.mmd",
+      displayName: "diagram.mmd",
+      source: "flowchart TD\nA-->B",
+      html: "<figure></figure>",
+      sizeBytes: 20,
+      modifiedAtMs: 1,
+      scrollTop: 0,
+    });
+
+    expect(replaced.activeTabKey).toBe("document:/active.md");
+    expect(replaced.tabs[0]).toMatchObject({
+      key: "mermaid:/canonical/diagram.mmd",
+      status: "ready",
+    });
+  });
+
+  it("remaps the active key when replacing the active preview", () => {
+    const state = baseState({
+      tabs: [loadingImageTab("/image.png")],
+      activeTabKey: "image:/image.png",
+    });
+
+    const replaced = replacePreviewTab(state, "image:/image.png", {
+      kind: "image",
+      key: "image:/canonical/image.png",
+      status: "ready",
+      canonicalPath: "/canonical/image.png",
+      displayName: "image.png",
+      assetUrl: "asset://image.png",
+      sizeBytes: 20,
+      modifiedAtMs: 1,
+      dimensions: null,
+      scrollTop: 0,
+    });
+
+    expect(replaced.activeTabKey).toBe("image:/canonical/image.png");
   });
 
   it("keeps settings as a singleton and selects a neighbor on close", () => {

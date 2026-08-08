@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 
 use crate::document::{
-    ColorTheme, DocumentLoadResult, MermaidTheme, authorize_assets, load_document_data,
-    metadata_modified_at_ms, path_to_string, render_standalone_mermaid,
+    ColorTheme, DocumentLoadResult, MAX_TEXT_PREVIEW_BYTES, MermaidTheme, authorize_assets,
+    load_document_data, metadata_modified_at_ms, path_to_string, render_standalone_mermaid,
 };
 
 const MARKDOWN_EXTENSIONS: &[&str] = &["md", "markdown", "mdown", "mkd"];
@@ -26,6 +26,7 @@ const MAX_VISIBILITY_SCAN_ENTRIES: usize = 2_000;
 const MAX_VISIBILITY_SCAN_DEPTH: usize = 32;
 const MAX_INDEX_DEPTH: usize = 12;
 const MAX_INDEXED_MARKDOWN_ENTRIES_PER_ROOT: usize = 10_000;
+const MAX_IMAGE_PREVIEW_BYTES: u64 = 100 * 1024 * 1024;
 
 #[derive(Default)]
 pub struct WorkspaceRegistry(Mutex<HashMap<String, PathBuf>>);
@@ -202,14 +203,28 @@ pub async fn list_workspace_children(
 }
 
 #[tauri::command]
-pub fn load_preview_paths(
+pub async fn load_preview_paths(
     app: AppHandle,
     registry: State<'_, WorkspaceRegistry>,
     paths: Vec<String>,
     mermaid_theme: MermaidTheme,
     color_theme: ColorTheme,
-) -> Vec<PreviewLoadResult> {
+) -> Result<Vec<PreviewLoadResult>, String> {
     let roots = registered_root_paths(&registry);
+    tauri::async_runtime::spawn_blocking(move || {
+        load_preview_paths_inner(&app, &roots, &paths, mermaid_theme, color_theme)
+    })
+    .await
+    .map_err(|error| format!("Could not load preview files: {error}"))
+}
+
+fn load_preview_paths_inner(
+    app: &AppHandle,
+    roots: &[PathBuf],
+    paths: &[String],
+    mermaid_theme: MermaidTheme,
+    color_theme: ColorTheme,
+) -> Vec<PreviewLoadResult> {
     paths
         .iter()
         .map(|requested_path| {
@@ -217,16 +232,16 @@ pub fn load_preview_paths(
             match kind {
                 Some(WorkspaceEntryKind::Markdown) => PreviewLoadResult::Document {
                     result: authorize_assets(
-                        &app,
+                        app,
                         load_document_data(requested_path, mermaid_theme, color_theme),
-                        &roots,
+                        roots,
                     ),
                 },
                 Some(WorkspaceEntryKind::Mermaid) => PreviewLoadResult::Mermaid {
                     result: load_direct_mermaid(requested_path, mermaid_theme, color_theme),
                 },
                 Some(WorkspaceEntryKind::Image) => PreviewLoadResult::Image {
-                    result: load_direct_image(&app, requested_path),
+                    result: load_direct_image(app, requested_path),
                 },
                 Some(WorkspaceEntryKind::Directory) => PreviewLoadResult::Unsupported {
                     requested_path: requested_path.clone(),
@@ -275,35 +290,6 @@ pub fn trash_workspace_item(
     relative_path: String,
 ) -> Result<WorkspaceMutation, String> {
     trash_workspace_item_inner(&registry, &root_id, &relative_path)
-        .map_err(|error| error.to_string_error())
-}
-
-#[tauri::command]
-pub fn load_workspace_mermaid(
-    registry: State<'_, WorkspaceRegistry>,
-    root_id: String,
-    relative_path: String,
-    mermaid_theme: MermaidTheme,
-    color_theme: ColorTheme,
-) -> Result<MermaidPreview, String> {
-    load_workspace_mermaid_inner(
-        &registry,
-        &root_id,
-        &relative_path,
-        mermaid_theme,
-        color_theme,
-    )
-    .map_err(|error| error.to_string_error())
-}
-
-#[tauri::command]
-pub fn load_workspace_image(
-    app: AppHandle,
-    registry: State<'_, WorkspaceRegistry>,
-    root_id: String,
-    relative_path: String,
-) -> Result<ImagePreview, String> {
-    load_workspace_image_inner(&app, &registry, &root_id, &relative_path)
         .map_err(|error| error.to_string_error())
 }
 
@@ -594,90 +580,6 @@ fn trash_workspace_item_inner(
     })
 }
 
-fn load_workspace_mermaid_inner(
-    registry: &WorkspaceRegistry,
-    root_id: &str,
-    relative_path: &str,
-    mermaid_theme: MermaidTheme,
-    color_theme: ColorTheme,
-) -> Result<MermaidPreview, WorkspaceError> {
-    let root = resolve_root(registry, root_id)?;
-    let path = resolve_existing_path(&root, relative_path)?;
-    let meta = fs::symlink_metadata(&path).map_err(map_io_error)?;
-    if meta.file_type().is_symlink() || !meta.is_file() {
-        return Err(WorkspaceError::new(
-            "unsupported_type",
-            "Mermaid previews require a regular file.",
-        ));
-    }
-    if classify_file(&path) != Some(WorkspaceEntryKind::Mermaid) {
-        return Err(WorkspaceError::new(
-            "unsupported_type",
-            "Only .mmd files can be opened as Mermaid previews.",
-        ));
-    }
-
-    let bytes = fs::read(&path).map_err(map_io_error)?;
-    let source = String::from_utf8(bytes)
-        .map_err(|_| WorkspaceError::new("invalid_utf8", "The Mermaid file is not valid UTF-8."))?;
-    let html = render_standalone_mermaid(&source, &path, mermaid_theme, color_theme);
-    Ok(MermaidPreview {
-        status: "ready".to_string(),
-        requested_path: path_to_string(&path),
-        canonical_path: path_to_string(&path),
-        display_name: file_name(&path),
-        source,
-        html,
-        size_bytes: meta.len(),
-        modified_at_ms: metadata_modified_at_ms(&meta),
-        code: None,
-        message: None,
-    })
-}
-
-fn load_workspace_image_inner(
-    app: &AppHandle,
-    registry: &WorkspaceRegistry,
-    root_id: &str,
-    relative_path: &str,
-) -> Result<ImagePreview, WorkspaceError> {
-    let root = resolve_root(registry, root_id)?;
-    let path = resolve_existing_path(&root, relative_path)?;
-    let meta = fs::symlink_metadata(&path).map_err(map_io_error)?;
-    if meta.file_type().is_symlink() || !meta.is_file() {
-        return Err(WorkspaceError::new(
-            "unsupported_type",
-            "Image previews require a regular file.",
-        ));
-    }
-    if classify_file(&path) != Some(WorkspaceEntryKind::Image) {
-        return Err(WorkspaceError::new(
-            "unsupported_type",
-            "Unsupported image type.",
-        ));
-    }
-
-    let canonical = path_to_string(&path);
-    if app.asset_protocol_scope().allow_file(&path).is_err() {
-        return Err(WorkspaceError::new(
-            "permission_denied",
-            "The image could not be authorized for preview.",
-        ));
-    }
-
-    Ok(ImagePreview {
-        status: "ready".to_string(),
-        requested_path: canonical.clone(),
-        canonical_path: canonical.clone(),
-        display_name: file_name(&path),
-        path: canonical,
-        size_bytes: meta.len(),
-        modified_at_ms: metadata_modified_at_ms(&meta),
-        code: None,
-        message: None,
-    })
-}
-
 fn load_direct_mermaid(
     requested_path: &str,
     mermaid_theme: MermaidTheme,
@@ -694,6 +596,16 @@ fn load_direct_mermaid(
             return mermaid_error(requested_path, mapped.code, mapped.message);
         }
     };
+    if meta.len() > MAX_TEXT_PREVIEW_BYTES {
+        return mermaid_error(
+            requested_path,
+            "file_too_large",
+            format!(
+                "The Mermaid file is larger than the {} MiB preview limit.",
+                MAX_TEXT_PREVIEW_BYTES / 1024 / 1024
+            ),
+        );
+    }
     let bytes = match fs::read(&path) {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -739,6 +651,16 @@ fn load_direct_image(app: &AppHandle, requested_path: &str) -> ImagePreview {
             return image_error(requested_path, mapped.code, mapped.message);
         }
     };
+    if meta.len() > MAX_IMAGE_PREVIEW_BYTES {
+        return image_error(
+            requested_path,
+            "file_too_large",
+            format!(
+                "The image is larger than the {} MiB preview limit.",
+                MAX_IMAGE_PREVIEW_BYTES / 1024 / 1024
+            ),
+        );
+    }
     if app.asset_protocol_scope().allow_file(&path).is_err() {
         return image_error(
             requested_path,
@@ -764,6 +686,12 @@ fn resolve_direct_preview_path(
     requested_path: &str,
     expected_kind: WorkspaceEntryKind,
 ) -> Result<PathBuf, WorkspaceError> {
+    if !Path::new(requested_path).is_absolute() {
+        return Err(WorkspaceError::new(
+            "invalid_path",
+            "Preview paths must be absolute.",
+        ));
+    }
     let metadata = fs::symlink_metadata(requested_path).map_err(map_io_error)?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err(WorkspaceError::new(
@@ -1333,6 +1261,19 @@ mod tests {
         fs::write(dir.path().join("secret.rs"), "fn main() {}").unwrap();
         fs::write(dir.path().join(".hidden.md"), "").unwrap();
         fs::create_dir(dir.path().join("guides")).unwrap();
+        for noise in [
+            ".git",
+            "node_modules",
+            "DIST",
+            "build",
+            ".venv",
+            "Pods",
+            "target",
+        ] {
+            let noise_path = dir.path().join(noise);
+            fs::create_dir(&noise_path).unwrap();
+            fs::write(noise_path.join("ignored.md"), "# ignored").unwrap();
+        }
         symlink(dir.path().join("readme.md"), dir.path().join("link.md")).unwrap();
 
         let (registry, root) = registry_with(dir.path());
@@ -1389,6 +1330,40 @@ mod tests {
         assert_eq!(docs[0].name, "guides");
         let guides = list_workspace_children_inner(&registry, &root.id, "docs/guides").unwrap();
         assert_eq!(guides[0].name, "readme.md");
+    }
+
+    #[test]
+    fn keeps_visibility_scans_conservative_at_depth_and_entry_limits() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("guide.md"), "# guide").unwrap();
+
+        let mut visible_state = VisibilityScanState::default();
+        assert_eq!(
+            directory_contains_visible_item(dir.path(), &mut visible_state, 0),
+            VisibilityScan::Visible
+        );
+        assert_eq!(
+            visible_state.memo.get(dir.path()),
+            Some(&VisibilityScan::Visible)
+        );
+
+        let mut entry_limited = VisibilityScanState {
+            entries: MAX_VISIBILITY_SCAN_ENTRIES,
+            ..VisibilityScanState::default()
+        };
+        assert_eq!(
+            directory_contains_visible_item(dir.path(), &mut entry_limited, 0),
+            VisibilityScan::BudgetExhausted
+        );
+        let mut depth_limited = VisibilityScanState::default();
+        assert_eq!(
+            directory_contains_visible_item(
+                dir.path(),
+                &mut depth_limited,
+                MAX_VISIBILITY_SCAN_DEPTH,
+            ),
+            VisibilityScan::BudgetExhausted
+        );
     }
 
     #[test]
@@ -1470,30 +1445,75 @@ mod tests {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("ok.mmd"), "flowchart TD\nA-->B\n").unwrap();
         fs::write(dir.path().join("bad.mmd"), [0xff, 0xfe, 0xfd]).unwrap();
-        let (registry, root) = registry_with(dir.path());
-
-        let preview = load_workspace_mermaid_inner(
-            &registry,
-            &root.id,
-            "ok.mmd",
+        let preview = load_direct_mermaid(
+            &path_to_string(&dir.path().join("ok.mmd")),
             MermaidTheme::Default,
             ColorTheme::Default,
-        )
-        .unwrap();
+        );
         assert_eq!(preview.status, "ready");
         assert!(preview.html.contains("mermaid-figure"));
 
+        let invalid = load_direct_mermaid(
+            &path_to_string(&dir.path().join("bad.mmd")),
+            MermaidTheme::Default,
+            ColorTheme::Default,
+        );
+        assert_eq!(invalid.code.as_deref(), Some("invalid_utf8"));
+
+        let direct = load_direct_mermaid(
+            &path_to_string(&dir.path().join("ok.mmd")),
+            MermaidTheme::Dark,
+            ColorTheme::Nord,
+        );
+        assert_eq!(direct.status, "ready");
+        assert!(direct.html.contains("data-mermaid-theme=\"dark\""));
+
+        let oversized_path = dir.path().join("oversized.mmd");
+        let oversized_file = fs::File::create(&oversized_path).unwrap();
+        oversized_file.set_len(MAX_TEXT_PREVIEW_BYTES + 1).unwrap();
+        let oversized = load_direct_mermaid(
+            &path_to_string(&oversized_path),
+            MermaidTheme::Default,
+            ColorTheme::Default,
+        );
+        assert_eq!(oversized.code.as_deref(), Some("file_too_large"));
+
         assert_eq!(
-            load_workspace_mermaid_inner(
-                &registry,
-                &root.id,
-                "bad.mmd",
-                MermaidTheme::Default,
-                ColorTheme::Default,
-            )
-            .unwrap_err()
-            .code,
-            "invalid_utf8"
+            resolve_direct_preview_path("relative.mmd", WorkspaceEntryKind::Mermaid)
+                .unwrap_err()
+                .code,
+            "invalid_path"
+        );
+    }
+
+    #[test]
+    fn validates_direct_preview_paths_and_case_insensitive_extensions() {
+        let dir = tempdir().unwrap();
+        let image = dir.path().join("PHOTO.PNG");
+        fs::write(&image, [0_u8; 4]).unwrap();
+        assert_eq!(classify_file(&image), Some(WorkspaceEntryKind::Image));
+        assert_eq!(
+            resolve_direct_preview_path(&path_to_string(&image), WorkspaceEntryKind::Image)
+                .unwrap(),
+            fs::canonicalize(&image).unwrap()
+        );
+
+        let directory = dir.path().join("folder.mmd");
+        fs::create_dir(&directory).unwrap();
+        assert_eq!(
+            resolve_direct_preview_path(&path_to_string(&directory), WorkspaceEntryKind::Mermaid,)
+                .unwrap_err()
+                .code,
+            "unsupported_type"
+        );
+
+        let link = dir.path().join("link.png");
+        symlink(&image, &link).unwrap();
+        assert_eq!(
+            resolve_direct_preview_path(&path_to_string(&link), WorkspaceEntryKind::Image)
+                .unwrap_err()
+                .code,
+            "unsupported_type"
         );
     }
 
@@ -1537,6 +1557,11 @@ mod tests {
         fs::write(dir.path().join("secret.rs"), "fn main() {}").unwrap();
         fs::write(dir.path().join(".hidden.md"), "").unwrap();
         fs::write(dir.path().join(".hidden-dir").join("nested.md"), "").unwrap();
+        for noise in [".git", "node_modules", "DIST", "target"] {
+            let noise_path = dir.path().join(noise);
+            fs::create_dir(&noise_path).unwrap();
+            fs::write(noise_path.join("ignored.md"), "").unwrap();
+        }
         symlink(dir.path().join("README.MD"), dir.path().join("link.md")).unwrap();
 
         let (registry, root) = registry_with(dir.path());
@@ -1558,6 +1583,52 @@ mod tests {
                 .iter()
                 .any(|entry| entry.relative_path == "guides/intro.mkd")
         );
+        assert!(index.truncated_root_ids.is_empty());
+    }
+
+    #[test]
+    fn reports_depth_and_entry_index_truncation() {
+        let dir = tempdir().unwrap();
+        let mut deep = dir.path().to_path_buf();
+        for index in 0..=MAX_INDEX_DEPTH {
+            deep.push(format!("level-{index}"));
+            fs::create_dir(&deep).unwrap();
+        }
+        fs::write(deep.join("too-deep.md"), "").unwrap();
+
+        let (registry, root) = registry_with(dir.path());
+        let root_path = registry.0.lock().unwrap().get(&root.id).cloned();
+        let index = index_workspace_markdown_inner(vec![(root.id.clone(), root_path)]);
+        assert!(index.truncated_root_ids.contains(&root.id));
+        assert!(
+            !index
+                .entries
+                .iter()
+                .any(|entry| entry.name == "too-deep.md")
+        );
+
+        let capped = tempdir().unwrap();
+        fs::write(capped.path().join("a.md"), "").unwrap();
+        fs::write(capped.path().join("b.md"), "").unwrap();
+        let mut entries = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+        let mut scan = IndexScanState {
+            entries: MAX_INDEXED_MARKDOWN_ENTRIES_PER_ROOT - 1,
+            truncated: false,
+        };
+        let capped_root = fs::canonicalize(capped.path()).unwrap();
+        collect_markdown_entries_inner(
+            &capped_root,
+            "root-capped",
+            "",
+            &mut entries,
+            &mut visited,
+            &mut scan,
+            0,
+        )
+        .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(scan.truncated);
     }
 
     #[test]

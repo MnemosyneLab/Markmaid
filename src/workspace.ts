@@ -141,6 +141,10 @@ export function workspaceErrorMessage(code: string): string {
       return "That path is not a folder.";
     case "invalid_utf8":
       return "The file is not valid UTF-8 text.";
+    case "invalid_path":
+      return "Preview paths must be absolute.";
+    case "file_too_large":
+      return "The file is too large to preview safely.";
     case "root_not_registered":
       return "The workspace folder is no longer registered.";
     default:

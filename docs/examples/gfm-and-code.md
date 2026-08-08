@@ -1,7 +1,7 @@
 # GFM and code blocks
 
 Exercises GitHub-Flavored Markdown extensions and syntax-highlighted code
-preview (copy / download / progressive expansion for large blocks).
+preview (copy / progressive expansion for large blocks).
 
 ## Task lists
 

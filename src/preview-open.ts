@@ -19,6 +19,33 @@ export const IMAGE_EXTENSIONS = [
 
 export type OpenablePathKind = "document" | "mermaid" | "image";
 
+export class PreviewRequestTracker {
+  private sequence = 0;
+  private readonly tokens = new Map<string, number>();
+
+  begin(key: string): number {
+    const token = ++this.sequence;
+    this.tokens.set(key, token);
+    return token;
+  }
+
+  has(key: string): boolean {
+    return this.tokens.has(key);
+  }
+
+  isCurrent(key: string, token: number): boolean {
+    return this.tokens.get(key) === token;
+  }
+
+  finish(key: string, token: number): void {
+    if (this.isCurrent(key, token)) this.tokens.delete(key);
+  }
+
+  invalidate(key: string): void {
+    this.tokens.delete(key);
+  }
+}
+
 const extensionOf = (path: string): string => {
   const name = path.split(/[\\/]/).at(-1) ?? path;
   const separator = name.lastIndexOf(".");
@@ -71,4 +98,8 @@ export function unsupportedNotice(paths: string[]): string {
     return `${displayNameForPath(paths[0] ?? "This file")} cannot be opened: unsupported file type.`;
   }
   return `${paths.length} files could not be opened because their file types are unsupported.`;
+}
+
+export function previewResultRequestedPath(result: PreviewLoadResult): string {
+  return result.kind === "unsupported" ? result.requestedPath : result.result.requestedPath;
 }

@@ -30,6 +30,7 @@ const IMAGE_EXTENSIONS: &[&str] = &[
 const MERMAID_PLACEHOLDER_LANGUAGE: &str = "markmaid-mermaid-placeholder";
 const LONG_CODE_PLACEHOLDER_LANGUAGE: &str = "markmaid-long-code-placeholder";
 const INITIAL_CODE_LINES: usize = 200;
+pub(crate) const MAX_TEXT_PREVIEW_BYTES: u64 = 16 * 1024 * 1024;
 const MATH_TOKEN_PREFIX: char = '\u{e000}';
 const MATH_TOKEN_SUFFIX: char = '\u{e001}';
 
@@ -544,40 +545,23 @@ impl CodefenceRendererAdapter for LongCodeRenderer<'_> {
 }
 
 #[tauri::command]
-pub fn load_documents(
-    app: AppHandle,
-    registry: State<'_, WorkspaceRegistry>,
-    paths: Vec<String>,
-    mermaid_theme: MermaidTheme,
-    color_theme: ColorTheme,
-) -> Vec<DocumentLoadResult> {
-    let roots = registered_root_paths(&registry);
-    paths
-        .iter()
-        .map(|path| {
-            authorize_assets(
-                &app,
-                load_document_data(path, mermaid_theme, color_theme),
-                &roots,
-            )
-        })
-        .collect()
-}
-
-#[tauri::command]
-pub fn reload_document(
+pub async fn reload_document(
     app: AppHandle,
     registry: State<'_, WorkspaceRegistry>,
     path: String,
     mermaid_theme: MermaidTheme,
     color_theme: ColorTheme,
-) -> DocumentLoadResult {
+) -> Result<DocumentLoadResult, String> {
     let roots = registered_root_paths(&registry);
-    authorize_assets(
-        &app,
-        load_document_data(&path, mermaid_theme, color_theme),
-        &roots,
-    )
+    tauri::async_runtime::spawn_blocking(move || {
+        authorize_assets(
+            &app,
+            load_document_data(&path, mermaid_theme, color_theme),
+            &roots,
+        )
+    })
+    .await
+    .map_err(|error| format!("Could not reload preview document: {error}"))
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -765,6 +749,14 @@ pub(crate) fn load_document_data(
     mermaid_theme: MermaidTheme,
     color_theme: ColorTheme,
 ) -> DocumentLoadResult {
+    if !Path::new(requested_path).is_absolute() {
+        return DocumentLoadResult::error(
+            requested_path,
+            None,
+            "invalid_path",
+            "Preview paths must be absolute.",
+        );
+    }
     match fs::symlink_metadata(requested_path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
             return DocumentLoadResult::error(
@@ -823,6 +815,18 @@ pub(crate) fn load_document_data(
             Some(&canonical_path),
             "unsupported_extension",
             "MarkMaid supports .md, .markdown, .mdown, and .mkd files.",
+        );
+    }
+
+    if metadata.len() > MAX_TEXT_PREVIEW_BYTES {
+        return DocumentLoadResult::error(
+            requested_path,
+            Some(&canonical_path),
+            "file_too_large",
+            format!(
+                "The Markdown file is larger than the {} MiB preview limit.",
+                MAX_TEXT_PREVIEW_BYTES / 1024 / 1024
+            ),
         );
     }
 
@@ -1941,5 +1945,51 @@ mod tests {
                 .contains("A[&lt;unsafe&gt;] --&gt; B[&amp; value]")
         );
         assert!(!rendered.html.contains("<unsafe>"));
+    }
+
+    #[test]
+    fn authorizes_only_document_subtrees_or_shared_pinned_roots() {
+        let document = Path::new("/workspace/docs/guide.md");
+        assert!(is_allowed_asset(
+            document,
+            Path::new("/workspace/docs/images/local.png"),
+            &[]
+        ));
+        assert!(!is_allowed_asset(
+            document,
+            Path::new("/workspace/shared/root.png"),
+            &[]
+        ));
+        assert!(is_allowed_asset(
+            document,
+            Path::new("/workspace/shared/root.png"),
+            &[PathBuf::from("/workspace")]
+        ));
+        assert!(!is_allowed_asset(
+            document,
+            Path::new("/outside/secret.png"),
+            &[PathBuf::from("/workspace")]
+        ));
+    }
+
+    #[test]
+    fn rejects_relative_and_oversized_markdown_previews() {
+        assert!(matches!(
+            load_document_data("relative.md", MermaidTheme::Default, ColorTheme::Default),
+            DocumentLoadResult::Error { ref code, .. } if code == "invalid_path"
+        ));
+
+        let directory = tempdir().unwrap();
+        let document = directory.path().join("oversized.md");
+        let file = fs::File::create(&document).unwrap();
+        file.set_len(MAX_TEXT_PREVIEW_BYTES + 1).unwrap();
+        assert!(matches!(
+            load_document_data(
+                &path_to_string(&document),
+                MermaidTheme::Default,
+                ColorTheme::Default,
+            ),
+            DocumentLoadResult::Error { ref code, .. } if code == "file_too_large"
+        ));
     }
 }

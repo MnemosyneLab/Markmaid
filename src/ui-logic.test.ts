@@ -6,6 +6,7 @@ import {
   computeNavigationControlState,
   disambiguatePathLabels,
   shouldSuppressTabClick,
+  workspaceIndexNotices,
 } from "./ui-logic";
 import { DEFAULT_STATE } from "./state";
 import type {
@@ -71,6 +72,19 @@ describe("document labels", () => {
 });
 
 describe("quick switcher", () => {
+  it("reports unavailable and truncated roots independently", () => {
+    expect(
+      workspaceIndexNotices({
+        entries: [],
+        unavailableRootIds: ["missing"],
+        truncatedRootIds: ["large"],
+      }),
+    ).toEqual([
+      "Some pinned folders were unavailable",
+      "Some pinned folders are capped — use a narrower query to reveal more matches",
+    ]);
+  });
+
   const tabs: AppTab[] = [
     ready("/work/MarkMaid/README.md"),
     { kind: "settings", key: "settings" },

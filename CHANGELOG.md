@@ -2,6 +2,29 @@
 
 All notable changes to MarkMaid are documented in this file.
 
+## [0.1.5] - 2026-08-08
+
+### Added
+
+- Unified Open, drag/drop, Finder, forwarded-instance, and Markdown-link preview dispatch for Markdown, Mermaid, and common image files
+- Bounded workspace traversal and Quick Open indexing with hidden/noise-directory filtering and explicit truncation notices
+- File-size limits of 16 MiB for Markdown/Mermaid and 100 MiB for direct image previews
+- Native print-window load watchdog and one-shot cleanup across success, failure, cancellation, and timeout paths
+
+### Changed
+
+- Use one global document navigation history across tabs, anchors, lazy restore, and reopened documents
+- Keep background preview loads and reloads from stealing the active tab, and discard stale async results after retry or close
+- Re-render every open standalone Mermaid preview when its theme changes, including files outside pinned folders
+- Limit print-export windows to a dedicated minimal Tauri capability
+- Document local asset grants as scoped but session-lifetime permissions; closing a tab does not revoke them early
+
+### Fixed
+
+- Show unsupported-file and load notices in both sidebar modes
+- Preserve a ready preview when reload fails and keep stale completions from replacing newer state
+- Keep Quick Open unavailable-root and truncated-index notices visible at the same time
+
 ## [0.1.4] - 2026-08-05
 
 ### Added
@@ -72,7 +95,7 @@ All notable changes to MarkMaid are documented in this file.
 
 - Native Rust Mermaid-to-SVG rendering with configurable light and dark themes
 - Fullscreen Mermaid viewer with zoom and pan controls
-- Syntax highlighting, code copy/download actions, and progressive expansion for large code blocks
+- Syntax highlighting, code copy actions, and progressive expansion for large code blocks
 - Document outline navigation and source-aware in-document search
 - Color palettes, typography controls, page-width preferences, and a resizable left tab rail
 - Tab context actions and drag-to-reorder support for top and left tab layouts
@@ -101,6 +124,7 @@ All notable changes to MarkMaid are documented in this file.
 - Manual reload that preserves the previous preview when reloading fails
 - Local release tooling for version sync, ARM builds, and GitHub Releases
 
+[0.1.5]: https://github.com/Weichen-LF/Markmaid/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/Weichen-LF/Markmaid/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/Weichen-LF/Markmaid/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/Weichen-LF/Markmaid/compare/v0.1.1...v0.1.2

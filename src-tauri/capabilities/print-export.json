@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "print-export",
+  "description": "Least-privilege capability for native print export windows",
+  "windows": ["print-export-*"],
+  "permissions": ["core:default"]
+}

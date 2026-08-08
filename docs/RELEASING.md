@@ -95,6 +95,16 @@ Also confirm:
 - `CHANGELOG.md` has a section for the version being published.
 - `README.md` features and shortcuts still match the shipped menus and overlays.
 - `node scripts/version.mjs --check <version>` reports synchronized versions.
+- Opening and dropping Markdown, Mermaid, and image files use the same supported
+  path set; unsupported files show a visible notice in both sidebar modes.
+- Back / Forward works across tab switches, anchors, lazy-restored tabs, and
+  reopened documents without a background load changing the active tab.
+- Quick Open reports unavailable roots and truncated indexes independently, and
+  large/noise-heavy pinned folders remain responsive.
+- HTML/PDF export covers print success, cancellation, command failure, asset
+  timeout, page-load timeout, and leaves no hidden `print-export-*` window.
+- The print-export capability contains no dialog, opener, store, or window-state
+  permissions.
 
 ## 4. Publish the GitHub Release
 

@@ -7,8 +7,9 @@ declare global {
 }
 
 const ASSET_WAIT_TIMEOUT_MS = 15_000;
-const PRINT_CLEANUP_TIMEOUT_MS = 10 * 60_000;
+const PRINT_INTERACTION_TIMEOUT_MS = 5 * 60_000;
 let finishing = false;
+let interactionTimer: number | null = null;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error && error.message
@@ -19,6 +20,8 @@ function errorMessage(error: unknown): string {
 async function finishPrint(error: string | null = null): Promise<void> {
   if (finishing) return;
   finishing = true;
+  if (interactionTimer !== null) window.clearTimeout(interactionTimer);
+  interactionTimer = null;
   try {
     await invoke("finish_print_export", { error });
   } catch {
@@ -41,24 +44,28 @@ async function waitForExportAssets(): Promise<void> {
     document.fonts?.ready ?? Promise.resolve(),
     ...Array.from(document.images, waitForImage),
   ]).then(() => undefined);
-  await Promise.race([
-    assetsReady,
-    new Promise<void>((resolve) =>
-      window.setTimeout(resolve, ASSET_WAIT_TIMEOUT_MS),
-    ),
-  ]);
+  let timeout: number | null = null;
+  try {
+    await Promise.race([
+      assetsReady,
+      new Promise<void>((resolve) => {
+        timeout = window.setTimeout(resolve, ASSET_WAIT_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timeout !== null) window.clearTimeout(timeout);
+  }
 }
 
 async function beginPrint(): Promise<void> {
   try {
     await waitForExportAssets();
-    const cleanupTimer = window.setTimeout(() => {
+    interactionTimer = window.setTimeout(() => {
       void finishPrint("The native print panel did not finish in time.");
-    }, PRINT_CLEANUP_TIMEOUT_MS);
+    }, PRINT_INTERACTION_TIMEOUT_MS);
     window.addEventListener(
       "afterprint",
       () => {
-        window.clearTimeout(cleanupTimer);
         void finishPrint();
       },
       { once: true },
@@ -88,3 +95,7 @@ window.__MARKMAID_LOAD_PRINT_DOCUMENT__ = (html: string): void => {
     void finishPrint(errorMessage(error));
   }
 };
+
+void invoke("mark_print_export_ready").catch((error) =>
+  finishPrint(errorMessage(error)),
+);

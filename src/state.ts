@@ -207,6 +207,55 @@ export function tabFromImagePreview(
   };
 }
 
+export function errorTabForLoading(tab: PreviewTab, message: string): PreviewTab {
+  if (tab.status !== "loading") return tab;
+  if (tab.kind === "document") {
+    return tabFromResult(
+      {
+        status: "error",
+        requestedPath: tab.requestedPath,
+        canonicalPath: null,
+        displayName: tab.displayName,
+        code: "load_failed",
+        message,
+      },
+      tab.scrollTop,
+    );
+  }
+  if (tab.kind === "mermaid") {
+    return tabFromMermaidPreview(
+      {
+        status: "error",
+        requestedPath: tab.requestedPath,
+        canonicalPath: "",
+        displayName: tab.displayName,
+        source: "",
+        html: "",
+        sizeBytes: 0,
+        modifiedAtMs: 0,
+        code: "load_failed",
+        message,
+      },
+      tab.scrollTop,
+    );
+  }
+  return tabFromImagePreview(
+    {
+      status: "error",
+      requestedPath: tab.requestedPath,
+      canonicalPath: "",
+      displayName: tab.displayName,
+      path: "",
+      sizeBytes: 0,
+      modifiedAtMs: 0,
+      code: "load_failed",
+      message,
+    },
+    "",
+    tab.scrollTop,
+  );
+}
+
 export function addDocumentResults(
   state: AppState,
   results: DocumentLoadResult[],
@@ -273,6 +322,22 @@ export function upsertPreviewTab(state: AppState, nextTab: PreviewTab): AppState
     ...state,
     tabs,
     activeTabKey: nextTab.key,
+  });
+}
+
+export function replacePreviewTab(
+  state: AppState,
+  key: string,
+  nextTab: PreviewTab,
+): AppState {
+  if (!state.tabs.some((tab) => tab.kind !== "settings" && tab.key === key)) {
+    return state;
+  }
+  const wasActive = state.activeTabKey === key;
+  return deduplicatePreviewTabs({
+    ...state,
+    tabs: state.tabs.map((tab) => (tab.key === key ? nextTab : tab)),
+    activeTabKey: wasActive ? nextTab.key : state.activeTabKey,
   });
 }
 

@@ -8,18 +8,19 @@ use std::{
 };
 
 use document::{
-    check_document_revisions, export_html, export_svg, highlight_code_chunk, load_documents,
-    reload_document,
+    check_document_revisions, export_html, export_svg, highlight_code_chunk, reload_document,
 };
-use printing::{finish_print_export, print_export_html, start_print_export};
+use printing::{
+    finish_print_export, mark_print_export_ready, print_export_html, start_print_export,
+};
 use tauri::{
     AppHandle, Emitter, Manager, RunEvent, State,
     menu::{Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder},
 };
 use workspace::{
     WorkspaceRegistry, create_workspace_item, index_workspace_markdown, list_workspace_children,
-    load_preview_paths, load_workspace_image, load_workspace_mermaid, register_workspace_root,
-    rename_workspace_item, trash_workspace_item, unregister_workspace_root,
+    load_preview_paths, register_workspace_root, rename_workspace_item, trash_workspace_item,
+    unregister_workspace_root,
 };
 
 const OPEN_FILES_EVENT: &str = "markmaid://open-files";
@@ -442,13 +443,13 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            load_documents,
             reload_document,
             load_preview_paths,
             check_document_revisions,
             export_html,
             export_svg,
             print_export_html,
+            mark_print_export_ready,
             start_print_export,
             finish_print_export,
             highlight_code_chunk,
@@ -461,8 +462,6 @@ pub fn run() {
             create_workspace_item,
             rename_workspace_item,
             trash_workspace_item,
-            load_workspace_mermaid,
-            load_workspace_image,
             index_workspace_markdown
         ]);
 
