@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 
 use crate::document::{
-    ColorTheme, MermaidTheme, metadata_modified_at_ms, path_to_string, render_standalone_mermaid,
+    ColorTheme, DocumentLoadResult, MermaidTheme, authorize_assets, load_document_data,
+    metadata_modified_at_ms, path_to_string, render_standalone_mermaid,
 };
 
 const MARKDOWN_EXTENSIONS: &[&str] = &["md", "markdown", "mdown", "mkd"];
@@ -19,6 +20,12 @@ const MERMAID_EXTENSIONS: &[&str] = &["mmd"];
 const IMAGE_EXTENSIONS: &[&str] = &[
     "png", "jpg", "jpeg", "gif", "webp", "svg", "avif", "heic", "heif", "bmp", "tif", "tiff",
 ];
+const NOISE_DIRECTORY_NAMES: &[&str] =
+    &["node_modules", "dist", "build", ".venv", "pods", "target"];
+const MAX_VISIBILITY_SCAN_ENTRIES: usize = 2_000;
+const MAX_VISIBILITY_SCAN_DEPTH: usize = 32;
+const MAX_INDEX_DEPTH: usize = 12;
+const MAX_INDEXED_MARKDOWN_ENTRIES_PER_ROOT: usize = 10_000;
 
 #[derive(Default)]
 pub struct WorkspaceRegistry(Mutex<HashMap<String, PathBuf>>);
@@ -106,6 +113,26 @@ pub struct ImagePreview {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PreviewLoadResult {
+    Document {
+        result: DocumentLoadResult,
+    },
+    Mermaid {
+        result: MermaidPreview,
+    },
+    Image {
+        result: ImagePreview,
+    },
+    Unsupported {
+        requested_path: String,
+        display_name: String,
+        code: String,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceMarkdownEntry {
     pub root_id: String,
@@ -119,6 +146,7 @@ pub struct WorkspaceMarkdownEntry {
 pub struct WorkspaceMarkdownIndex {
     pub entries: Vec<WorkspaceMarkdownEntry>,
     pub unavailable_root_ids: Vec<String>,
+    pub truncated_root_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -159,13 +187,62 @@ pub fn unregister_workspace_root(
 }
 
 #[tauri::command]
-pub fn list_workspace_children(
+pub async fn list_workspace_children(
     registry: State<'_, WorkspaceRegistry>,
     root_id: String,
     relative_path: String,
 ) -> Result<Vec<WorkspaceEntry>, String> {
-    list_workspace_children_inner(&registry, &root_id, &relative_path)
-        .map_err(|error| error.to_string_error())
+    let root = resolve_root(&registry, &root_id).map_err(|error| error.to_string_error())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        list_workspace_children_at_root(&root, &root_id, &relative_path)
+            .map_err(|error| error.to_string_error())
+    })
+    .await
+    .map_err(|error| format!("Could not list workspace children: {error}"))?
+}
+
+#[tauri::command]
+pub fn load_preview_paths(
+    app: AppHandle,
+    registry: State<'_, WorkspaceRegistry>,
+    paths: Vec<String>,
+    mermaid_theme: MermaidTheme,
+    color_theme: ColorTheme,
+) -> Vec<PreviewLoadResult> {
+    let roots = registered_root_paths(&registry);
+    paths
+        .iter()
+        .map(|requested_path| {
+            let kind = classify_file(Path::new(requested_path));
+            match kind {
+                Some(WorkspaceEntryKind::Markdown) => PreviewLoadResult::Document {
+                    result: authorize_assets(
+                        &app,
+                        load_document_data(requested_path, mermaid_theme, color_theme),
+                        &roots,
+                    ),
+                },
+                Some(WorkspaceEntryKind::Mermaid) => PreviewLoadResult::Mermaid {
+                    result: load_direct_mermaid(requested_path, mermaid_theme, color_theme),
+                },
+                Some(WorkspaceEntryKind::Image) => PreviewLoadResult::Image {
+                    result: load_direct_image(&app, requested_path),
+                },
+                Some(WorkspaceEntryKind::Directory) => PreviewLoadResult::Unsupported {
+                    requested_path: requested_path.clone(),
+                    display_name: file_name(Path::new(requested_path)),
+                    code: "unsupported_type".to_string(),
+                    message: "Directories cannot be opened as previews.".to_string(),
+                },
+                None => PreviewLoadResult::Unsupported {
+                    requested_path: requested_path.clone(),
+                    display_name: file_name(Path::new(requested_path)),
+                    code: "unsupported_type".to_string(),
+                    message: "This file type is not supported by MarkMaid.".to_string(),
+                },
+            }
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -279,13 +356,22 @@ fn register_workspace_root_inner(
     Ok(root)
 }
 
+#[cfg(test)]
 fn list_workspace_children_inner(
     registry: &WorkspaceRegistry,
     root_id: &str,
     relative_path: &str,
 ) -> Result<Vec<WorkspaceEntry>, WorkspaceError> {
     let root = resolve_root(registry, root_id)?;
-    let directory = resolve_existing_path(&root, relative_path)?;
+    list_workspace_children_at_root(&root, root_id, relative_path)
+}
+
+fn list_workspace_children_at_root(
+    root: &Path,
+    root_id: &str,
+    relative_path: &str,
+) -> Result<Vec<WorkspaceEntry>, WorkspaceError> {
+    let directory = resolve_existing_path(root, relative_path)?;
     let metadata = fs::symlink_metadata(&directory).map_err(map_io_error)?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         return Err(WorkspaceError::new(
@@ -295,12 +381,13 @@ fn list_workspace_children_inner(
     }
 
     let mut entries = Vec::new();
+    let mut visibility_scan = VisibilityScanState::default();
     let read_dir = fs::read_dir(&directory).map_err(map_io_error)?;
     for item in read_dir {
         let item = item.map_err(map_io_error)?;
         let name = item.file_name();
         let name = name.to_string_lossy();
-        if name.starts_with('.') {
+        if name.starts_with('.') || is_noise_directory_name(&name) {
             continue;
         }
         let path = item.path();
@@ -312,7 +399,10 @@ fn list_workspace_children_inner(
         }
         let child_relative = join_relative(relative_path, &name);
         if meta.is_dir() {
-            if !directory_contains_visible_item(&path) {
+            if matches!(
+                directory_contains_visible_item(&path, &mut visibility_scan, 0),
+                VisibilityScan::Empty
+            ) {
                 continue;
             }
             entries.push(WorkspaceEntry {
@@ -588,6 +678,138 @@ fn load_workspace_image_inner(
     })
 }
 
+fn load_direct_mermaid(
+    requested_path: &str,
+    mermaid_theme: MermaidTheme,
+    color_theme: ColorTheme,
+) -> MermaidPreview {
+    let path = match resolve_direct_preview_path(requested_path, WorkspaceEntryKind::Mermaid) {
+        Ok(path) => path,
+        Err(error) => return mermaid_error(requested_path, error.code, error.message),
+    };
+    let meta = match fs::symlink_metadata(&path) {
+        Ok(meta) => meta,
+        Err(error) => {
+            let mapped = map_io_error(error);
+            return mermaid_error(requested_path, mapped.code, mapped.message);
+        }
+    };
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            let mapped = map_io_error(error);
+            return mermaid_error(requested_path, mapped.code, mapped.message);
+        }
+    };
+    let source = match String::from_utf8(bytes) {
+        Ok(source) => source,
+        Err(_) => {
+            return mermaid_error(
+                requested_path,
+                "invalid_utf8",
+                "The Mermaid file is not valid UTF-8.",
+            );
+        }
+    };
+    let html = render_standalone_mermaid(&source, &path, mermaid_theme, color_theme);
+    let canonical = path_to_string(&path);
+    MermaidPreview {
+        status: "ready".to_string(),
+        requested_path: requested_path.to_string(),
+        canonical_path: canonical,
+        display_name: file_name(&path),
+        source,
+        html,
+        size_bytes: meta.len(),
+        modified_at_ms: metadata_modified_at_ms(&meta),
+        code: None,
+        message: None,
+    }
+}
+
+fn load_direct_image(app: &AppHandle, requested_path: &str) -> ImagePreview {
+    let path = match resolve_direct_preview_path(requested_path, WorkspaceEntryKind::Image) {
+        Ok(path) => path,
+        Err(error) => return image_error(requested_path, error.code, error.message),
+    };
+    let meta = match fs::symlink_metadata(&path) {
+        Ok(meta) => meta,
+        Err(error) => {
+            let mapped = map_io_error(error);
+            return image_error(requested_path, mapped.code, mapped.message);
+        }
+    };
+    if app.asset_protocol_scope().allow_file(&path).is_err() {
+        return image_error(
+            requested_path,
+            "permission_denied",
+            "The image could not be authorized for preview.",
+        );
+    }
+    let canonical = path_to_string(&path);
+    ImagePreview {
+        status: "ready".to_string(),
+        requested_path: requested_path.to_string(),
+        canonical_path: canonical.clone(),
+        display_name: file_name(&path),
+        path: canonical,
+        size_bytes: meta.len(),
+        modified_at_ms: metadata_modified_at_ms(&meta),
+        code: None,
+        message: None,
+    }
+}
+
+fn resolve_direct_preview_path(
+    requested_path: &str,
+    expected_kind: WorkspaceEntryKind,
+) -> Result<PathBuf, WorkspaceError> {
+    let metadata = fs::symlink_metadata(requested_path).map_err(map_io_error)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(WorkspaceError::new(
+            "unsupported_type",
+            "Previews require a regular file.",
+        ));
+    }
+    let path = fs::canonicalize(requested_path).map_err(map_io_error)?;
+    if classify_file(&path) != Some(expected_kind) {
+        return Err(WorkspaceError::new(
+            "unsupported_type",
+            "The file extension is not supported for this preview.",
+        ));
+    }
+    Ok(path)
+}
+
+fn mermaid_error(requested_path: &str, code: &str, message: impl Into<String>) -> MermaidPreview {
+    MermaidPreview {
+        status: "error".to_string(),
+        requested_path: requested_path.to_string(),
+        canonical_path: requested_path.to_string(),
+        display_name: file_name(Path::new(requested_path)),
+        source: String::new(),
+        html: String::new(),
+        size_bytes: 0,
+        modified_at_ms: 0,
+        code: Some(code.to_string()),
+        message: Some(message.into()),
+    }
+}
+
+fn image_error(requested_path: &str, code: &str, message: impl Into<String>) -> ImagePreview {
+    ImagePreview {
+        status: "error".to_string(),
+        requested_path: requested_path.to_string(),
+        canonical_path: requested_path.to_string(),
+        display_name: file_name(Path::new(requested_path)),
+        path: String::new(),
+        size_bytes: 0,
+        modified_at_ms: 0,
+        code: Some(code.to_string()),
+        message: Some(message.into()),
+    }
+}
+
 fn move_to_trash(path: &Path) -> Result<(), WorkspaceError> {
     trash::delete(path).map_err(|error| {
         WorkspaceError::new(
@@ -608,11 +830,22 @@ fn snapshot_registered_roots(
         .collect()
 }
 
+pub(crate) fn registered_root_paths(registry: &WorkspaceRegistry) -> Vec<PathBuf> {
+    registry
+        .0
+        .lock()
+        .expect("workspace registry lock poisoned")
+        .values()
+        .cloned()
+        .collect()
+}
+
 fn index_workspace_markdown_inner(
     snapshots: Vec<(String, Option<PathBuf>)>,
 ) -> WorkspaceMarkdownIndex {
     let mut entries = Vec::new();
     let mut unavailable_root_ids = Vec::new();
+    let mut truncated_root_ids = Vec::new();
     let mut seen_paths = std::collections::HashSet::new();
 
     for (root_id, root_path) in snapshots {
@@ -637,9 +870,15 @@ fn index_workspace_markdown_inner(
         }
 
         let mut root_entries = Vec::new();
-        if let Err(_error) = collect_markdown_entries(&root, &root_id, "", &mut root_entries) {
+        let mut scan = IndexScanState::default();
+        if let Err(_error) =
+            collect_markdown_entries(&root, &root_id, "", &mut root_entries, &mut scan)
+        {
             unavailable_root_ids.push(root_id);
             continue;
+        }
+        if scan.truncated {
+            truncated_root_ids.push(root_id.clone());
         }
         for entry in root_entries {
             if seen_paths.insert(entry.canonical_path.clone()) {
@@ -661,11 +900,20 @@ fn index_workspace_markdown_inner(
     });
     unavailable_root_ids.sort();
     unavailable_root_ids.dedup();
+    truncated_root_ids.sort();
+    truncated_root_ids.dedup();
 
     WorkspaceMarkdownIndex {
         entries,
         unavailable_root_ids,
+        truncated_root_ids,
     }
+}
+
+#[derive(Default)]
+struct IndexScanState {
+    entries: usize,
+    truncated: bool,
 }
 
 fn collect_markdown_entries(
@@ -673,9 +921,10 @@ fn collect_markdown_entries(
     root_id: &str,
     relative_path: &str,
     entries: &mut Vec<WorkspaceMarkdownEntry>,
+    scan: &mut IndexScanState,
 ) -> Result<(), WorkspaceError> {
     let mut visited = std::collections::HashSet::new();
-    collect_markdown_entries_inner(root, root_id, relative_path, entries, &mut visited)
+    collect_markdown_entries_inner(root, root_id, relative_path, entries, &mut visited, scan, 0)
 }
 
 fn collect_markdown_entries_inner(
@@ -684,7 +933,13 @@ fn collect_markdown_entries_inner(
     relative_path: &str,
     entries: &mut Vec<WorkspaceMarkdownEntry>,
     visited: &mut std::collections::HashSet<PathBuf>,
+    scan: &mut IndexScanState,
+    depth: usize,
 ) -> Result<(), WorkspaceError> {
+    if scan.entries >= MAX_INDEXED_MARKDOWN_ENTRIES_PER_ROOT || depth > MAX_INDEX_DEPTH {
+        scan.truncated = true;
+        return Ok(());
+    }
     let directory = if relative_path.is_empty() {
         root.to_path_buf()
     } else {
@@ -702,11 +957,16 @@ fn collect_markdown_entries_inner(
     }
 
     let read_dir = fs::read_dir(&directory).map_err(map_io_error)?;
-    for item in read_dir {
-        let item = item.map_err(map_io_error)?;
+    let mut items = read_dir.filter_map(Result::ok).collect::<Vec<_>>();
+    items.sort_by_key(|item| item.file_name().to_string_lossy().to_ascii_lowercase());
+    for item in items {
+        if scan.entries >= MAX_INDEXED_MARKDOWN_ENTRIES_PER_ROOT {
+            scan.truncated = true;
+            break;
+        }
         let name = item.file_name();
         let name = name.to_string_lossy();
-        if name.starts_with('.') {
+        if name.starts_with('.') || is_noise_directory_name(&name) {
             continue;
         }
         let path = item.path();
@@ -724,8 +984,15 @@ fn collect_markdown_entries_inner(
             if ensure_inside_root(root, &canonical_child).is_err() {
                 continue;
             }
-            let _ =
-                collect_markdown_entries_inner(root, root_id, &child_relative, entries, visited);
+            let _ = collect_markdown_entries_inner(
+                root,
+                root_id,
+                &child_relative,
+                entries,
+                visited,
+                scan,
+                depth + 1,
+            );
             continue;
         }
         if !meta.is_file() {
@@ -746,6 +1013,7 @@ fn collect_markdown_entries_inner(
             relative_path: child_relative,
             name: name.into_owned(),
         });
+        scan.entries += 1;
     }
     Ok(())
 }
@@ -897,7 +1165,7 @@ fn normalize_rename_name(name: &str, kind: WorkspaceEntryKind) -> Result<String,
     ))
 }
 
-fn classify_file(path: &Path) -> Option<WorkspaceEntryKind> {
+pub(crate) fn classify_file(path: &Path) -> Option<WorkspaceEntryKind> {
     let extension = path.extension()?.to_str()?;
     if MARKDOWN_EXTENSIONS
         .iter()
@@ -920,14 +1188,51 @@ fn classify_file(path: &Path) -> Option<WorkspaceEntryKind> {
     None
 }
 
-fn directory_contains_visible_item(path: &Path) -> bool {
+fn is_noise_directory_name(name: &str) -> bool {
+    NOISE_DIRECTORY_NAMES
+        .iter()
+        .any(|noise| name.eq_ignore_ascii_case(noise))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VisibilityScan {
+    Visible,
+    Empty,
+    BudgetExhausted,
+}
+
+#[derive(Default)]
+struct VisibilityScanState {
+    entries: usize,
+    memo: HashMap<PathBuf, VisibilityScan>,
+}
+
+fn directory_contains_visible_item(
+    path: &Path,
+    state: &mut VisibilityScanState,
+    depth: usize,
+) -> VisibilityScan {
+    if let Some(result) = state.memo.get(path) {
+        return *result;
+    }
+    if state.entries >= MAX_VISIBILITY_SCAN_ENTRIES || depth >= MAX_VISIBILITY_SCAN_DEPTH {
+        return VisibilityScan::BudgetExhausted;
+    }
+
     let Ok(read_dir) = fs::read_dir(path) else {
-        return false;
+        state.memo.insert(path.to_path_buf(), VisibilityScan::Empty);
+        return VisibilityScan::Empty;
     };
+    let mut exhausted = false;
     for item in read_dir.flatten() {
+        state.entries += 1;
+        if state.entries > MAX_VISIBILITY_SCAN_ENTRIES {
+            exhausted = true;
+            break;
+        }
         let name = item.file_name();
         let name = name.to_string_lossy();
-        if name.starts_with('.') {
+        if name.starts_with('.') || is_noise_directory_name(&name) {
             continue;
         }
         let Ok(meta) = fs::symlink_metadata(item.path()) else {
@@ -936,14 +1241,32 @@ fn directory_contains_visible_item(path: &Path) -> bool {
         if meta.file_type().is_symlink() {
             continue;
         }
-        if meta.is_dir() && directory_contains_visible_item(&item.path()) {
-            return true;
+        if meta.is_dir() {
+            match directory_contains_visible_item(&item.path(), state, depth + 1) {
+                VisibilityScan::Visible => {
+                    state
+                        .memo
+                        .insert(path.to_path_buf(), VisibilityScan::Visible);
+                    return VisibilityScan::Visible;
+                }
+                VisibilityScan::BudgetExhausted => exhausted = true,
+                VisibilityScan::Empty => {}
+            }
         }
         if meta.is_file() && classify_file(&item.path()).is_some() {
-            return true;
+            state
+                .memo
+                .insert(path.to_path_buf(), VisibilityScan::Visible);
+            return VisibilityScan::Visible;
         }
     }
-    false
+    let result = if exhausted {
+        VisibilityScan::BudgetExhausted
+    } else {
+        VisibilityScan::Empty
+    };
+    state.memo.insert(path.to_path_buf(), result);
+    result
 }
 
 fn join_relative(parent: &str, name: &str) -> String {

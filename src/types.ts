@@ -72,8 +72,6 @@ export interface ReadyDocumentTab extends ReadyDocumentResult {
   key: string;
   scrollTop: number;
   reloadError: string | null;
-  history: DocumentNavigationEntry[];
-  historyIndex: number;
 }
 
 export interface ErrorDocumentTab extends ErrorDocumentResult {
@@ -234,6 +232,18 @@ export interface ImagePreview {
   message?: string;
 }
 
+export type PreviewLoadResult =
+  | { kind: "document"; result: DocumentLoadResult }
+  | { kind: "mermaid"; result: MermaidPreview }
+  | { kind: "image"; result: ImagePreview }
+  | {
+      kind: "unsupported";
+      requestedPath: string;
+      displayName: string;
+      code: string;
+      message: string;
+    };
+
 export interface WorkspaceMarkdownEntry {
   rootId: string;
   canonicalPath: string;
@@ -244,6 +254,7 @@ export interface WorkspaceMarkdownEntry {
 export interface WorkspaceMarkdownIndex {
   entries: WorkspaceMarkdownEntry[];
   unavailableRootIds: string[];
+  truncatedRootIds: string[];
 }
 
 export interface AppState {

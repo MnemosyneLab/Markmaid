@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
-import { openPath, openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
+import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { load, type Store } from "@tauri-apps/plugin-store";
 
 import {
@@ -37,7 +37,6 @@ import {
 } from "./search";
 import {
   activeTab,
-  addDocumentResults,
   addRecentDocuments,
   clampSidebarWidth,
   clearRecentDocuments,
@@ -50,15 +49,11 @@ import {
   loadingImageTab,
   loadingMermaidTab,
   loadingTab,
-  mermaidKey,
-  imageKey,
   moveDocumentVisit,
   moveTab,
   openSettings,
-  navigateDocument,
   previewPath,
   recordDocumentVisit,
-  recordDocumentNavigation,
   reopenClosedTab,
   replaceDocumentResult,
   setPreferences,
@@ -79,6 +74,15 @@ import {
   shouldSuppressTabClick,
 } from "./ui-logic";
 import {
+  classifyOpenablePath,
+  displayNameForPath,
+  IMAGE_EXTENSIONS,
+  invokeFailureMessage,
+  MARKDOWN_EXTENSIONS,
+  MERMAID_EXTENSIONS,
+  unsupportedNotice,
+} from "./preview-open";
+import {
   applyWorkspaceRename,
   applyWorkspaceTrash,
   expandedPathsForRoot,
@@ -97,16 +101,14 @@ import type {
   DocumentLoadResult,
   DocumentTab,
   ExportConfig,
-  ImagePreview,
   ImageTab,
-  LoadingImageTab,
-  LoadingMermaidTab,
   MermaidDarkTheme,
   MermaidLightTheme,
   MermaidPreview,
   MermaidTab,
   MermaidTheme,
   PageWidth,
+  PreviewLoadResult,
   PreviewTab,
   ReadyDocumentTab,
   ReadyMermaidTab,
@@ -139,7 +141,6 @@ const MENU_NAVIGATE_FORWARD_EVENT = "markmaid://menu-navigate-forward";
 const MENU_CLEAR_RECENT_EVENT = "markmaid://menu-clear-recent";
 const PRINT_EXPORT_ERROR_EVENT = "markmaid://print-export-error";
 const SESSION_KEY = "session";
-const MARKDOWN_EXTENSIONS = new Set(["md", "markdown", "mdown", "mkd"]);
 const LIGHT_MERMAID_THEMES: ReadonlyArray<MermaidLightTheme> = [
   "default",
   "base",
@@ -449,14 +450,18 @@ async function registerNativeListeners(): Promise<void> {
 
 async function chooseDocuments(): Promise<void> {
   const selection = await open({
-    title: "Open Markdown Documents",
+    title: "Open Preview Files",
     multiple: true,
     directory: false,
     fileAccessMode: "scoped",
     filters: [
       {
-        name: "Markdown",
-        extensions: [...MARKDOWN_EXTENSIONS],
+        name: "Preview files",
+        extensions: [
+          ...MARKDOWN_EXTENSIONS,
+          ...MERMAID_EXTENSIONS,
+          ...IMAGE_EXTENSIONS,
+        ],
       },
     ],
   });
@@ -469,35 +474,55 @@ async function chooseDocuments(): Promise<void> {
 async function openDocumentPaths(
   paths: string[],
   anchor: string | null = null,
-  sourceKey: string | null = null,
+  _sourceKey: string | null = null,
   recordVisit = true,
 ): Promise<void> {
-  const uniquePaths = [...new Set(paths)].filter(isMarkdownPath);
-  if (uniquePaths.length === 0) return;
+  const uniquePaths = [...new Set(paths)];
+  const unsupportedPaths = uniquePaths.filter(
+    (path) => classifyOpenablePath(path) === null,
+  );
+  const openablePaths = uniquePaths.filter(
+    (path) => classifyOpenablePath(path) !== null,
+  );
+  if (unsupportedPaths.length > 0) {
+    workspaceNotice = unsupportedNotice(unsupportedPaths);
+  }
+  if (openablePaths.length === 0) {
+    render();
+    return;
+  }
 
   captureActiveScroll();
   const existingPaths: string[] = [];
-  for (const path of uniquePaths) {
+  for (const path of openablePaths) {
+    const kind = classifyOpenablePath(path);
+    if (!kind) continue;
     const existing = state.tabs.find(
-      (tab): tab is DocumentTab =>
-        tab.kind === "document" &&
-        (tab.requestedPath === path ||
-          (tab.status !== "loading" && tab.canonicalPath === path)),
+      (tab): tab is PreviewTab =>
+        tab.kind === kind &&
+        previewPath(tab) === path,
     );
     if (existing) {
       state = { ...state, activeTabKey: existing.key };
       if (anchor) pendingAnchors.set(existing.key, anchor);
-      existingPaths.push(
-        existing.status === "ready"
-          ? existing.canonicalPath
-          : existing.status === "error"
-            ? (existing.canonicalPath ?? existing.requestedPath)
-            : existing.requestedPath,
-      );
+      if (existing.kind === "document") {
+        existingPaths.push(
+          existing.status === "ready"
+            ? existing.canonicalPath
+            : existing.status === "error"
+              ? (existing.canonicalPath ?? existing.requestedPath)
+              : existing.requestedPath,
+        );
+      }
       continue;
     }
-    const placeholder = loadingTab(path);
-    if (anchor) pendingAnchors.set(placeholder.key, anchor);
+    const placeholder =
+      kind === "document"
+        ? loadingTab(path)
+        : kind === "mermaid"
+          ? loadingMermaidTab(path)
+          : loadingImageTab(path);
+    if (anchor && kind === "document") pendingAnchors.set(placeholder.key, anchor);
     state = {
       ...state,
       tabs: [...state.tabs, placeholder],
@@ -510,50 +535,130 @@ async function openDocumentPaths(
   }
   render();
 
-  const results = await invoke<DocumentLoadResult[]>("load_documents", {
-    paths: uniquePaths,
-    mermaidTheme: activeMermaidTheme(),
-    colorTheme: state.colorTheme,
-  });
-  state = addDocumentResults(state, results);
-  for (const result of results) {
-    if (result.status !== "ready") continue;
-    const requestedKey = documentKey(result.requestedPath);
-    const anchorForRequest = pendingAnchors.get(requestedKey);
-    if (!anchorForRequest) continue;
-    pendingAnchors.delete(requestedKey);
-    pendingAnchors.set(documentKey(result.canonicalPath), anchorForRequest);
-  }
-  if (sourceKey) {
-    const target = results.find(
-      (result): result is Extract<DocumentLoadResult, { status: "ready" }> =>
-        result.status === "ready",
-    );
-    if (target) {
-      state = navigateDocument(
-        state,
-        sourceKey,
-        {
-          key: documentKey(target.canonicalPath),
-          entry: {
-            path: target.canonicalPath,
-            scrollTop: 0,
-            ...(anchor ? { fragment: anchor } : {}),
-          },
-        },
-      );
+  try {
+    const results = await invoke<PreviewLoadResult[]>("load_preview_paths", {
+      paths: openablePaths,
+      mermaidTheme: activeMermaidTheme(),
+      colorTheme: state.colorTheme,
+    });
+    applyPreviewLoadResults(results);
+  } catch (error) {
+    const message = invokeFailureMessage(error);
+    for (const path of openablePaths) {
+      const loading = findLoadingPreview(path);
+      if (loading) state = upsertPreviewTab(state, errorTabForLoading(loading, message));
     }
   }
-  state = addRecentDocuments(
-    state,
-    results.flatMap((result) =>
-      result.status === "ready" ? [result.canonicalPath] : [],
-    ),
-  );
   if (recordVisit) recordActiveDocumentVisit(anchor);
   render();
   schedulePersist();
   void syncRecentDocuments();
+}
+
+function findLoadingPreview(path: string): PreviewTab | null {
+  const kind = classifyOpenablePath(path);
+  if (!kind) return null;
+  return (
+    state.tabs.find(
+      (tab): tab is PreviewTab => {
+        if (tab.kind !== kind || tab.status !== "loading") return false;
+        return tab.requestedPath === path;
+      },
+    ) ?? null
+  );
+}
+
+function errorTabForLoading(tab: PreviewTab, message: string): PreviewTab {
+  if (tab.status !== "loading") return tab;
+  if (tab.kind === "document") {
+    return tabFromResult(
+      {
+        status: "error",
+        requestedPath: tab.requestedPath,
+        canonicalPath: null,
+        displayName: tab.displayName,
+        code: "load_failed",
+        message,
+      },
+      tab.scrollTop,
+    );
+  }
+  if (tab.kind === "mermaid") {
+    return tabFromMermaidPreview(
+      {
+        status: "error",
+        requestedPath: tab.requestedPath,
+        canonicalPath: "",
+        displayName: tab.displayName,
+        source: "",
+        html: "",
+        sizeBytes: 0,
+        modifiedAtMs: 0,
+        code: "load_failed",
+        message,
+      },
+      tab.scrollTop,
+    );
+  }
+  return tabFromImagePreview(
+    {
+      status: "error",
+      requestedPath: tab.requestedPath,
+      canonicalPath: "",
+      displayName: tab.displayName,
+      path: "",
+      sizeBytes: 0,
+      modifiedAtMs: 0,
+      code: "load_failed",
+      message,
+    },
+    "",
+    tab.scrollTop,
+  );
+}
+
+function applyPreviewLoadResults(results: PreviewLoadResult[]): void {
+  for (const result of results) {
+    if (result.kind === "unsupported") {
+      workspaceNotice = result.message;
+      continue;
+    }
+    const requestedPath =
+      result.kind === "document" || result.kind === "mermaid" || result.kind === "image"
+        ? result.result.requestedPath
+        : "";
+    const loading = findLoadingPreview(requestedPath);
+    if (!loading) continue;
+
+    if (result.kind === "document") {
+      state = replaceDocumentResult(state, loading.key, result.result);
+      if (result.result.status === "ready") {
+        const anchorForRequest = pendingAnchors.get(loading.key);
+        if (anchorForRequest && loading.key !== documentKey(result.result.canonicalPath)) {
+          pendingAnchors.delete(loading.key);
+          pendingAnchors.set(documentKey(result.result.canonicalPath), anchorForRequest);
+        }
+        state = addRecentDocuments(state, [result.result.canonicalPath]);
+      }
+      continue;
+    }
+
+    const nextTab =
+      result.kind === "mermaid"
+        ? tabFromMermaidPreview(result.result, loading.scrollTop)
+        : tabFromImagePreview(
+            result.result,
+            result.result.status === "ready" ? convertFileSrc(result.result.path) : "",
+            loading.scrollTop,
+          );
+    state = upsertPreviewTab(state, nextTab);
+    if (nextTab.key !== loading.key) {
+      state = {
+        ...state,
+        tabs: state.tabs.filter((tab) => tab.key !== loading.key),
+      };
+    }
+  }
 }
 
 async function reloadActiveDocument(): Promise<void> {
@@ -579,11 +684,49 @@ async function reloadActiveDocument(): Promise<void> {
       : current.status === "error"
         ? (current.canonicalPath ?? current.requestedPath)
         : current.requestedPath;
-  const result = await invoke<DocumentLoadResult>("reload_document", {
-    path,
-    mermaidTheme: activeMermaidTheme(),
-    colorTheme: state.colorTheme,
-  });
+  let result: DocumentLoadResult;
+  try {
+    result = await invoke<DocumentLoadResult>("reload_document", {
+      path,
+      mermaidTheme: activeMermaidTheme(),
+      colorTheme: state.colorTheme,
+    });
+  } catch (error) {
+    if (!state.tabs.some((tab) => tab.key === current.key)) return;
+    const message = invokeFailureMessage(error);
+    if (current.status === "ready") {
+      state = {
+        ...state,
+        tabs: state.tabs.map((tab) =>
+          tab.key === current.key ? { ...current, reloadError: message } : tab,
+        ),
+      };
+    } else {
+      const replacement = tabFromResult(
+        {
+          status: "error",
+          requestedPath: path,
+          canonicalPath: null,
+          displayName: current.displayName,
+          code: "reload_failed",
+          message,
+        },
+        current.scrollTop,
+      );
+      state = {
+        ...state,
+        tabs: state.tabs.map((tab) =>
+          tab.key === current.key ? replacement : tab,
+        ),
+        activeTabKey: replacement.key,
+      };
+    }
+    render();
+    schedulePersist();
+    return;
+  }
+
+  if (!state.tabs.some((tab) => tab.key === current.key)) return;
 
   if (current.status === "ready" && result.status === "error") {
     state = {
@@ -742,130 +885,41 @@ async function ensurePreviewLoaded(key: string | null): Promise<void> {
 
   pendingDocumentLoads.add(key);
   try {
-    if (tab.kind === "document") {
-      const [result] = await invoke<DocumentLoadResult[]>("load_documents", {
-        paths: [tab.requestedPath],
-        mermaidTheme: activeMermaidTheme(),
-        colorTheme: state.colorTheme,
-      });
-      const latest = state.tabs.find(
-        (candidate): candidate is DocumentTab =>
-          candidate.kind === "document" && candidate.key === key,
-      );
-      if (!result || !latest || latest.status !== "loading") return;
-      state = replaceDocumentResult(state, key, result);
-      if (result.status === "ready") {
-        state = addRecentDocuments(state, [result.canonicalPath]);
-        await syncRecentDocuments();
-      }
-    } else if (tab.kind === "mermaid") {
-      await loadMermaidPreviewTab(tab);
-    } else {
-      await loadImagePreviewTab(tab);
+    const [result] = await invoke<PreviewLoadResult[]>("load_preview_paths", {
+      paths: [previewPath(tab)],
+      mermaidTheme: activeMermaidTheme(),
+      colorTheme: state.colorTheme,
+    });
+    const latest = state.tabs.find((candidate) => candidate.key === key);
+    if (
+      !result ||
+      !latest ||
+      latest.kind === "settings" ||
+      latest.status !== "loading"
+    ) {
+      return;
     }
+    applyPreviewLoadResults([result]);
+    render();
+    schedulePersist();
+  } catch (error) {
+    const latest = state.tabs.find((candidate) => candidate.key === key);
+    if (
+      !latest ||
+      latest.kind === "settings" ||
+      latest.status !== "loading"
+    ) {
+      return;
+    }
+    state = upsertPreviewTab(
+      state,
+      errorTabForLoading(latest, invokeFailureMessage(error)),
+    );
     render();
     schedulePersist();
   } finally {
     pendingDocumentLoads.delete(key);
   }
-}
-
-async function loadMermaidPreviewTab(tab: MermaidTab & { status: "loading" }): Promise<void> {
-  const rootMatch = findWorkspaceRootForPath(tab.requestedPath);
-  if (!rootMatch) {
-    state = upsertPreviewTab(state, {
-      kind: "mermaid",
-      key: tab.key,
-      status: "error",
-      requestedPath: tab.requestedPath,
-      canonicalPath: null,
-      displayName: tab.displayName,
-      code: "outside_root",
-      message: "Open Mermaid files from a pinned workspace folder.",
-      scrollTop: tab.scrollTop,
-    });
-    return;
-  }
-  try {
-    const preview = await invoke<MermaidPreview>("load_workspace_mermaid", {
-      rootId: rootMatch.root.id,
-      relativePath: rootMatch.relativePath,
-      mermaidTheme: activeMermaidTheme(),
-      colorTheme: state.colorTheme,
-    });
-    if (!isCurrentLoadingPreview(tab)) return;
-    state = upsertPreviewTab(
-      state,
-      tabFromMermaidPreview(preview, tab.scrollTop),
-    );
-  } catch (error) {
-    if (!isCurrentLoadingPreview(tab)) return;
-    state = upsertPreviewTab(state, {
-      kind: "mermaid",
-      key: tab.key,
-      status: "error",
-      requestedPath: tab.requestedPath,
-      canonicalPath: null,
-      displayName: tab.displayName,
-      code: String(error).split(":", 1)[0] || "preview_failed",
-      message: workspaceInvokeError(error),
-      scrollTop: tab.scrollTop,
-    });
-  }
-}
-
-async function loadImagePreviewTab(tab: ImageTab & { status: "loading" }): Promise<void> {
-  const rootMatch = findWorkspaceRootForPath(tab.requestedPath);
-  if (!rootMatch) {
-    state = upsertPreviewTab(state, {
-      kind: "image",
-      key: tab.key,
-      status: "error",
-      requestedPath: tab.requestedPath,
-      canonicalPath: null,
-      displayName: tab.displayName,
-      code: "outside_root",
-      message: "Open images from a pinned workspace folder.",
-      scrollTop: tab.scrollTop,
-    });
-    return;
-  }
-  try {
-    const preview = await invoke<ImagePreview>("load_workspace_image", {
-      rootId: rootMatch.root.id,
-      relativePath: rootMatch.relativePath,
-    });
-    if (!isCurrentLoadingPreview(tab)) return;
-    state = upsertPreviewTab(
-      state,
-      tabFromImagePreview(preview, convertFileSrc(preview.path), tab.scrollTop),
-    );
-  } catch (error) {
-    if (!isCurrentLoadingPreview(tab)) return;
-    state = upsertPreviewTab(state, {
-      kind: "image",
-      key: tab.key,
-      status: "error",
-      requestedPath: tab.requestedPath,
-      canonicalPath: null,
-      displayName: tab.displayName,
-      code: String(error).split(":", 1)[0] || "preview_failed",
-      message: workspaceInvokeError(error),
-      scrollTop: tab.scrollTop,
-    });
-  }
-}
-
-function isCurrentLoadingPreview(
-  expected: LoadingMermaidTab | LoadingImageTab,
-): boolean {
-  return state.tabs.some(
-    (candidate) =>
-      candidate.kind === expected.kind &&
-      candidate.key === expected.key &&
-      candidate.status === "loading" &&
-      candidate.requestedPath === expected.requestedPath,
-  );
 }
 
 function findWorkspaceRootForPath(
@@ -1117,6 +1171,11 @@ function renderQuickSwitcherStatus(built: ReturnType<typeof quickSwitcherBuild>)
     quickSwitcher.index.unavailableRootIds.length > 0
   ) {
     messages.push("Some pinned folders were unavailable");
+  } else if (
+    quickSwitcher.index &&
+    quickSwitcher.index.truncatedRootIds.length > 0
+  ) {
+    messages.push("Some pinned folders are too large to index completely");
   } else if (
     !quickSwitcher.indexing &&
     state.workspaceRoots.length > 0 &&
@@ -1417,7 +1476,11 @@ async function refreshWorkspaceMarkdownIndex(requestId: number): Promise<void> {
   if (state.workspaceRoots.length === 0) {
     if (requestId !== quickSwitcher.indexRequestId) return;
     quickSwitcher.indexing = false;
-    quickSwitcher.index = { entries: [], unavailableRootIds: [] };
+    quickSwitcher.index = {
+      entries: [],
+      unavailableRootIds: [],
+      truncatedRootIds: [],
+    };
     quickSwitcher.indexError = null;
     if (quickSwitcher.visible) updateQuickSwitcherResults();
     return;
@@ -1435,7 +1498,11 @@ async function refreshWorkspaceMarkdownIndex(requestId: number): Promise<void> {
   } catch (error) {
     if (requestId !== quickSwitcher.indexRequestId || !quickSwitcher.visible) return;
     quickSwitcher.indexing = false;
-    quickSwitcher.index = { entries: [], unavailableRootIds: [] };
+    quickSwitcher.index = {
+      entries: [],
+      unavailableRootIds: [],
+      truncatedRootIds: [],
+    };
     quickSwitcher.indexError =
       error instanceof Error
         ? `Pinned folder search unavailable: ${error.message}`
@@ -1884,22 +1951,8 @@ async function handleWorkspaceActivate(node: HTMLElement): Promise<void> {
     await toggleWorkspaceNode(rootId, relativePath);
     return;
   }
-  if (kind === "markdown") {
+  if (kind === "markdown" || kind === "mermaid" || kind === "image") {
     await openDocumentPaths([canonicalPath]);
-    return;
-  }
-  if (kind === "mermaid") {
-    state = upsertPreviewTab(state, loadingMermaidTab(canonicalPath));
-    render();
-    schedulePersist();
-    await ensurePreviewLoaded(mermaidKey(canonicalPath));
-    return;
-  }
-  if (kind === "image") {
-    state = upsertPreviewTab(state, loadingImageTab(canonicalPath));
-    render();
-    schedulePersist();
-    await ensurePreviewLoaded(imageKey(canonicalPath));
   }
 }
 
@@ -2009,16 +2062,8 @@ async function runWorkspaceAction(
 ): Promise<void> {
   switch (action) {
     case "open":
-      if (kind === "markdown") await openDocumentPaths([canonicalPath]);
-      if (kind === "mermaid") {
-        state = upsertPreviewTab(state, loadingMermaidTab(canonicalPath));
-        render();
-        await ensurePreviewLoaded(mermaidKey(canonicalPath));
-      }
-      if (kind === "image") {
-        state = upsertPreviewTab(state, loadingImageTab(canonicalPath));
-        render();
-        await ensurePreviewLoaded(imageKey(canonicalPath));
+      if (kind === "markdown" || kind === "mermaid" || kind === "image") {
+        await openDocumentPaths([canonicalPath]);
       }
       break;
     case "new-markdown":
@@ -3396,11 +3441,6 @@ async function handleDocumentLink(
     if (!scrollToAnchor(article, fragment)) return;
     const scrollTop =
       root.querySelector<HTMLElement>(".document-scroll")?.scrollTop ?? 0;
-    state = recordDocumentNavigation(state, tab.key, {
-      path: tab.canonicalPath,
-      scrollTop,
-      fragment,
-    });
     recordActiveDocumentVisit(fragment, scrollTop);
     schedulePersist();
     return;
@@ -3422,10 +3462,11 @@ async function handleDocumentLink(
   const [pathPart, fragment = ""] = href.split("#", 2);
   const path = resolveLocalPath(tab.canonicalPath, pathPart);
   if (!path) return;
-  if (isMarkdownPath(path)) {
+  if (classifyOpenablePath(path)) {
     await openDocumentPaths([path], decodeFragment(fragment), tab.key);
   } else {
-    await openPath(path);
+    workspaceNotice = `Cannot open ${displayNameForPath(path)}: unsupported file type.`;
+    render();
   }
 }
 
@@ -3930,12 +3971,6 @@ function decodeFragment(fragment: string): string {
   } catch {
     return fragment;
   }
-}
-
-function isMarkdownPath(path: string): boolean {
-  const cleanPath = path.split(/[?#]/, 1)[0];
-  const extension = cleanPath.split(".").at(-1)?.toLowerCase() ?? "";
-  return MARKDOWN_EXTENSIONS.has(extension);
 }
 
 function tabLabel(tab: AppTab): string {

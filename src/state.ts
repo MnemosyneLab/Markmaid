@@ -131,8 +131,6 @@ export function tabFromResult(
       key: documentKey(result.canonicalPath),
       scrollTop,
       reloadError: null,
-      history: [{ path: result.canonicalPath, scrollTop }],
-      historyIndex: 0,
     };
   }
 
@@ -234,20 +232,6 @@ export function addDocumentResults(
       tabs[targetIndex] = {
         ...nextTab,
         scrollTop: existing.scrollTop,
-        ...(existing.status === "ready" && nextTab.status === "ready"
-          ? {
-              history: normalizeDocumentHistory(
-                existing.history,
-                existing.historyIndex,
-                nextTab.canonicalPath,
-                existing.scrollTop,
-              ),
-              historyIndex: Math.min(
-                existing.historyIndex,
-                existing.history.length - 1,
-              ),
-            }
-          : {}),
       };
     } else {
       tabs.push(nextTab);
@@ -327,27 +311,11 @@ export function replaceDocumentResult(
   );
   if (!current) return state;
   const replacement = tabFromResult(result, current.scrollTop);
-  const nextTab =
-    current.status === "ready" && replacement.status === "ready"
-      ? {
-          ...replacement,
-          history: normalizeDocumentHistory(
-            current.history,
-            current.historyIndex,
-            replacement.canonicalPath,
-            current.scrollTop,
-          ),
-          historyIndex: Math.min(
-            current.historyIndex,
-            current.history.length - 1,
-          ),
-        }
-      : replacement;
   return deduplicatePreviewTabs({
     ...state,
-    tabs: state.tabs.map((tab) => (tab.key === key ? nextTab : tab)),
+    tabs: state.tabs.map((tab) => (tab.key === key ? replacement : tab)),
     activeTabKey:
-      state.activeTabKey === key ? nextTab.key : state.activeTabKey,
+      state.activeTabKey === key ? replacement.key : state.activeTabKey,
   });
 }
 
@@ -543,45 +511,10 @@ export function updateScroll(
     ...state,
     tabs: state.tabs.map((tab) =>
       tab.kind !== "settings" && tab.key === key
-        ? updateTabScroll(tab, scrollTop)
+        ? { ...tab, scrollTop }
         : tab,
     ),
   };
-}
-
-export function recordDocumentNavigation(
-  state: AppState,
-  key: string,
-  entry: DocumentNavigationEntry,
-): AppState {
-  const tab = readyDocumentTabForKey(state, key);
-  if (!tab) return state;
-
-  const history = [...tab.history.slice(0, tab.historyIndex + 1), entry].slice(
-    -MAX_DOCUMENT_NAVIGATION_HISTORY,
-  );
-  return replaceReadyDocumentTab(state, key, {
-    ...tab,
-    history,
-    historyIndex: history.length - 1,
-  });
-}
-
-export function moveDocumentNavigation(
-  state: AppState,
-  key: string,
-  direction: 1 | -1,
-): AppState {
-  const tab = readyDocumentTabForKey(state, key);
-  if (!tab) return state;
-  const historyIndex = tab.historyIndex + direction;
-  if (historyIndex < 0 || historyIndex >= tab.history.length) return state;
-  const entry = tab.history[historyIndex];
-  return replaceReadyDocumentTab(state, key, {
-    ...tab,
-    historyIndex,
-    scrollTop: entry ? entry.scrollTop : tab.scrollTop,
-  });
 }
 
 export function recordDocumentVisit(
@@ -641,29 +574,6 @@ export function moveDocumentVisit(
   return { ...state, documentVisitHistoryIndex };
 }
 
-export function navigateDocument(
-  state: AppState,
-  sourceKey: string,
-  navigation: { key: string; entry: DocumentNavigationEntry },
-): AppState {
-  const source = readyDocumentTabForKey(state, sourceKey);
-  const destination = readyDocumentTabForKey(state, navigation.key);
-  if (!source || !destination) return state;
-
-  const current = source.history[source.historyIndex];
-  if (!current) return state;
-  const sourceHistory = source.history.slice(0, source.historyIndex + 1);
-  const history = [
-    ...sourceHistory.slice(0, -1),
-    { ...current, scrollTop: source.scrollTop },
-    navigation.entry,
-  ].slice(-MAX_DOCUMENT_NAVIGATION_HISTORY);
-  return replaceReadyDocumentTab(state, navigation.key, {
-    ...destination,
-    history,
-    historyIndex: history.length - 1,
-  });
-}
 
 export function setPreferences(
   state: AppState,
@@ -836,48 +746,6 @@ export function readyDocumentTabForKey(
       candidate.key === key,
   );
   return tab ?? null;
-}
-
-function replaceReadyDocumentTab(
-  state: AppState,
-  key: string,
-  replacement: ReadyDocumentTab,
-): AppState {
-  return {
-    ...state,
-    tabs: state.tabs.map((tab) => (tab.key === key ? replacement : tab)),
-  };
-}
-
-function normalizeDocumentHistory(
-  history: DocumentNavigationEntry[],
-  historyIndex: number,
-  canonicalPath: string,
-  scrollTop: number,
-): DocumentNavigationEntry[] {
-  const current = history[historyIndex];
-  if (!current) return [{ path: canonicalPath, scrollTop }];
-  return history.map((entry, index) =>
-    index === historyIndex ? { ...entry, path: canonicalPath } : entry,
-  );
-}
-
-function updateTabScroll(
-  tab: Exclude<AppTab, SettingsTab>,
-  scrollTop: number,
-): Exclude<AppTab, SettingsTab> {
-  if (tab.kind !== "document" || tab.status !== "ready") {
-    return { ...tab, scrollTop };
-  }
-  const current = tab.history[tab.historyIndex];
-  if (!current) return { ...tab, scrollTop };
-  return {
-    ...tab,
-    scrollTop,
-    history: tab.history.map((entry, index) =>
-      index === tab.historyIndex ? { ...entry, scrollTop } : entry,
-    ),
-  };
 }
 
 function closedTabFromPreview(tab: PreviewTab, index: number): ClosedTab {

@@ -18,10 +18,15 @@ use comrak::{
 use merman::{MermaidConfig, render::HeadlessRenderer};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, State};
 use url::Url;
 
+use crate::workspace::{WorkspaceRegistry, registered_root_paths};
+
 const MARKDOWN_EXTENSIONS: &[&str] = &["md", "markdown", "mdown", "mkd"];
+const IMAGE_EXTENSIONS: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "webp", "svg", "avif", "heic", "heif", "bmp", "tif", "tiff",
+];
 const MERMAID_PLACEHOLDER_LANGUAGE: &str = "markmaid-mermaid-placeholder";
 const LONG_CODE_PLACEHOLDER_LANGUAGE: &str = "markmaid-long-code-placeholder";
 const INITIAL_CODE_LINES: usize = 200;
@@ -366,7 +371,7 @@ impl MermaidTheme {
     }
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ImageAsset {
     pub token: String,
@@ -374,7 +379,7 @@ pub struct ImageAsset {
     pub path: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum DocumentLoadResult {
     #[serde(rename_all = "camelCase")]
@@ -399,7 +404,7 @@ pub enum DocumentLoadResult {
 }
 
 impl DocumentLoadResult {
-    fn error(
+    pub(crate) fn error(
         requested_path: &str,
         canonical_path: Option<&Path>,
         code: &str,
@@ -541,24 +546,38 @@ impl CodefenceRendererAdapter for LongCodeRenderer<'_> {
 #[tauri::command]
 pub fn load_documents(
     app: AppHandle,
+    registry: State<'_, WorkspaceRegistry>,
     paths: Vec<String>,
     mermaid_theme: MermaidTheme,
     color_theme: ColorTheme,
 ) -> Vec<DocumentLoadResult> {
+    let roots = registered_root_paths(&registry);
     paths
         .iter()
-        .map(|path| authorize_assets(&app, load_document_data(path, mermaid_theme, color_theme)))
+        .map(|path| {
+            authorize_assets(
+                &app,
+                load_document_data(path, mermaid_theme, color_theme),
+                &roots,
+            )
+        })
         .collect()
 }
 
 #[tauri::command]
 pub fn reload_document(
     app: AppHandle,
+    registry: State<'_, WorkspaceRegistry>,
     path: String,
     mermaid_theme: MermaidTheme,
     color_theme: ColorTheme,
 ) -> DocumentLoadResult {
-    authorize_assets(&app, load_document_data(&path, mermaid_theme, color_theme))
+    let roots = registered_root_paths(&registry);
+    authorize_assets(
+        &app,
+        load_document_data(&path, mermaid_theme, color_theme),
+        &roots,
+    )
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -691,14 +710,49 @@ pub fn is_markdown_path(path: &Path) -> bool {
         })
 }
 
-fn authorize_assets(app: &AppHandle, mut result: DocumentLoadResult) -> DocumentLoadResult {
-    if let DocumentLoadResult::Ready { image_assets, .. } = &mut result {
+fn is_supported_image_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            IMAGE_EXTENSIONS
+                .iter()
+                .any(|supported| extension.eq_ignore_ascii_case(supported))
+        })
+}
+
+pub(crate) fn is_allowed_asset(document_path: &Path, asset_path: &Path, roots: &[PathBuf]) -> bool {
+    let document_directory = document_path.parent().unwrap_or(document_path);
+    if asset_path.starts_with(document_directory) {
+        return true;
+    }
+
+    roots
+        .iter()
+        .any(|root| document_path.starts_with(root) && asset_path.starts_with(root))
+}
+
+pub(crate) fn authorize_assets(
+    app: &AppHandle,
+    mut result: DocumentLoadResult,
+    roots: &[PathBuf],
+) -> DocumentLoadResult {
+    if let DocumentLoadResult::Ready {
+        canonical_path,
+        image_assets,
+        ..
+    } = &mut result
+    {
+        let document_path = Path::new(canonical_path);
         let scope = app.asset_protocol_scope();
         for asset in image_assets {
             let Some(path) = asset.path.as_ref() else {
                 continue;
             };
-            if scope.allow_file(path).is_err() {
+            let asset_path = Path::new(path);
+            if !is_supported_image_path(asset_path)
+                || !is_allowed_asset(document_path, asset_path, roots)
+                || scope.allow_file(path).is_err()
+            {
                 asset.path = None;
             }
         }
@@ -706,11 +760,22 @@ fn authorize_assets(app: &AppHandle, mut result: DocumentLoadResult) -> Document
     result
 }
 
-fn load_document_data(
+pub(crate) fn load_document_data(
     requested_path: &str,
     mermaid_theme: MermaidTheme,
     color_theme: ColorTheme,
 ) -> DocumentLoadResult {
+    match fs::symlink_metadata(requested_path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return DocumentLoadResult::error(
+                requested_path,
+                None,
+                "unsupported_type",
+                "Symbolic links are not supported as preview files.",
+            );
+        }
+        Ok(_) | Err(_) => {}
+    }
     let canonical_path = match fs::canonicalize(requested_path) {
         Ok(path) => path,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {

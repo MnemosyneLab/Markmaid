@@ -41,8 +41,6 @@ function readyTab(path = "/docs/test.md"): ReadyDocumentTab {
     imageAssets: [],
     scrollTop: 0,
     reloadError: null,
-    history: [{ path, scrollTop: 0 }],
-    historyIndex: 0,
   };
 }
 

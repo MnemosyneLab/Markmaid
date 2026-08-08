@@ -14,19 +14,15 @@ import {
   loadingImageTab,
   loadingMermaidTab,
   loadingTab,
-  moveDocumentNavigation,
   moveDocumentVisit,
   moveTab,
-  navigateDocument,
   openSettings,
-  recordDocumentNavigation,
   recordDocumentVisit,
   reopenClosedTab,
   replaceDocumentResult,
   rewritePreviewPaths,
   setPreferences,
   toPersistedSession,
-  updateScroll,
   updateDocumentVisit,
 } from "./state";
 import type { AppState, DocumentLoadResult } from "./types";
@@ -60,60 +56,6 @@ describe("tab state", () => {
 
     expect(state.tabs).toHaveLength(1);
     expect(state.activeTabKey).toBe("document:/README.md");
-  });
-
-  it("initializes direct document opens with one canonical navigation entry", () => {
-    const state = addDocumentResults(baseState(), [
-      ready("/docs/../README.md", "/README.md"),
-    ]);
-
-    expect(state.tabs[0]).toMatchObject({
-      history: [{ path: "/README.md", scrollTop: 0 }],
-      historyIndex: 0,
-    });
-  });
-
-  it("records canonical link targets after the current location and preserves scroll and fragments", () => {
-    let state = addDocumentResults(baseState(), [
-      ready("/one.md"),
-      ready("/requested-two.md", "/real/two.md"),
-    ]);
-    state = updateScroll(state, "document:/one.md", 48);
-    state = navigateDocument(state, "document:/one.md", {
-      key: "document:/real/two.md",
-      entry: {
-        path: "/real/two.md",
-        scrollTop: 120,
-        fragment: "section",
-      },
-    });
-
-    expect(state.tabs[1]).toMatchObject({
-      history: [
-        { path: "/one.md", scrollTop: 48 },
-        { path: "/real/two.md", scrollTop: 120, fragment: "section" },
-      ],
-      historyIndex: 1,
-    });
-  });
-
-  it("moves the navigation index backward and forward without changing tabs", () => {
-    let state = addDocumentResults(baseState(), [ready("/one.md")]);
-    state = recordDocumentNavigation(state, "document:/one.md", {
-      path: "/two.md",
-      scrollTop: 0,
-    });
-    state = recordDocumentNavigation(state, "document:/one.md", {
-      path: "/three.md",
-      scrollTop: 0,
-    });
-
-    const back = moveDocumentNavigation(state, "document:/one.md", -1);
-    const forward = moveDocumentNavigation(back, "document:/one.md", 1);
-
-    expect(back.activeTabKey).toBe("document:/one.md");
-    expect(back.tabs[0]).toMatchObject({ historyIndex: 1, scrollTop: 0 });
-    expect(forward.tabs[0]).toMatchObject({ historyIndex: 2, scrollTop: 0 });
   });
 
   it("records document visits across tabs and preserves a forward branch boundary", () => {
@@ -170,85 +112,6 @@ describe("tab state", () => {
       scrollTop: 360,
       fragment: "emphasis",
     });
-  });
-
-  it("restores target entry scroll position and treats boundary moves as no-ops", () => {
-    let state = addDocumentResults(baseState(), [ready("/one.md")]);
-    state = recordDocumentNavigation(state, "document:/one.md", {
-      path: "/one.md",
-      scrollTop: 250,
-      fragment: "section-1",
-    });
-
-    const atStart = moveDocumentNavigation(
-      addDocumentResults(baseState(), [ready("/one.md")]),
-      "document:/one.md",
-      -1,
-    );
-    expect(atStart).toBe(atStart);
-
-    const back = moveDocumentNavigation(state, "document:/one.md", -1);
-    expect(back.tabs[0]).toMatchObject({
-      historyIndex: 0,
-      scrollTop: 0,
-    });
-
-    const atEnd = moveDocumentNavigation(state, "document:/one.md", 1);
-    expect(atEnd).toBe(state);
-
-    const settingsState = {
-      ...baseState(),
-      tabs: [{ kind: "settings" as const, key: "settings" as const }],
-      activeTabKey: "settings",
-    };
-    expect(moveDocumentNavigation(settingsState, "settings", -1)).toBe(settingsState);
-  });
-
-  it("truncates forward navigation when recording a branch", () => {
-    let state = addDocumentResults(baseState(), [ready("/one.md")]);
-    state = recordDocumentNavigation(state, "document:/one.md", {
-      path: "/two.md",
-      scrollTop: 0,
-    });
-    state = recordDocumentNavigation(state, "document:/one.md", {
-      path: "/three.md",
-      scrollTop: 0,
-    });
-    state = moveDocumentNavigation(state, "document:/one.md", -1);
-    state = recordDocumentNavigation(state, "document:/one.md", {
-      path: "/branch.md",
-      scrollTop: 0,
-    });
-
-    expect(state.tabs[0]).toMatchObject({
-      history: [
-        { path: "/one.md", scrollTop: 0 },
-        { path: "/two.md", scrollTop: 0 },
-        { path: "/branch.md", scrollTop: 0 },
-      ],
-      historyIndex: 2,
-    });
-  });
-
-  it("keeps the fifty newest document navigation entries", () => {
-    let state = addDocumentResults(baseState(), [ready("/one.md")]);
-    for (let index = 1; index <= 50; index += 1) {
-      state = recordDocumentNavigation(state, "document:/one.md", {
-        path: `/document-${index}.md`,
-        scrollTop: index,
-      });
-    }
-
-    expect(state.tabs[0]).toMatchObject({ historyIndex: 49 });
-    expect(state.tabs[0]?.kind === "document" && state.tabs[0].status === "ready"
-      ? state.tabs[0].history
-      : []).toHaveLength(50);
-    const tab = state.tabs[0];
-    if (tab?.kind !== "document" || tab.status !== "ready") {
-      throw new Error("expected ready document tab");
-    }
-    expect(tab.history[0]).toEqual({ path: "/document-1.md", scrollTop: 1 });
-    expect(tab.history.at(-1)).toEqual({ path: "/document-50.md", scrollTop: 50 });
   });
 
   it("removes multiple loading aliases that resolve to one canonical path", () => {
@@ -528,17 +391,12 @@ describe("tab state", () => {
     expect(restored.tabs[0]).toMatchObject({ scrollTop: 480 });
   });
 
-  it("does not persist or hydrate ephemeral tab histories", () => {
-    let state = addDocumentResults(baseState({
+  it("does not persist closed-tab history", () => {
+    const state = addDocumentResults(baseState({
       closedTabsHistory: [
         { kind: "document", path: "/one.md", scrollTop: 42, index: 0 },
       ],
     }), [ready("/one.md")]);
-    state = recordDocumentNavigation(state, "document:/one.md", {
-      path: "/two.md",
-      scrollTop: 24,
-      fragment: "section",
-    });
 
     const persisted = toPersistedSession(state);
     const restored = fromPersistedSession(persisted);

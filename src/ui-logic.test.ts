@@ -8,7 +8,13 @@ import {
   shouldSuppressTabClick,
 } from "./ui-logic";
 import { DEFAULT_STATE } from "./state";
-import type { AppState, AppTab, ReadyDocumentTab, WorkspaceMarkdownEntry } from "./types";
+import type {
+  AppState,
+  AppTab,
+  DocumentNavigationEntry,
+  ReadyDocumentTab,
+  WorkspaceMarkdownEntry,
+} from "./types";
 
 function ready(path: string): ReadyDocumentTab {
   return {
@@ -25,8 +31,6 @@ function ready(path: string): ReadyDocumentTab {
     imageAssets: [],
     scrollTop: 0,
     reloadError: null,
-    history: [{ path: "/docs/guide.md", scrollTop: 0 }],
-    historyIndex: 0,
   };
 }
 
@@ -218,7 +222,7 @@ describe("tab click suppression", () => {
 describe("navigation controls", () => {
   const navigationState = (
     tab: AppTab | null,
-    documentVisitHistory = [] as ReadyDocumentTab["history"],
+    documentVisitHistory: DocumentNavigationEntry[] = [],
     documentVisitHistoryIndex = -1,
   ): AppState => ({
     ...DEFAULT_STATE,

@@ -8,8 +8,8 @@ use std::{
 };
 
 use document::{
-    check_document_revisions, export_html, export_svg, highlight_code_chunk, is_markdown_path,
-    load_documents, reload_document,
+    check_document_revisions, export_html, export_svg, highlight_code_chunk, load_documents,
+    reload_document,
 };
 use printing::{finish_print_export, print_export_html, start_print_export};
 use tauri::{
@@ -18,8 +18,8 @@ use tauri::{
 };
 use workspace::{
     WorkspaceRegistry, create_workspace_item, index_workspace_markdown, list_workspace_children,
-    load_workspace_image, load_workspace_mermaid, register_workspace_root, rename_workspace_item,
-    trash_workspace_item, unregister_workspace_root,
+    load_preview_paths, load_workspace_image, load_workspace_mermaid, register_workspace_root,
+    rename_workspace_item, trash_workspace_item, unregister_workspace_root,
 };
 
 const OPEN_FILES_EVENT: &str = "markmaid://open-files";
@@ -393,6 +393,7 @@ fn paths_from_arguments(arguments: &[String], current_directory: &str) -> Vec<St
     arguments
         .iter()
         .skip(1)
+        .filter(|argument| !argument.starts_with('-'))
         .map(PathBuf::from)
         .map(|path| {
             if path.is_absolute() {
@@ -401,7 +402,6 @@ fn paths_from_arguments(arguments: &[String], current_directory: &str) -> Vec<St
                 Path::new(current_directory).join(path)
             }
         })
-        .filter(|path| is_markdown_path(path))
         .map(|path| path.to_string_lossy().into_owned())
         .collect()
 }
@@ -444,6 +444,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             load_documents,
             reload_document,
+            load_preview_paths,
             check_document_revisions,
             export_html,
             export_svg,
@@ -475,7 +476,6 @@ pub fn run() {
             let paths = urls
                 .iter()
                 .filter_map(|url| url.to_file_path().ok())
-                .filter(|path| is_markdown_path(path))
                 .map(|path| path.to_string_lossy().into_owned())
                 .collect();
             queue_and_emit_paths(app, paths);
@@ -500,6 +500,7 @@ mod tests {
             paths_from_arguments(&arguments, "/workspace"),
             vec![
                 "/workspace/README.md".to_string(),
+                "/workspace/notes.txt".to_string(),
                 "/tmp/design.markdown".to_string()
             ]
         );
