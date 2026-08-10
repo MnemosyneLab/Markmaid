@@ -10,6 +10,7 @@ OUTPUT_DIRECTORY="$REPOSITORY_ROOT/artifacts/$TAG"
 DMG_PATH="$OUTPUT_DIRECTORY/MarkMaid_${VERSION}_aarch64.dmg"
 ZIP_PATH="$OUTPUT_DIRECTORY/MarkMaid_${VERSION}_aarch64.app.zip"
 CHECKSUM_PATH="$OUTPUT_DIRECTORY/SHA256SUMS"
+NOTES_PATH="$REPOSITORY_ROOT/docs/releases/$TAG.md"
 DRY_RUN=false
 DRAFT=false
 ASSUME_YES=false
@@ -52,6 +53,11 @@ for asset in "$DMG_PATH" "$ZIP_PATH" "$CHECKSUM_PATH"; do
   fi
 done
 
+if [[ ! -f "$NOTES_PATH" ]]; then
+  echo "Missing release notes: $NOTES_PATH" >&2
+  exit 1
+fi
+
 (
   cd "$OUTPUT_DIRECTORY"
   shasum -a 256 -c "$(basename "$CHECKSUM_PATH")"
@@ -70,7 +76,8 @@ if [[ "$DRY_RUN" == true ]]; then
   echo
   echo "Dry run passed for $TAG."
   echo "A live run will create or reuse the local tag, push it to origin,"
-  echo "and upload the DMG, app ZIP, and SHA256SUMS to GitHub Release."
+  echo "use $NOTES_PATH as the release body, and upload the DMG, app ZIP,"
+  echo "and SHA256SUMS to GitHub Release."
   exit 0
 fi
 
@@ -133,7 +140,7 @@ RELEASE_ARGUMENTS=(
   "$CHECKSUM_PATH#SHA-256 checksums"
   --verify-tag
   --title "MarkMaid $TAG"
-  --generate-notes
+  --notes-file "$NOTES_PATH"
   --fail-on-no-commits
 )
 
