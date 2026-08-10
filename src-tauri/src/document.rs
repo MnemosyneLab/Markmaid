@@ -21,6 +21,7 @@ use serde_json::{Map, Value};
 use tauri::{AppHandle, Manager, State};
 use url::Url;
 
+use crate::tasks::{BackgroundTaskRegistry, CancellationToken, TaskOutcome};
 use crate::workspace::{WorkspaceRegistry, registered_root_paths};
 
 const MARKDOWN_EXTENSIONS: &[&str] = &["md", "markdown", "mdown", "mkd"];
@@ -548,17 +549,29 @@ impl CodefenceRendererAdapter for LongCodeRenderer<'_> {
 pub async fn reload_document(
     app: AppHandle,
     registry: State<'_, WorkspaceRegistry>,
+    task_registry: State<'_, BackgroundTaskRegistry>,
+    task_id: String,
     path: String,
     mermaid_theme: MermaidTheme,
     color_theme: ColorTheme,
-) -> Result<DocumentLoadResult, String> {
+) -> Result<TaskOutcome<DocumentLoadResult>, String> {
     let roots = registered_root_paths(&registry);
+    let guard = task_registry
+        .register(task_id)
+        .map_err(|error| error.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
-        authorize_assets(
-            &app,
-            load_document_data(&path, mermaid_theme, color_theme),
-            &roots,
-        )
+        let token = guard.token();
+        let Some(loaded) = load_document_data(&path, mermaid_theme, color_theme, &token) else {
+            return TaskOutcome::Cancelled;
+        };
+        if token.is_cancelled() {
+            return TaskOutcome::Cancelled;
+        }
+        let result = authorize_assets(&app, loaded, &roots);
+        if token.is_cancelled() {
+            return TaskOutcome::Cancelled;
+        }
+        TaskOutcome::Completed { result }
     })
     .await
     .map_err(|error| format!("Could not reload preview document: {error}"))
@@ -748,78 +761,82 @@ pub(crate) fn load_document_data(
     requested_path: &str,
     mermaid_theme: MermaidTheme,
     color_theme: ColorTheme,
-) -> DocumentLoadResult {
+    token: &CancellationToken,
+) -> Option<DocumentLoadResult> {
     if !Path::new(requested_path).is_absolute() {
-        return DocumentLoadResult::error(
+        return Some(DocumentLoadResult::error(
             requested_path,
             None,
             "invalid_path",
             "Preview paths must be absolute.",
-        );
+        ));
+    }
+    if token.is_cancelled() {
+        return None;
     }
     match fs::symlink_metadata(requested_path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
-            return DocumentLoadResult::error(
+            return Some(DocumentLoadResult::error(
                 requested_path,
                 None,
                 "unsupported_type",
                 "Symbolic links are not supported as preview files.",
-            );
+            ));
         }
         Ok(_) | Err(_) => {}
     }
     let canonical_path = match fs::canonicalize(requested_path) {
         Ok(path) => path,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return DocumentLoadResult::error(
+            return Some(DocumentLoadResult::error(
                 requested_path,
                 None,
                 "not_found",
                 "The document no longer exists.",
-            );
+            ));
         }
         Err(error) => {
-            return DocumentLoadResult::error(
+            return Some(DocumentLoadResult::error(
                 requested_path,
                 None,
                 "access_failed",
                 format!("The document could not be accessed: {error}"),
-            );
+            ));
         }
     };
 
     let metadata = match fs::metadata(&canonical_path) {
         Ok(metadata) => metadata,
         Err(error) => {
-            return DocumentLoadResult::error(
+            return Some(DocumentLoadResult::error(
                 requested_path,
                 Some(&canonical_path),
                 "metadata_failed",
                 format!("The document metadata could not be read: {error}"),
-            );
+            ));
         }
     };
 
     if !metadata.is_file() {
-        return DocumentLoadResult::error(
+        return Some(DocumentLoadResult::error(
             requested_path,
             Some(&canonical_path),
             "not_a_file",
             "The selected path is not a regular file.",
-        );
+        ));
     }
 
     if !is_markdown_path(&canonical_path) {
-        return DocumentLoadResult::error(
+        return Some(DocumentLoadResult::error(
             requested_path,
             Some(&canonical_path),
             "unsupported_extension",
             "MarkMaid supports .md, .markdown, .mdown, and .mkd files.",
-        );
+        ));
     }
 
     if metadata.len() > MAX_TEXT_PREVIEW_BYTES {
-        return DocumentLoadResult::error(
+        return Some(DocumentLoadResult::error(
             requested_path,
             Some(&canonical_path),
             "file_too_large",
@@ -827,43 +844,50 @@ pub(crate) fn load_document_data(
                 "The Markdown file is larger than the {} MiB preview limit.",
                 MAX_TEXT_PREVIEW_BYTES / 1024 / 1024
             ),
-        );
+        ));
     }
 
+    if token.is_cancelled() {
+        return None;
+    }
     let bytes = match fs::read(&canonical_path) {
         Ok(bytes) => bytes,
         Err(error) => {
-            return DocumentLoadResult::error(
+            return Some(DocumentLoadResult::error(
                 requested_path,
                 Some(&canonical_path),
                 "read_failed",
                 format!("The document could not be read: {error}"),
-            );
+            ));
         }
     };
     let size_bytes = bytes.len() as u64;
 
+    if token.is_cancelled() {
+        return None;
+    }
+
     let source = match String::from_utf8(bytes) {
         Ok(source) => source,
         Err(_) => {
-            return DocumentLoadResult::error(
+            return Some(DocumentLoadResult::error(
                 requested_path,
                 Some(&canonical_path),
                 "invalid_utf8",
                 "The document is not valid UTF-8.",
-            );
+            ));
         }
     };
 
     let rendered = match render_markdown(&source, &canonical_path, mermaid_theme, color_theme) {
         Ok(rendered) => rendered,
         Err(error) => {
-            return DocumentLoadResult::error(
+            return Some(DocumentLoadResult::error(
                 requested_path,
                 Some(&canonical_path),
                 "render_failed",
                 error,
-            );
+            ));
         }
     };
 
@@ -874,7 +898,7 @@ pub(crate) fn load_document_data(
         .unwrap_or("Untitled Markdown")
         .to_string();
 
-    DocumentLoadResult::Ready {
+    Some(DocumentLoadResult::Ready {
         requested_path: requested_path.to_string(),
         canonical_path: path_to_string(&canonical_path),
         display_name,
@@ -883,7 +907,7 @@ pub(crate) fn load_document_data(
         modified_at_ms,
         size_bytes,
         image_assets: rendered.image_assets,
-    }
+    })
 }
 
 pub(crate) fn metadata_modified_at_ms(metadata: &fs::Metadata) -> u64 {
@@ -1828,7 +1852,9 @@ mod tests {
                     path.to_str().unwrap(),
                     MermaidTheme::Default,
                     ColorTheme::Default,
+                    &CancellationToken::inactive(),
                 )
+                .expect("not cancelled")
             })
             .collect::<Vec<_>>();
 
@@ -1975,8 +2001,13 @@ mod tests {
     #[test]
     fn rejects_relative_and_oversized_markdown_previews() {
         assert!(matches!(
-            load_document_data("relative.md", MermaidTheme::Default, ColorTheme::Default),
-            DocumentLoadResult::Error { ref code, .. } if code == "invalid_path"
+            load_document_data(
+                "relative.md",
+                MermaidTheme::Default,
+                ColorTheme::Default,
+                &CancellationToken::inactive(),
+            ),
+            Some(DocumentLoadResult::Error { ref code, .. }) if code == "invalid_path"
         ));
 
         let directory = tempdir().unwrap();
@@ -1988,8 +2019,44 @@ mod tests {
                 &path_to_string(&document),
                 MermaidTheme::Default,
                 ColorTheme::Default,
+                &CancellationToken::inactive(),
             ),
-            DocumentLoadResult::Error { ref code, .. } if code == "file_too_large"
+            Some(DocumentLoadResult::Error { ref code, .. }) if code == "file_too_large"
         ));
+    }
+
+    fn cancelled_token() -> CancellationToken {
+        let registry = BackgroundTaskRegistry::default();
+        let guard = registry
+            .register("document-cancellation-test")
+            .expect("register");
+        registry.cancel("document-cancellation-test");
+        guard.token()
+    }
+
+    #[test]
+    fn stops_document_loading_at_the_read_checkpoint_when_already_cancelled() {
+        let directory = tempdir().unwrap();
+        let document = directory.path().join("guide.md");
+        fs::write(&document, "# Guide").unwrap();
+
+        assert_eq!(
+            load_document_data(
+                &path_to_string(&document),
+                MermaidTheme::Default,
+                ColorTheme::Default,
+                &cancelled_token(),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn reload_document_reports_a_cancelled_outcome_without_a_payload() {
+        let outcome: TaskOutcome<DocumentLoadResult> = TaskOutcome::Cancelled;
+        assert_eq!(
+            serde_json::to_value(&outcome).unwrap(),
+            serde_json::json!({ "status": "cancelled" })
+        );
     }
 }

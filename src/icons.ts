@@ -22,6 +22,7 @@ import {
   X,
   ZoomIn,
   ZoomOut,
+  GripVertical,
   createIcons,
 } from "lucide";
 
@@ -37,6 +38,7 @@ const ICONS = {
   FilePlus,
   FolderOpen,
   FolderPlus,
+  GripVertical,
   Image,
   Maximize2,
   PanelLeftClose,
@@ -63,6 +65,7 @@ export type IconName =
   | "file-plus"
   | "folder-open"
   | "folder-plus"
+  | "grip-vertical"
   | "image"
   | "maximize-2"
   | "panel-left-close"

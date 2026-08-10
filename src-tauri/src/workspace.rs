@@ -14,6 +14,7 @@ use crate::document::{
     ColorTheme, DocumentLoadResult, MAX_TEXT_PREVIEW_BYTES, MermaidTheme, authorize_assets,
     load_document_data, metadata_modified_at_ms, path_to_string, render_standalone_mermaid,
 };
+use crate::tasks::{BackgroundTaskRegistry, CancellationToken, TaskOutcome};
 
 const MARKDOWN_EXTENSIONS: &[&str] = &["md", "markdown", "mdown", "mkd"];
 const MERMAID_EXTENSIONS: &[&str] = &["mmd"];
@@ -113,6 +114,25 @@ pub struct ImagePreview {
     pub message: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewTaskRequest {
+    pub task_id: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum PreviewTaskOutcome {
+    #[serde(rename_all = "camelCase")]
+    Completed {
+        task_id: String,
+        result: Box<PreviewLoadResult>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Cancelled { task_id: String },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PreviewLoadResult {
@@ -169,6 +189,18 @@ impl WorkspaceError {
     }
 }
 
+/// Internal-only sentinel used to unwind a cancelled scan without reporting
+/// it through the same path as a real filesystem error.
+const CANCELLED_SCAN_CODE: &str = "cancelled";
+
+fn cancelled_scan() -> WorkspaceError {
+    WorkspaceError::new(CANCELLED_SCAN_CODE, "The scan was cancelled.")
+}
+
+fn is_cancelled_scan(error: &WorkspaceError) -> bool {
+    error.code == CANCELLED_SCAN_CODE
+}
+
 #[tauri::command]
 pub fn register_workspace_root(
     registry: State<'_, WorkspaceRegistry>,
@@ -190,13 +222,22 @@ pub fn unregister_workspace_root(
 #[tauri::command]
 pub async fn list_workspace_children(
     registry: State<'_, WorkspaceRegistry>,
+    task_registry: State<'_, BackgroundTaskRegistry>,
+    task_id: String,
     root_id: String,
     relative_path: String,
-) -> Result<Vec<WorkspaceEntry>, String> {
+) -> Result<TaskOutcome<Vec<WorkspaceEntry>>, String> {
     let root = resolve_root(&registry, &root_id).map_err(|error| error.to_string_error())?;
+    let guard = task_registry
+        .register(task_id)
+        .map_err(|error| error.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
-        list_workspace_children_at_root(&root, &root_id, &relative_path)
-            .map_err(|error| error.to_string_error())
+        let token = guard.token();
+        match list_workspace_children_at_root(&root, &root_id, &relative_path, &token) {
+            Ok(Some(entries)) => Ok(TaskOutcome::Completed { result: entries }),
+            Ok(None) => Ok(TaskOutcome::Cancelled),
+            Err(error) => Err(error.to_string_error()),
+        }
     })
     .await
     .map_err(|error| format!("Could not list workspace children: {error}"))?
@@ -206,13 +247,21 @@ pub async fn list_workspace_children(
 pub async fn load_preview_paths(
     app: AppHandle,
     registry: State<'_, WorkspaceRegistry>,
-    paths: Vec<String>,
+    task_registry: State<'_, BackgroundTaskRegistry>,
+    requests: Vec<PreviewTaskRequest>,
     mermaid_theme: MermaidTheme,
     color_theme: ColorTheme,
-) -> Result<Vec<PreviewLoadResult>, String> {
+) -> Result<Vec<PreviewTaskOutcome>, String> {
     let roots = registered_root_paths(&registry);
+    let mut guarded_requests = Vec::with_capacity(requests.len());
+    for request in requests {
+        let guard = task_registry
+            .register(request.task_id)
+            .map_err(|error| error.to_string())?;
+        guarded_requests.push((request.path, guard));
+    }
     tauri::async_runtime::spawn_blocking(move || {
-        load_preview_paths_inner(&app, &roots, &paths, mermaid_theme, color_theme)
+        load_preview_paths_inner(&app, &roots, guarded_requests, mermaid_theme, color_theme)
     })
     .await
     .map_err(|error| format!("Could not load preview files: {error}"))
@@ -221,40 +270,68 @@ pub async fn load_preview_paths(
 fn load_preview_paths_inner(
     app: &AppHandle,
     roots: &[PathBuf],
-    paths: &[String],
+    requests: Vec<(String, crate::tasks::TaskGuard)>,
     mermaid_theme: MermaidTheme,
     color_theme: ColorTheme,
-) -> Vec<PreviewLoadResult> {
-    paths
-        .iter()
-        .map(|requested_path| {
-            let kind = classify_file(Path::new(requested_path));
-            match kind {
-                Some(WorkspaceEntryKind::Markdown) => PreviewLoadResult::Document {
-                    result: authorize_assets(
-                        app,
-                        load_document_data(requested_path, mermaid_theme, color_theme),
-                        roots,
-                    ),
-                },
-                Some(WorkspaceEntryKind::Mermaid) => PreviewLoadResult::Mermaid {
-                    result: load_direct_mermaid(requested_path, mermaid_theme, color_theme),
-                },
-                Some(WorkspaceEntryKind::Image) => PreviewLoadResult::Image {
-                    result: load_direct_image(app, requested_path),
-                },
+) -> Vec<PreviewTaskOutcome> {
+    requests
+        .into_iter()
+        .map(|(requested_path, guard)| {
+            let task_id = guard.task_id().to_string();
+            let token = guard.token();
+            if token.is_cancelled() {
+                return PreviewTaskOutcome::Cancelled { task_id };
+            }
+
+            let kind = classify_file(Path::new(&requested_path));
+            let result = match kind {
+                Some(WorkspaceEntryKind::Markdown) => {
+                    let Some(loaded) =
+                        load_document_data(&requested_path, mermaid_theme, color_theme, &token)
+                    else {
+                        return PreviewTaskOutcome::Cancelled { task_id };
+                    };
+                    if token.is_cancelled() {
+                        return PreviewTaskOutcome::Cancelled { task_id };
+                    }
+                    PreviewLoadResult::Document {
+                        result: authorize_assets(app, loaded, roots),
+                    }
+                }
+                Some(WorkspaceEntryKind::Mermaid) => {
+                    let Some(preview) =
+                        load_direct_mermaid(&requested_path, mermaid_theme, color_theme, &token)
+                    else {
+                        return PreviewTaskOutcome::Cancelled { task_id };
+                    };
+                    PreviewLoadResult::Mermaid { result: preview }
+                }
+                Some(WorkspaceEntryKind::Image) => {
+                    let Some(preview) = load_direct_image(app, &requested_path, &token) else {
+                        return PreviewTaskOutcome::Cancelled { task_id };
+                    };
+                    PreviewLoadResult::Image { result: preview }
+                }
                 Some(WorkspaceEntryKind::Directory) => PreviewLoadResult::Unsupported {
                     requested_path: requested_path.clone(),
-                    display_name: file_name(Path::new(requested_path)),
+                    display_name: file_name(Path::new(&requested_path)),
                     code: "unsupported_type".to_string(),
                     message: "Directories cannot be opened as previews.".to_string(),
                 },
                 None => PreviewLoadResult::Unsupported {
                     requested_path: requested_path.clone(),
-                    display_name: file_name(Path::new(requested_path)),
+                    display_name: file_name(Path::new(&requested_path)),
                     code: "unsupported_type".to_string(),
                     message: "This file type is not supported by MarkMaid.".to_string(),
                 },
+            };
+
+            if token.is_cancelled() {
+                return PreviewTaskOutcome::Cancelled { task_id };
+            }
+            PreviewTaskOutcome::Completed {
+                task_id,
+                result: Box::new(result),
             }
         })
         .collect()
@@ -296,12 +373,22 @@ pub fn trash_workspace_item(
 #[tauri::command]
 pub async fn index_workspace_markdown(
     registry: State<'_, WorkspaceRegistry>,
+    task_registry: State<'_, BackgroundTaskRegistry>,
+    task_id: String,
     root_ids: Vec<String>,
-) -> Result<WorkspaceMarkdownIndex, String> {
+) -> Result<TaskOutcome<WorkspaceMarkdownIndex>, String> {
     let snapshots = snapshot_registered_roots(&registry, &root_ids);
-    tauri::async_runtime::spawn_blocking(move || index_workspace_markdown_inner(snapshots))
-        .await
-        .map_err(|error| format!("Could not index workspace Markdown: {error}"))
+    let guard = task_registry
+        .register(task_id)
+        .map_err(|error| error.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        match index_workspace_markdown_inner(snapshots, &guard.token()) {
+            Some(result) => TaskOutcome::Completed { result },
+            None => TaskOutcome::Cancelled,
+        }
+    })
+    .await
+    .map_err(|error| format!("Could not index workspace Markdown: {error}"))
 }
 
 fn register_workspace_root_inner(
@@ -349,14 +436,24 @@ fn list_workspace_children_inner(
     relative_path: &str,
 ) -> Result<Vec<WorkspaceEntry>, WorkspaceError> {
     let root = resolve_root(registry, root_id)?;
-    list_workspace_children_at_root(&root, root_id, relative_path)
+    list_workspace_children_at_root(
+        &root,
+        root_id,
+        relative_path,
+        &CancellationToken::inactive(),
+    )
+    .map(|entries| entries.expect("scan not cancelled in test"))
 }
 
 fn list_workspace_children_at_root(
     root: &Path,
     root_id: &str,
     relative_path: &str,
-) -> Result<Vec<WorkspaceEntry>, WorkspaceError> {
+    token: &CancellationToken,
+) -> Result<Option<Vec<WorkspaceEntry>>, WorkspaceError> {
+    if token.is_cancelled() {
+        return Ok(None);
+    }
     let directory = resolve_existing_path(root, relative_path)?;
     let metadata = fs::symlink_metadata(&directory).map_err(map_io_error)?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
@@ -370,6 +467,9 @@ fn list_workspace_children_at_root(
     let mut visibility_scan = VisibilityScanState::default();
     let read_dir = fs::read_dir(&directory).map_err(map_io_error)?;
     for item in read_dir {
+        if token.is_cancelled() {
+            return Ok(None);
+        }
         let item = item.map_err(map_io_error)?;
         let name = item.file_name();
         let name = name.to_string_lossy();
@@ -386,7 +486,7 @@ fn list_workspace_children_at_root(
         let child_relative = join_relative(relative_path, &name);
         if meta.is_dir() {
             if matches!(
-                directory_contains_visible_item(&path, &mut visibility_scan, 0),
+                directory_contains_visible_item(&path, &mut visibility_scan, token, 0),
                 VisibilityScan::Empty
             ) {
                 continue;
@@ -421,6 +521,10 @@ fn list_workspace_children_at_root(
         });
     }
 
+    if token.is_cancelled() {
+        return Ok(None);
+    }
+
     entries.sort_by(|left, right| {
         let left_dir = left.kind == WorkspaceEntryKind::Directory;
         let right_dir = right.kind == WorkspaceEntryKind::Directory;
@@ -433,7 +537,7 @@ fn list_workspace_children_at_root(
                 .cmp(&right.name.to_ascii_lowercase()),
         }
     });
-    Ok(entries)
+    Ok(Some(entries))
 }
 
 fn create_workspace_item_inner(
@@ -584,48 +688,58 @@ fn load_direct_mermaid(
     requested_path: &str,
     mermaid_theme: MermaidTheme,
     color_theme: ColorTheme,
-) -> MermaidPreview {
+    token: &CancellationToken,
+) -> Option<MermaidPreview> {
+    if token.is_cancelled() {
+        return None;
+    }
     let path = match resolve_direct_preview_path(requested_path, WorkspaceEntryKind::Mermaid) {
         Ok(path) => path,
-        Err(error) => return mermaid_error(requested_path, error.code, error.message),
+        Err(error) => return Some(mermaid_error(requested_path, error.code, error.message)),
     };
     let meta = match fs::symlink_metadata(&path) {
         Ok(meta) => meta,
         Err(error) => {
             let mapped = map_io_error(error);
-            return mermaid_error(requested_path, mapped.code, mapped.message);
+            return Some(mermaid_error(requested_path, mapped.code, mapped.message));
         }
     };
     if meta.len() > MAX_TEXT_PREVIEW_BYTES {
-        return mermaid_error(
+        return Some(mermaid_error(
             requested_path,
             "file_too_large",
             format!(
                 "The Mermaid file is larger than the {} MiB preview limit.",
                 MAX_TEXT_PREVIEW_BYTES / 1024 / 1024
             ),
-        );
+        ));
+    }
+    if token.is_cancelled() {
+        return None;
     }
     let bytes = match fs::read(&path) {
         Ok(bytes) => bytes,
         Err(error) => {
             let mapped = map_io_error(error);
-            return mermaid_error(requested_path, mapped.code, mapped.message);
+            return Some(mermaid_error(requested_path, mapped.code, mapped.message));
         }
     };
     let source = match String::from_utf8(bytes) {
         Ok(source) => source,
         Err(_) => {
-            return mermaid_error(
+            return Some(mermaid_error(
                 requested_path,
                 "invalid_utf8",
                 "The Mermaid file is not valid UTF-8.",
-            );
+            ));
         }
     };
+    if token.is_cancelled() {
+        return None;
+    }
     let html = render_standalone_mermaid(&source, &path, mermaid_theme, color_theme);
     let canonical = path_to_string(&path);
-    MermaidPreview {
+    Some(MermaidPreview {
         status: "ready".to_string(),
         requested_path: requested_path.to_string(),
         canonical_path: canonical,
@@ -636,40 +750,50 @@ fn load_direct_mermaid(
         modified_at_ms: metadata_modified_at_ms(&meta),
         code: None,
         message: None,
-    }
+    })
 }
 
-fn load_direct_image(app: &AppHandle, requested_path: &str) -> ImagePreview {
+fn load_direct_image(
+    app: &AppHandle,
+    requested_path: &str,
+    token: &CancellationToken,
+) -> Option<ImagePreview> {
+    if token.is_cancelled() {
+        return None;
+    }
     let path = match resolve_direct_preview_path(requested_path, WorkspaceEntryKind::Image) {
         Ok(path) => path,
-        Err(error) => return image_error(requested_path, error.code, error.message),
+        Err(error) => return Some(image_error(requested_path, error.code, error.message)),
     };
     let meta = match fs::symlink_metadata(&path) {
         Ok(meta) => meta,
         Err(error) => {
             let mapped = map_io_error(error);
-            return image_error(requested_path, mapped.code, mapped.message);
+            return Some(image_error(requested_path, mapped.code, mapped.message));
         }
     };
     if meta.len() > MAX_IMAGE_PREVIEW_BYTES {
-        return image_error(
+        return Some(image_error(
             requested_path,
             "file_too_large",
             format!(
                 "The image is larger than the {} MiB preview limit.",
                 MAX_IMAGE_PREVIEW_BYTES / 1024 / 1024
             ),
-        );
+        ));
+    }
+    if token.is_cancelled() {
+        return None;
     }
     if app.asset_protocol_scope().allow_file(&path).is_err() {
-        return image_error(
+        return Some(image_error(
             requested_path,
             "permission_denied",
             "The image could not be authorized for preview.",
-        );
+        ));
     }
     let canonical = path_to_string(&path);
-    ImagePreview {
+    Some(ImagePreview {
         status: "ready".to_string(),
         requested_path: requested_path.to_string(),
         canonical_path: canonical.clone(),
@@ -679,7 +803,7 @@ fn load_direct_image(app: &AppHandle, requested_path: &str) -> ImagePreview {
         modified_at_ms: metadata_modified_at_ms(&meta),
         code: None,
         message: None,
-    }
+    })
 }
 
 fn resolve_direct_preview_path(
@@ -770,13 +894,17 @@ pub(crate) fn registered_root_paths(registry: &WorkspaceRegistry) -> Vec<PathBuf
 
 fn index_workspace_markdown_inner(
     snapshots: Vec<(String, Option<PathBuf>)>,
-) -> WorkspaceMarkdownIndex {
+    token: &CancellationToken,
+) -> Option<WorkspaceMarkdownIndex> {
     let mut entries = Vec::new();
     let mut unavailable_root_ids = Vec::new();
     let mut truncated_root_ids = Vec::new();
     let mut seen_paths = std::collections::HashSet::new();
 
     for (root_id, root_path) in snapshots {
+        if token.is_cancelled() {
+            return None;
+        }
         let Some(root_path) = root_path else {
             unavailable_root_ids.push(root_id);
             continue;
@@ -799,11 +927,13 @@ fn index_workspace_markdown_inner(
 
         let mut root_entries = Vec::new();
         let mut scan = IndexScanState::default();
-        if let Err(_error) =
-            collect_markdown_entries(&root, &root_id, "", &mut root_entries, &mut scan)
-        {
-            unavailable_root_ids.push(root_id);
-            continue;
+        match collect_markdown_entries(&root, &root_id, "", &mut root_entries, &mut scan, token) {
+            Ok(()) => {}
+            Err(error) if is_cancelled_scan(&error) => return None,
+            Err(_error) => {
+                unavailable_root_ids.push(root_id);
+                continue;
+            }
         }
         if scan.truncated {
             truncated_root_ids.push(root_id.clone());
@@ -813,6 +943,10 @@ fn index_workspace_markdown_inner(
                 entries.push(entry);
             }
         }
+    }
+
+    if token.is_cancelled() {
+        return None;
     }
 
     entries.sort_by(|left, right| {
@@ -831,11 +965,11 @@ fn index_workspace_markdown_inner(
     truncated_root_ids.sort();
     truncated_root_ids.dedup();
 
-    WorkspaceMarkdownIndex {
+    Some(WorkspaceMarkdownIndex {
         entries,
         unavailable_root_ids,
         truncated_root_ids,
-    }
+    })
 }
 
 #[derive(Default)]
@@ -850,11 +984,22 @@ fn collect_markdown_entries(
     relative_path: &str,
     entries: &mut Vec<WorkspaceMarkdownEntry>,
     scan: &mut IndexScanState,
+    token: &CancellationToken,
 ) -> Result<(), WorkspaceError> {
     let mut visited = std::collections::HashSet::new();
-    collect_markdown_entries_inner(root, root_id, relative_path, entries, &mut visited, scan, 0)
+    collect_markdown_entries_inner(
+        root,
+        root_id,
+        relative_path,
+        entries,
+        &mut visited,
+        scan,
+        token,
+        0,
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_markdown_entries_inner(
     root: &Path,
     root_id: &str,
@@ -862,8 +1007,12 @@ fn collect_markdown_entries_inner(
     entries: &mut Vec<WorkspaceMarkdownEntry>,
     visited: &mut std::collections::HashSet<PathBuf>,
     scan: &mut IndexScanState,
+    token: &CancellationToken,
     depth: usize,
 ) -> Result<(), WorkspaceError> {
+    if token.is_cancelled() {
+        return Err(cancelled_scan());
+    }
     if scan.entries >= MAX_INDEXED_MARKDOWN_ENTRIES_PER_ROOT || depth > MAX_INDEX_DEPTH {
         scan.truncated = true;
         return Ok(());
@@ -888,6 +1037,9 @@ fn collect_markdown_entries_inner(
     let mut items = read_dir.filter_map(Result::ok).collect::<Vec<_>>();
     items.sort_by_key(|item| item.file_name().to_string_lossy().to_ascii_lowercase());
     for item in items {
+        if token.is_cancelled() {
+            return Err(cancelled_scan());
+        }
         if scan.entries >= MAX_INDEXED_MARKDOWN_ENTRIES_PER_ROOT {
             scan.truncated = true;
             break;
@@ -912,15 +1064,20 @@ fn collect_markdown_entries_inner(
             if ensure_inside_root(root, &canonical_child).is_err() {
                 continue;
             }
-            let _ = collect_markdown_entries_inner(
+            match collect_markdown_entries_inner(
                 root,
                 root_id,
                 &child_relative,
                 entries,
                 visited,
                 scan,
+                token,
                 depth + 1,
-            );
+            ) {
+                Ok(()) => {}
+                Err(error) if is_cancelled_scan(&error) => return Err(error),
+                Err(_) => {}
+            }
             continue;
         }
         if !meta.is_file() {
@@ -1138,10 +1295,14 @@ struct VisibilityScanState {
 fn directory_contains_visible_item(
     path: &Path,
     state: &mut VisibilityScanState,
+    token: &CancellationToken,
     depth: usize,
 ) -> VisibilityScan {
     if let Some(result) = state.memo.get(path) {
         return *result;
+    }
+    if token.is_cancelled() {
+        return VisibilityScan::BudgetExhausted;
     }
     if state.entries >= MAX_VISIBILITY_SCAN_ENTRIES || depth >= MAX_VISIBILITY_SCAN_DEPTH {
         return VisibilityScan::BudgetExhausted;
@@ -1153,6 +1314,10 @@ fn directory_contains_visible_item(
     };
     let mut exhausted = false;
     for item in read_dir.flatten() {
+        if token.is_cancelled() {
+            exhausted = true;
+            break;
+        }
         state.entries += 1;
         if state.entries > MAX_VISIBILITY_SCAN_ENTRIES {
             exhausted = true;
@@ -1170,7 +1335,7 @@ fn directory_contains_visible_item(
             continue;
         }
         if meta.is_dir() {
-            match directory_contains_visible_item(&item.path(), state, depth + 1) {
+            match directory_contains_visible_item(&item.path(), state, token, depth + 1) {
                 VisibilityScan::Visible => {
                     state
                         .memo
@@ -1250,6 +1415,15 @@ mod tests {
         let registry = WorkspaceRegistry::default();
         let root = register_workspace_root_inner(&registry, &path_to_string(path)).unwrap();
         (registry, root)
+    }
+
+    fn cancelled_token() -> CancellationToken {
+        let registry = BackgroundTaskRegistry::default();
+        let guard = registry
+            .register("workspace-cancellation-test")
+            .expect("register");
+        registry.cancel("workspace-cancellation-test");
+        guard.token()
     }
 
     #[test]
@@ -1339,7 +1513,12 @@ mod tests {
 
         let mut visible_state = VisibilityScanState::default();
         assert_eq!(
-            directory_contains_visible_item(dir.path(), &mut visible_state, 0),
+            directory_contains_visible_item(
+                dir.path(),
+                &mut visible_state,
+                &CancellationToken::inactive(),
+                0,
+            ),
             VisibilityScan::Visible
         );
         assert_eq!(
@@ -1352,7 +1531,12 @@ mod tests {
             ..VisibilityScanState::default()
         };
         assert_eq!(
-            directory_contains_visible_item(dir.path(), &mut entry_limited, 0),
+            directory_contains_visible_item(
+                dir.path(),
+                &mut entry_limited,
+                &CancellationToken::inactive(),
+                0,
+            ),
             VisibilityScan::BudgetExhausted
         );
         let mut depth_limited = VisibilityScanState::default();
@@ -1360,7 +1544,19 @@ mod tests {
             directory_contains_visible_item(
                 dir.path(),
                 &mut depth_limited,
+                &CancellationToken::inactive(),
                 MAX_VISIBILITY_SCAN_DEPTH,
+            ),
+            VisibilityScan::BudgetExhausted
+        );
+
+        let mut cancelled_state = VisibilityScanState::default();
+        assert_eq!(
+            directory_contains_visible_item(
+                dir.path(),
+                &mut cancelled_state,
+                &cancelled_token(),
+                0
             ),
             VisibilityScan::BudgetExhausted
         );
@@ -1449,7 +1645,9 @@ mod tests {
             &path_to_string(&dir.path().join("ok.mmd")),
             MermaidTheme::Default,
             ColorTheme::Default,
-        );
+            &CancellationToken::inactive(),
+        )
+        .expect("not cancelled");
         assert_eq!(preview.status, "ready");
         assert!(preview.html.contains("mermaid-figure"));
 
@@ -1457,14 +1655,18 @@ mod tests {
             &path_to_string(&dir.path().join("bad.mmd")),
             MermaidTheme::Default,
             ColorTheme::Default,
-        );
+            &CancellationToken::inactive(),
+        )
+        .expect("not cancelled");
         assert_eq!(invalid.code.as_deref(), Some("invalid_utf8"));
 
         let direct = load_direct_mermaid(
             &path_to_string(&dir.path().join("ok.mmd")),
             MermaidTheme::Dark,
             ColorTheme::Nord,
-        );
+            &CancellationToken::inactive(),
+        )
+        .expect("not cancelled");
         assert_eq!(direct.status, "ready");
         assert!(direct.html.contains("data-mermaid-theme=\"dark\""));
 
@@ -1475,8 +1677,20 @@ mod tests {
             &path_to_string(&oversized_path),
             MermaidTheme::Default,
             ColorTheme::Default,
-        );
+            &CancellationToken::inactive(),
+        )
+        .expect("not cancelled");
         assert_eq!(oversized.code.as_deref(), Some("file_too_large"));
+
+        assert_eq!(
+            load_direct_mermaid(
+                &path_to_string(&dir.path().join("ok.mmd")),
+                MermaidTheme::Default,
+                ColorTheme::Default,
+                &cancelled_token(),
+            ),
+            None
+        );
 
         assert_eq!(
             resolve_direct_preview_path("relative.mmd", WorkspaceEntryKind::Mermaid)
@@ -1566,7 +1780,11 @@ mod tests {
 
         let (registry, root) = registry_with(dir.path());
         let root_path = registry.0.lock().unwrap().get(&root.id).cloned();
-        let index = index_workspace_markdown_inner(vec![(root.id.clone(), root_path)]);
+        let index = index_workspace_markdown_inner(
+            vec![(root.id.clone(), root_path)],
+            &CancellationToken::inactive(),
+        )
+        .expect("not cancelled");
         let names = index
             .entries
             .iter()
@@ -1598,7 +1816,11 @@ mod tests {
 
         let (registry, root) = registry_with(dir.path());
         let root_path = registry.0.lock().unwrap().get(&root.id).cloned();
-        let index = index_workspace_markdown_inner(vec![(root.id.clone(), root_path)]);
+        let index = index_workspace_markdown_inner(
+            vec![(root.id.clone(), root_path)],
+            &CancellationToken::inactive(),
+        )
+        .expect("not cancelled");
         assert!(index.truncated_root_ids.contains(&root.id));
         assert!(
             !index
@@ -1624,6 +1846,7 @@ mod tests {
             &mut entries,
             &mut visited,
             &mut scan,
+            &CancellationToken::inactive(),
             0,
         )
         .unwrap();
@@ -1646,11 +1869,15 @@ mod tests {
         let root_a_path = registry.0.lock().unwrap().get(&root_a.id).cloned();
         let root_b_path = registry.0.lock().unwrap().get(&root_b.id).cloned();
         let missing_id = "root-missing".to_string();
-        let index = index_workspace_markdown_inner(vec![
-            (root_a.id.clone(), root_a_path),
-            (root_b.id.clone(), root_b_path),
-            (missing_id.clone(), None),
-        ]);
+        let index = index_workspace_markdown_inner(
+            vec![
+                (root_a.id.clone(), root_a_path),
+                (root_b.id.clone(), root_b_path),
+                (missing_id.clone(), None),
+            ],
+            &CancellationToken::inactive(),
+        )
+        .expect("not cancelled");
 
         assert!(index.unavailable_root_ids.contains(&missing_id));
         let shared_count = index
@@ -1660,5 +1887,66 @@ mod tests {
             .count();
         assert_eq!(shared_count, 1);
         assert!(index.entries.iter().any(|entry| entry.name == "a.md"));
+    }
+
+    #[test]
+    fn cancelling_one_batch_item_does_not_affect_a_sibling_task() {
+        let registry = BackgroundTaskRegistry::default();
+        let guard_a = registry.register("preview-a").expect("register a");
+        let guard_b = registry.register("preview-b").expect("register b");
+        registry.cancel("preview-a");
+
+        assert!(guard_a.token().is_cancelled());
+        assert!(!guard_b.token().is_cancelled());
+
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("ok.mmd"), "flowchart TD\nA-->B\n").unwrap();
+        let path = path_to_string(&dir.path().join("ok.mmd"));
+
+        assert_eq!(
+            load_direct_mermaid(
+                &path,
+                MermaidTheme::Default,
+                ColorTheme::Default,
+                &guard_a.token(),
+            ),
+            None,
+            "a cancelled sibling must not produce a completed result"
+        );
+        assert!(
+            load_direct_mermaid(
+                &path,
+                MermaidTheme::Default,
+                ColorTheme::Default,
+                &guard_b.token(),
+            )
+            .is_some(),
+            "an unrelated sibling task must still complete"
+        );
+    }
+
+    #[test]
+    fn list_workspace_children_stops_at_the_pre_scan_cancellation_checkpoint() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("readme.md"), "").unwrap();
+        let (registry, root) = registry_with(dir.path());
+        let root_path = registry.0.lock().unwrap().get(&root.id).cloned().unwrap();
+
+        let result = list_workspace_children_at_root(&root_path, &root.id, "", &cancelled_token())
+            .expect("cancellation is not an error");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn index_workspace_markdown_stops_without_reporting_unavailable_or_truncated() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("a.md"), "").unwrap();
+        fs::write(dir.path().join("b.md"), "").unwrap();
+        let (registry, root) = registry_with(dir.path());
+        let root_path = registry.0.lock().unwrap().get(&root.id).cloned();
+
+        let index =
+            index_workspace_markdown_inner(vec![(root.id.clone(), root_path)], &cancelled_token());
+        assert_eq!(index, None, "a cancelled scan must discard partial results");
     }
 }

@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  POINTER_DRAG_THRESHOLD_PX,
   QUICK_SWITCHER_WORKSPACE_LIMIT,
   buildQuickSwitcherItems,
   computeNavigationControlState,
   disambiguatePathLabels,
+  exclusiveOverlayVisibility,
+  resolveRestoredFocusTarget,
+  shouldBeginPointerDrag,
   shouldSuppressTabClick,
   workspaceIndexNotices,
 } from "./ui-logic";
@@ -191,6 +195,58 @@ describe("quick switcher", () => {
     expect(items[0].label).toBe("intro.md");
   });
 
+  it("keeps tab then workspace then recent source priority and path tie-breaks", () => {
+    const { items } = buildQuickSwitcherItems(
+      [ready("/docs/design.md")],
+      ["/notes/guides/intro.md", "/tmp/intro.md"],
+      "intro",
+      { workspaceEntries, workspaceRoots },
+    );
+
+    expect(items.map((item) => [item.kind, item.path ?? item.tabKey])).toEqual([
+      ["workspace", "/docs/guides/intro.md"],
+      ["workspace", "/notes/guides/intro.md"],
+      ["recent", "/tmp/intro.md"],
+    ]);
+  });
+
+  it("uses pinned-root order only as a workspace match tie-breaker", () => {
+    const notesFirstRoots = [
+      { id: "root-notes", canonicalPath: "/notes", displayName: "notes" },
+      { id: "root-docs", canonicalPath: "/docs", displayName: "docs" },
+    ];
+    const equalRank = buildQuickSwitcherItems([], [], "intro.md", {
+      workspaceEntries,
+      workspaceRoots: notesFirstRoots,
+    });
+    expect(equalRank.items.map((item) => item.path)).toEqual([
+      "/notes/guides/intro.md",
+      "/docs/guides/intro.md",
+    ]);
+
+    const qualityBeatsOrder = buildQuickSwitcherItems([], [], "guide", {
+      workspaceEntries: [
+        workspaceEntry({
+          rootId: "root-notes",
+          canonicalPath: "/notes/my-guide.md",
+          relativePath: "my-guide.md",
+          name: "my-guide.md",
+        }),
+        workspaceEntry({
+          rootId: "root-docs",
+          canonicalPath: "/docs/guide.md",
+          relativePath: "guide.md",
+          name: "guide.md",
+        }),
+      ],
+      workspaceRoots: notesFirstRoots,
+    });
+    expect(qualityBeatsOrder.items.map((item) => item.path)).toEqual([
+      "/docs/guide.md",
+      "/notes/my-guide.md",
+    ]);
+  });
+
   it("caps workspace matches at 200 and reports truncation", () => {
     const many = Array.from({ length: QUICK_SWITCHER_WORKSPACE_LIMIT + 5 }, (_, index) =>
       workspaceEntry({
@@ -230,6 +286,42 @@ describe("tab click suppression", () => {
     expect(shouldSuppressTabClick("one", "one", 1_300, 1_100)).toBe(true);
     expect(shouldSuppressTabClick("two", "one", 1_300, 1_100)).toBe(false);
     expect(shouldSuppressTabClick("one", "one", 1_300, 1_300)).toBe(false);
+  });
+
+  it("begins a pointer drag only after the movement threshold", () => {
+    expect(shouldBeginPointerDrag(10, 10, 12, 12)).toBe(false);
+    expect(
+      shouldBeginPointerDrag(10, 10, 10 + POINTER_DRAG_THRESHOLD_PX, 10),
+    ).toBe(true);
+  });
+});
+
+describe("overlay focus and exclusivity", () => {
+  it("restores focus only when the opener is still present", () => {
+    const opener = { id: "opener" };
+    expect(
+      resolveRestoredFocusTarget(opener, (element) => element === opener),
+    ).toBe(opener);
+    expect(resolveRestoredFocusTarget(opener, () => false)).toBeNull();
+    expect(resolveRestoredFocusTarget(null, () => true)).toBeNull();
+  });
+
+  it("opens one competing overlay at a time", () => {
+    expect(exclusiveOverlayVisibility("quick-open")).toEqual({
+      quickOpen: true,
+      exportModal: false,
+      documentSearch: false,
+    });
+    expect(exclusiveOverlayVisibility("export")).toEqual({
+      quickOpen: false,
+      exportModal: true,
+      documentSearch: false,
+    });
+    expect(exclusiveOverlayVisibility("document-search")).toEqual({
+      quickOpen: false,
+      exportModal: false,
+      documentSearch: true,
+    });
   });
 });
 

@@ -257,6 +257,23 @@ export interface WorkspaceMarkdownIndex {
   truncatedRootIds: string[];
 }
 
+/**
+ * Tagged outcome for cooperatively cancellable native commands. A
+ * cancellation carries no payload and must never be treated as an error.
+ */
+export type TaskOutcome<T> =
+  | { status: "completed"; result: T }
+  | { status: "cancelled" };
+
+export interface PreviewTaskRequest {
+  taskId: string;
+  path: string;
+}
+
+export type PreviewTaskOutcome =
+  | { status: "completed"; taskId: string; result: PreviewLoadResult }
+  | { status: "cancelled"; taskId: string };
+
 export interface AppState {
   tabs: AppTab[];
   activeTabKey: string | null;

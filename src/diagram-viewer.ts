@@ -1,6 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 
+import {
+  collectFocusableElements,
+  handleFocusTrapTab,
+  restoreFocus,
+} from "./accessibility";
 import { enhanceCodeBlock } from "./code-block";
 import { icon, renderIcons } from "./icons";
 
@@ -304,13 +309,23 @@ function openMediaViewer(options: {
     if (event.key === "Escape") {
       event.preventDefault();
       close();
+      return;
+    }
+    if (event.key === "Tab") {
+      handleFocusTrapTab(
+        event,
+        collectFocusableElements(overlay),
+        document.activeElement,
+      );
     }
   };
 
+  const opener = document.activeElement as HTMLElement | null;
   const close = (): void => {
     document.removeEventListener("keydown", onKeyDown);
     overlay.remove();
     if (activeViewer?.close === close) activeViewer = null;
+    restoreFocus(opener);
   };
 
   overlay.querySelectorAll("[data-viewer-close]").forEach((element) => {

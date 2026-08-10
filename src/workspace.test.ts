@@ -8,13 +8,16 @@ import {
 import {
   applyWorkspaceRename,
   applyWorkspaceTrash,
+  canMoveWorkspaceRoot,
   dedupeWorkspaceRoots,
   isPathPrefix,
+  moveWorkspaceRoot,
   rewritePathPrefix,
   sortWorkspaceEntries,
   toggleExpandedPath,
+  workspaceCacheKey,
 } from "./workspace";
-import type { AppState, WorkspaceEntry } from "./types";
+import type { AppState, WorkspaceEntry, WorkspaceRoot } from "./types";
 
 function baseState(overrides: Partial<AppState> = {}): AppState {
   return { ...DEFAULT_STATE, ...overrides };
@@ -200,5 +203,92 @@ describe("workspace helpers", () => {
       { id: "r1", canonicalPath: "/docs", displayName: "docs" },
     ]);
     expect(roundTrip.expandedWorkspacePaths).toEqual({ r1: ["guides"] });
+  });
+
+  it("preserves pinned-root array order through session v1 round trips", () => {
+    const roots: WorkspaceRoot[] = [
+      { id: "b", canonicalPath: "/notes", displayName: "notes" },
+      { id: "a", canonicalPath: "/docs", displayName: "docs" },
+      { id: "c", canonicalPath: "/work", displayName: "work" },
+    ];
+    const restored = fromPersistedSession(
+      toPersistedSession(
+        baseState({
+          workspaceRoots: roots,
+          expandedWorkspacePaths: {
+            b: ["daily"],
+            a: ["guides", "api"],
+          },
+        }),
+      ),
+    );
+
+    expect(restored.workspaceRoots.map((root) => root.id)).toEqual([
+      "b",
+      "a",
+      "c",
+    ]);
+    expect(restored.expandedWorkspacePaths).toEqual({
+      b: ["daily"],
+      a: ["guides", "api"],
+    });
+  });
+
+  it("keys child caches by root id and relative path identity", () => {
+    expect(workspaceCacheKey("root-a", "")).toBe("root-a:");
+    expect(workspaceCacheKey("root-a", "guides")).toBe("root-a:guides");
+    expect(workspaceCacheKey("root-b", "guides")).toBe("root-b:guides");
+  });
+
+  it("moves pinned roots while preserving object identity", () => {
+    const first = { id: "a", canonicalPath: "/a", displayName: "a" };
+    const second = { id: "b", canonicalPath: "/b", displayName: "b" };
+    const third = { id: "c", canonicalPath: "/c", displayName: "c" };
+    const roots = [first, second, third];
+
+    expect(moveWorkspaceRoot(roots, "b", 0).map((root) => root.id)).toEqual([
+      "b",
+      "a",
+      "c",
+    ]);
+    expect(moveWorkspaceRoot(roots, "a", 2).map((root) => root.id)).toEqual([
+      "b",
+      "c",
+      "a",
+    ]);
+    expect(moveWorkspaceRoot(roots, "a", 0)).toBe(roots);
+    expect(moveWorkspaceRoot(roots, "missing", 0)).toBe(roots);
+    expect(moveWorkspaceRoot(roots, "a", 99).map((root) => root.id)).toEqual([
+      "b",
+      "c",
+      "a",
+    ]);
+    expect(moveWorkspaceRoot(roots, "a", 2).at(2)).toBe(first);
+    expect(canMoveWorkspaceRoot(roots, "a", -1)).toBe(false);
+    expect(canMoveWorkspaceRoot(roots, "a", 1)).toBe(true);
+    expect(canMoveWorkspaceRoot(roots, "c", 1)).toBe(false);
+  });
+
+  it("preserves expansion maps and unrelated session fields when only roots move", () => {
+    const roots = [
+      { id: "a", canonicalPath: "/a", displayName: "a" },
+      { id: "b", canonicalPath: "/b", displayName: "b" },
+    ];
+    const state = baseState({
+      workspaceRoots: roots,
+      expandedWorkspacePaths: { a: ["guides"], b: ["daily"] },
+      activeTabKey: "document:/a/readme.md",
+      recentDocuments: ["/a/readme.md"],
+    });
+    const nextRoots = moveWorkspaceRoot(state.workspaceRoots, "b", 0);
+    const next = { ...state, workspaceRoots: nextRoots };
+    expect(next.workspaceRoots.map((root) => root.id)).toEqual(["b", "a"]);
+    expect(next.expandedWorkspacePaths).toEqual(state.expandedWorkspacePaths);
+    expect(next.activeTabKey).toBe(state.activeTabKey);
+    expect(next.recentDocuments).toEqual(state.recentDocuments);
+    expect(toPersistedSession(next).workspaceRoots?.map((root) => root.id)).toEqual([
+      "b",
+      "a",
+    ]);
   });
 });

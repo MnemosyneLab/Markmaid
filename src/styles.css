@@ -1484,6 +1484,55 @@ html.is-resizing-sidebar * {
   cursor: default;
 }
 
+.workspace-node.is-root {
+  padding-left: 2px;
+}
+
+.workspace-drag-handle {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: grab;
+}
+
+.workspace-drag-handle:hover,
+.workspace-drag-handle:focus-visible {
+  background: var(--surface-hover);
+  color: var(--text);
+  outline: none;
+}
+
+.workspace-drag-handle svg {
+  width: 14px;
+  height: 14px;
+}
+
+.workspace-root.is-dragging {
+  opacity: 0.55;
+}
+
+.workspace-root.drop-before {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.workspace-root.drop-after {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.is-reordering-roots {
+  cursor: grabbing;
+}
+
+.is-reordering-roots .workspace-drag-handle {
+  cursor: grabbing;
+}
+
 .workspace-children {
   --depth: 1;
 }

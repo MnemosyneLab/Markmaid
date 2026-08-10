@@ -12,10 +12,10 @@ import {
   revealDeferredCodeLine,
 } from "./code-block";
 import {
+  delegateExport,
   exportDocument,
-  exportFailureMessage,
+  isReadyDocumentTab,
   registerExportHandler,
-  updateExportConfig,
 } from "./export";
 import { enhanceDiagramViewers, wrapMarkdownImages } from "./diagram-viewer";
 import { icon, renderIcons } from "./icons";
@@ -40,39 +40,50 @@ import {
   addRecentDocuments,
   clampSidebarWidth,
   clearRecentDocuments,
-  closeTab,
-  cycleTab,
   DEFAULT_SIDEBAR_WIDTH,
   DEFAULT_STATE,
   documentKey,
   errorTabForLoading,
-  fromPersistedSession,
   loadingImageTab,
   loadingMermaidTab,
   loadingTab,
-  moveDocumentVisit,
+  MAX_SIDEBAR_WIDTH,
+  MIN_SIDEBAR_WIDTH,
   moveTab,
   openSettings,
   previewPath,
-  recordDocumentVisit,
-  reopenClosedTab,
   replaceDocumentResult,
   replacePreviewTab,
   setPreferences,
   tabFromImagePreview,
   tabFromMermaidPreview,
   tabFromResult,
-  toPersistedSession,
   updateDocumentVisit,
   updateScroll,
   upsertPreviewTab,
 } from "./state";
 import { buildStatusBar, type StatusBarModel } from "./status";
 import {
+  collectFocusableElements,
+  focusKeyFromElement,
+  focusKeySelector,
+  formatPositionAnnouncement,
+  handleFocusTrapTab,
+  resolveTabListKeyAction,
+  resolveTreeKeyAction,
+  restoreFocus,
+  sidebarResizeStep,
+  workspaceNodeFocusId,
+  type FocusKey,
+  type TreeItemModel,
+} from "./accessibility";
+import {
+  POINTER_DRAG_THRESHOLD_PX,
   buildQuickSwitcherItems,
   computeNavigationControlState,
   disambiguatedTabLabels,
   type QuickSwitcherItem,
+  shouldBeginPointerDrag,
   shouldSuppressTabClick,
   workspaceIndexNotices,
 } from "./ui-logic";
@@ -83,19 +94,39 @@ import {
   invokeFailureMessage,
   MARKDOWN_EXTENSIONS,
   MERMAID_EXTENSIONS,
-  PreviewRequestTracker,
   previewResultRequestedPath,
   unsupportedNotice,
 } from "./preview-open";
+import { createExportController } from "./app/export-controller";
+import { createNavigationController } from "./app/navigation-controller";
+import {
+  createFloatingMenuSession,
+  createOverlayController,
+} from "./app/overlay-controller";
+import {
+  createPersistence,
+  loadSessionFromStore,
+} from "./app/persistence";
+import { createPreviewController } from "./app/preview-controller";
+import {
+  createAppRuntime,
+  type AppRuntimeHooks,
+  type NoticeKind,
+} from "./app/runtime";
+import { createWorkspaceController } from "./app/workspace-controller";
+import {
+  formatDiagnosticsReport,
+  normalizeDiagnosticError,
+  type DiagnosticErrorRecord,
+  type DiagnosticsEnvironment,
+  type QuickOpenDiagnosticsStatus,
+} from "./diagnostics";
 import {
   applyWorkspaceRename,
   applyWorkspaceTrash,
   expandedPathsForRoot,
   parentRelativePath,
-  setExpandedPathsForRoot,
   toggleExpandedPath,
-  upsertWorkspaceRoot,
-  removeWorkspaceRoot,
   workspaceErrorMessage,
 } from "./workspace";
 import "./styles.css";
@@ -105,7 +136,6 @@ import type {
   ColorTheme,
   DocumentLoadResult,
   DocumentTab,
-  ExportConfig,
   ImageTab,
   MermaidDarkTheme,
   MermaidLightTheme,
@@ -114,21 +144,17 @@ import type {
   PageWidth,
   PreviewLoadResult,
   PreviewTab,
+  PreviewTaskOutcome,
   ReadyDocumentTab,
   SidebarView,
   TabPlacement,
+  TaskOutcome,
   ThemeMode,
   WorkspaceEntry,
   WorkspaceMarkdownIndex,
   WorkspaceMutation,
   WorkspaceRoot,
 } from "./types";
-import {
-  DEFAULT_EXPORT_CONFIG,
-  delegateExport,
-  isReadyDocumentTab,
-} from "./export";
-
 const OPEN_FILES_EVENT = "markmaid://open-files";
 const MENU_OPEN_EVENT = "markmaid://menu-open";
 const MENU_QUICK_OPEN_EVENT = "markmaid://menu-quick-open";
@@ -143,7 +169,6 @@ const MENU_NAVIGATE_BACK_EVENT = "markmaid://menu-navigate-back";
 const MENU_NAVIGATE_FORWARD_EVENT = "markmaid://menu-navigate-forward";
 const MENU_CLEAR_RECENT_EVENT = "markmaid://menu-clear-recent";
 const PRINT_EXPORT_ERROR_EVENT = "markmaid://print-export-error";
-const SESSION_KEY = "session";
 const LIGHT_MERMAID_THEMES: ReadonlyArray<MermaidLightTheme> = [
   "default",
   "base",
@@ -277,13 +302,53 @@ const rootElement = document.querySelector<HTMLElement>("#app");
 if (!rootElement) throw new Error("MarkMaid app root is missing.");
 const root: HTMLElement = rootElement;
 
-let state: AppState = { ...DEFAULT_STATE };
+const runtimeHooks: AppRuntimeHooks = {
+  render: () => {},
+  persist: () => {},
+  notice: (_kind: NoticeKind, _message: string) => {},
+};
+const runtime = createAppRuntime({ ...DEFAULT_STATE }, runtimeHooks);
+/** Local mirror kept in sync by runtime.commit for shell code paths. */
+let state: AppState = runtime.getState();
+let statusAnnouncement = "";
+let pendingFocusKey: FocusKey | null = null;
+let suppressFocusRestore = false;
+let overlayFocusReturn: HTMLElement | null = null;
+let workspaceTreeFocus: { rootId: string; relativePath: string } | null = null;
+let recentDiagnosticError: DiagnosticErrorRecord | null = null;
+const workspaceController = createWorkspaceController(runtime, {
+  onRootReordered: (rootId, position, total) => {
+    const rootEntry = runtime
+      .getState()
+      .workspaceRoots.find((item) => item.id === rootId);
+    const label = rootEntry?.displayName ?? "Folder";
+    statusAnnouncement = formatPositionAnnouncement(label, position, total);
+    selectedWorkspaceNode = { rootId, relativePath: "" };
+    workspaceTreeFocus = { rootId, relativePath: "" };
+    pendingFocusKey = {
+      kind: "workspace-node",
+      rootId,
+      relativePath: "",
+    };
+  },
+  onIndexInvalidated: () => invalidateWorkspaceMarkdownIndex(),
+  onTaskError: (operation, error) => recordDiagnosticError(operation, error),
+  onNotice: (message) => {
+    workspaceNotice = message;
+  },
+}, {
+  cancelBackgroundTask,
+  loadChildren: ({ taskId, rootId, relativePath }) =>
+    invoke<TaskOutcome<WorkspaceEntry[]>>("list_workspace_children", {
+      taskId,
+      rootId,
+      relativePath,
+    }),
+  errorMessage: workspaceInvokeError,
+});
 let stateStore: Store | null = null;
-let persistTimer: number | null = null;
 const pendingAnchors = new Map<string, string>();
-let mermaidThemeReloadSequence = 0;
 let appliedAppearance: MermaidAppearance | null = null;
-let workspaceChildrenCache = new Map<string, WorkspaceEntry[]>();
 let selectedWorkspaceNode: { rootId: string; relativePath: string } | null =
   null;
 let workspaceDialog: {
@@ -304,8 +369,6 @@ let sidebarResizeSession: {
   startX: number;
   startWidth: number;
 } | null = null;
-let tabContextMenu: HTMLElement | null = null;
-let dismissTabContextMenuListener: (() => void) | null = null;
 let tabDragSession: {
   key: string;
   pointerId: number;
@@ -318,7 +381,13 @@ let tabDragSession: {
 let suppressTabClickKey: string | null = null;
 let suppressTabClickUntil = 0;
 let suppressNativeDropUntil = 0;
-const previewRequests = new PreviewRequestTracker();
+/** Best-effort native cancel; generation tokens remain authoritative. */
+function cancelBackgroundTask(taskId: string): void {
+  void invoke("cancel_background_task", { taskId }).catch(() => {
+    // Unknown or already-finished IDs are a harmless no-op.
+  });
+}
+const previewController = createPreviewController(cancelBackgroundTask);
 const pendingFreshnessChecks = new Set<string>();
 const lastFreshnessCheckAt = new Map<string, number>();
 const externalChangeNotices = new Map<string, ExternalChangeNotice>();
@@ -331,44 +400,129 @@ interface DocumentSearchMatch {
   codeVisible: boolean;
 }
 
-const documentSearch = {
-  visible: false,
-  query: "",
-  matches: [] as DocumentSearchMatch[],
-  activeIndex: -1,
-};
-const quickSwitcher = {
-  visible: false,
-  query: "",
-  activeIndex: 0,
-  activeItemId: null as string | null,
-  indexRequestId: 0,
-  indexing: false,
-  index: null as WorkspaceMarkdownIndex | null,
-  indexError: null as string | null,
-};
-let exportModalVisible = false;
-let exportModalConfig: ExportConfig = { ...DEFAULT_EXPORT_CONFIG };
-let exportModalTabKey: string | null = null;
-let previousActiveElementBeforeExport: HTMLElement | null = null;
+const persistence = createPersistence({
+  getStore: () => stateStore,
+  getState: () => runtime.getState(),
+  syncRecentDocuments: async (paths) => {
+    await invoke("sync_recent_documents", { paths });
+  },
+  syncReopenClosedTabAvailability: async (available) => {
+    await invoke("sync_reopen_closed_tab_availability", { available });
+  },
+});
+
+const overlay = createOverlayController<DocumentSearchMatch>({
+  render: () => {
+    state = runtime.getState();
+    render();
+  },
+  hasWorkspaceRoots: () => runtime.getState().workspaceRoots.length > 0,
+  canOpenDocumentSearch: () => {
+    const current = activeTab(runtime.getState());
+    return Boolean(
+      current && current.kind === "document" && current.status === "ready",
+    );
+  },
+  onQuickOpenOpened: (requestId) => {
+    void refreshWorkspaceMarkdownIndex(requestId);
+  },
+  onQuickOpenClosed: () => {
+    workspaceController.cancelIndex();
+  },
+  clearDocumentSearchHighlights: () => clearDocumentSearchHighlights(),
+  focusQuickOpenInput: () => {
+    root.querySelector<HTMLInputElement>("[data-quick-switcher-input]")?.focus();
+  },
+  focusDocumentSearchInput: () => {
+    const input = root.querySelector<HTMLInputElement>("[data-document-search-input]");
+    input?.focus();
+    input?.select();
+  },
+});
+const documentSearch = overlay.documentSearch;
+const quickSwitcher = overlay.quickSwitcher;
+
 let exportNotice: string | null = null;
-let documentSearchRevealSequence = 0;
+const exportController = createExportController(runtime, {
+  render: () => {
+    state = runtime.getState();
+    render();
+  },
+  hideCompetingOverlays: () => overlay.hideSearchOverlays(),
+  focusFormatSelect: () => {
+    root.querySelector<HTMLSelectElement>("#export-format")?.focus();
+  },
+  isElementPresent: (element) => document.contains(element),
+  exportDocument: delegateExport,
+  onExportError: (message, error) => {
+    recordDiagnosticError("export-document", error);
+    exportNotice = message;
+  },
+  clearExportNotice: () => {
+    exportNotice = null;
+  },
+});
+
+const navigation = createNavigationController(runtime, {
+  captureActiveScroll: () => captureActiveScroll(),
+  onBeforeCloseTab: (key) => {
+    previewController.invalidateTab(key);
+    pendingAnchors.delete(key);
+    externalChangeNotices.delete(key);
+    ignoredExternalChangeSignatures.delete(key);
+    lastFreshnessCheckAt.delete(key);
+  },
+  ensurePreviewLoaded: (key) => ensurePreviewLoaded(key),
+  checkActiveDocumentFreshness: () => checkActiveDocumentFreshness(),
+  openDocumentPaths: (paths, anchor, sourceKey, recordVisit) =>
+    openDocumentPaths(paths, anchor, sourceKey, recordVisit),
+  setPendingAnchor: (key, fragment) => {
+    pendingAnchors.set(key, fragment);
+  },
+  syncReopenClosedTabAvailability: () =>
+    persistence.syncReopenClosedTabAvailability(),
+});
+
+const tabContextMenuSession = createFloatingMenuSession();
+const workspaceContextMenuSession = createFloatingMenuSession();
 const colorScheme = window.matchMedia("(prefers-color-scheme: dark)");
 
 registerExportHandler(exportDocument);
+
+runtimeHooks.render = () => {
+  state = runtime.getState();
+  render();
+};
+runtimeHooks.persist = () => {
+  state = runtime.getState();
+  schedulePersist();
+};
+runtimeHooks.notice = (kind, message) => {
+  if (kind === "global") {
+    showGlobalNotice(message);
+    return;
+  }
+  if (kind === "workspace") {
+    workspaceNotice = message;
+    render();
+    return;
+  }
+  exportNotice = message;
+  render();
+};
+
 void bootstrap();
 document.addEventListener("keydown", handleDocumentSearchShortcut);
 
 async function bootstrap(): Promise<void> {
   stateStore = await load("markmaid-state.json", { autoSave: 150 });
-  state = fromPersistedSession(
-    await stateStore.get<unknown>(SESSION_KEY),
-  );
+  runtime.commit(await loadSessionFromStore(stateStore));
+  state = runtime.getState();
   applyTheme();
   render();
   await registerNativeListeners();
-  await syncRecentDocuments();
-  await syncReopenClosedTabAvailability();
+  await persistence.syncRecentDocuments();
+  await persistence.syncReopenClosedTabAvailability();
   await restoreWorkspaceRoots();
   await ensurePreviewLoaded(state.activeTabKey);
 
@@ -397,10 +551,10 @@ async function restoreWorkspaceRoots(): Promise<void> {
       // Drop roots that no longer exist.
     }
   }
-  state = setPreferences(state, {
-    workspaceRoots: restored,
+  runtime.commit(setPreferences(state, {    workspaceRoots: restored,
     expandedWorkspacePaths: expanded,
-  });
+  }));
+  state = runtime.getState();
   render();
   schedulePersist();
 }
@@ -420,17 +574,18 @@ async function registerNativeListeners(): Promise<void> {
     listen(MENU_NEXT_TAB_EVENT, () => selectRelativeTab(1)),
     listen(MENU_PREVIOUS_TAB_EVENT, () => selectRelativeTab(-1)),
     listen(MENU_NAVIGATE_BACK_EVENT, () => {
-      if (!exportModalVisible) void navigateActiveDocumentHistory(-1);
+      if (!exportController.isVisible()) void navigateActiveDocumentHistory(-1);
     }),
     listen(MENU_NAVIGATE_FORWARD_EVENT, () => {
-      if (!exportModalVisible) void navigateActiveDocumentHistory(1);
+      if (!exportController.isVisible()) void navigateActiveDocumentHistory(1);
     }),
     listen<string>(PRINT_EXPORT_ERROR_EVENT, (event) => {
       exportNotice = event.payload;
       render();
     }),
     listen(MENU_CLEAR_RECENT_EVENT, () => {
-      state = clearRecentDocuments(state);
+      runtime.commit(clearRecentDocuments(state));
+      state = runtime.getState();
       schedulePersist();
     }),
     getCurrentWindow().onFocusChanged((event) => {
@@ -490,7 +645,7 @@ async function openDocumentPaths(
     (path) => classifyOpenablePath(path) !== null,
   );
   if (unsupportedPaths.length > 0) {
-    showGlobalNotice(unsupportedNotice(unsupportedPaths));
+    runtime.showNotice("global", unsupportedNotice(unsupportedPaths));
   }
   if (openablePaths.length === 0) {
     render();
@@ -499,7 +654,12 @@ async function openDocumentPaths(
 
   captureActiveScroll();
   const existingPaths: string[] = [];
-  const requests: Array<{ key: string; path: string; token: number }> = [];
+  const requests: Array<{
+    key: string;
+    path: string;
+    token: number;
+    taskId: string;
+  }> = [];
   let existingLoadingKey: string | null = null;
   for (const path of openablePaths) {
     const kind = classifyOpenablePath(path);
@@ -510,7 +670,8 @@ async function openDocumentPaths(
         previewPath(tab) === path,
     );
     if (existing) {
-      state = { ...state, activeTabKey: existing.key };
+      runtime.commit({ ...state, activeTabKey: existing.key });
+      state = runtime.getState();
       if (anchor) pendingAnchors.set(existing.key, anchor);
       if (existing.status === "loading") existingLoadingKey = existing.key;
       if (existing.kind === "document") {
@@ -531,19 +692,23 @@ async function openDocumentPaths(
           ? loadingMermaidTab(path)
           : loadingImageTab(path);
     if (anchor && kind === "document") pendingAnchors.set(placeholder.key, anchor);
-    state = {
+    runtime.commit({
       ...state,
       tabs: [...state.tabs, placeholder],
       activeTabKey: placeholder.key,
-    };
+    });
+    state = runtime.getState();
+    const started = previewController.beginLoad(placeholder.key);
     requests.push({
       key: placeholder.key,
       path,
-      token: previewRequests.begin(placeholder.key),
+      token: started.token,
+      taskId: started.taskId,
     });
   }
   if (existingPaths.length > 0) {
-    state = addRecentDocuments(state, existingPaths);
+    runtime.commit(addRecentDocuments(state, existingPaths));
+    state = runtime.getState();
     void syncRecentDocuments();
   }
   let visitTargetKey = state.activeTabKey;
@@ -551,39 +716,42 @@ async function openDocumentPaths(
 
   if (requests.length > 0) {
     try {
-      const results = await invoke<PreviewLoadResult[]>("load_preview_paths", {
-        paths: requests.map((request) => request.path),
+      const outcomes = await invoke<PreviewTaskOutcome[]>("load_preview_paths", {
+        requests: requests.map((request) => ({
+          taskId: request.taskId,
+          path: request.path,
+        })),
         mermaidTheme: activeMermaidTheme(),
         colorTheme: state.colorTheme,
       });
       for (const [index, request] of requests.entries()) {
-        const result = results[index];
-        if (!result) continue;
+        const outcome = outcomes[index];
+        if (!outcome || outcome.status === "cancelled") continue;
         const wasVisitTarget =
           request.key === visitTargetKey && state.activeTabKey === visitTargetKey;
-        const appliedKey = applyPreviewLoadResult(result, request);
+        const appliedKey = applyPreviewLoadResult(outcome.result, request);
         if (wasVisitTarget && appliedKey) visitTargetKey = appliedKey;
       }
     } catch (error) {
+      recordDiagnosticError("load-preview-paths", error);
       const message = invokeFailureMessage(error);
       for (const request of requests) {
-        if (!previewRequests.isCurrent(request.key, request.token)) continue;
+        if (!previewController.isLoadCurrent(request.key, request.token)) continue;
         const loading = state.tabs.find(
           (tab): tab is PreviewTab =>
             tab.kind !== "settings" && tab.key === request.key && tab.status === "loading",
         );
         if (loading) {
-          state = replacePreviewTab(
-            state,
-            request.key,
-            errorTabForLoading(loading, message),
+          runtime.commit(
+            replacePreviewTab(state, request.key, errorTabForLoading(loading, message)),
           );
+          state = runtime.getState();
         }
         pendingAnchors.delete(request.key);
       }
     } finally {
       for (const request of requests) {
-        previewRequests.finish(request.key, request.token);
+        previewController.finishLoad(request.key, request.token);
       }
     }
   } else if (existingLoadingKey) {
@@ -602,7 +770,7 @@ function applyPreviewLoadResult(
   request: { key: string; path: string; token: number },
 ): string | null {
   if (
-    !previewRequests.isCurrent(request.key, request.token) ||
+    !previewController.isLoadCurrent(request.key, request.token) ||
     previewResultRequestedPath(result) !== request.path
   ) {
     return null;
@@ -618,22 +786,25 @@ function applyPreviewLoadResult(
       result.kind === "unsupported"
         ? result.message
         : "The preview loader returned an unexpected file type.";
-    showGlobalNotice(message);
+    runtime.showNotice("global", message);
     const errorTab = errorTabForLoading(loading, message);
-    state = replacePreviewTab(state, request.key, errorTab);
+    runtime.commit(replacePreviewTab(state, request.key, errorTab));
+    state = runtime.getState();
     pendingAnchors.delete(request.key);
     return errorTab.key;
   }
 
   if (result.kind === "document") {
-    state = replaceDocumentResult(state, request.key, result.result);
+    runtime.commit(replaceDocumentResult(state, request.key, result.result));
+    state = runtime.getState();
     if (result.result.status === "ready") {
       const anchorForRequest = pendingAnchors.get(request.key);
       if (anchorForRequest && request.key !== documentKey(result.result.canonicalPath)) {
         pendingAnchors.delete(request.key);
         pendingAnchors.set(documentKey(result.result.canonicalPath), anchorForRequest);
       }
-      state = addRecentDocuments(state, [result.result.canonicalPath]);
+      runtime.commit(addRecentDocuments(state, [result.result.canonicalPath]));
+      state = runtime.getState();
     } else {
       pendingAnchors.delete(request.key);
     }
@@ -648,7 +819,8 @@ function applyPreviewLoadResult(
           result.result.status === "ready" ? convertFileSrc(result.result.path) : "",
           loading.scrollTop,
         );
-  state = replacePreviewTab(state, request.key, nextTab);
+  runtime.commit(replacePreviewTab(state, request.key, nextTab));
+  state = runtime.getState();
   return nextTab.key;
 }
 
@@ -663,8 +835,9 @@ async function reloadActiveDocument(): Promise<void> {
       current.kind === "mermaid"
         ? loadingMermaidTab(path, current.scrollTop)
         : loadingImageTab(path, current.scrollTop);
-    previewRequests.invalidate(current.key);
-    state = replacePreviewTab(state, current.key, loading);
+    previewController.invalidateLoad(current.key);
+    runtime.commit(replacePreviewTab(state, current.key, loading));
+    state = runtime.getState();
     render();
     await ensurePreviewLoaded(loading.key, true);
     return;
@@ -677,31 +850,36 @@ async function reloadActiveDocument(): Promise<void> {
         ? (current.canonicalPath ?? current.requestedPath)
         : current.requestedPath;
   const requestKey = current.key;
-  const requestToken = previewRequests.begin(requestKey);
+  const { token: requestToken, taskId } = previewController.beginLoad(requestKey);
   try {
-    const result = await invoke<DocumentLoadResult>("reload_document", {
+    const outcome = await invoke<TaskOutcome<DocumentLoadResult>>("reload_document", {
+      taskId,
       path,
       mermaidTheme: activeMermaidTheme(),
       colorTheme: state.colorTheme,
     });
-    if (!previewRequests.isCurrent(requestKey, requestToken)) return;
+    if (!previewController.isLoadCurrent(requestKey, requestToken)) return;
+    if (outcome.status === "cancelled") return;
+    const result = outcome.result;
     const latest = state.tabs.find(
       (tab): tab is DocumentTab => tab.kind === "document" && tab.key === requestKey,
     );
     if (!latest) return;
 
     if (latest.status === "ready" && result.status === "error") {
-      state = {
+      runtime.commit({
         ...state,
         tabs: state.tabs.map((tab) =>
           tab.key === requestKey ? { ...latest, reloadError: result.message } : tab,
         ),
-      };
+      });
+      state = runtime.getState();
     } else {
       externalChangeNotices.delete(requestKey);
       ignoredExternalChangeSignatures.delete(requestKey);
       const replacement = tabFromResult(result, latest.scrollTop);
-      state = replacePreviewTab(state, requestKey, replacement);
+      runtime.commit(replacePreviewTab(state, requestKey, replacement));
+      state = runtime.getState();
       if (latest.status !== "ready" && result.status === "ready") {
         recordActiveDocumentVisit();
       }
@@ -709,19 +887,21 @@ async function reloadActiveDocument(): Promise<void> {
     render();
     schedulePersist();
   } catch (error) {
-    if (!previewRequests.isCurrent(requestKey, requestToken)) return;
+    if (!previewController.isLoadCurrent(requestKey, requestToken)) return;
     const latest = state.tabs.find(
       (tab): tab is DocumentTab => tab.kind === "document" && tab.key === requestKey,
     );
     if (!latest) return;
+    recordDiagnosticError("reload-document", error);
     const message = invokeFailureMessage(error);
     if (latest.status === "ready") {
-      state = {
+      runtime.commit({
         ...state,
         tabs: state.tabs.map((tab) =>
           tab.key === requestKey ? { ...latest, reloadError: message } : tab,
         ),
-      };
+      });
+      state = runtime.getState();
     } else {
       const replacement = tabFromResult(
         {
@@ -734,12 +914,13 @@ async function reloadActiveDocument(): Promise<void> {
         },
         latest.scrollTop,
       );
-      state = replacePreviewTab(state, requestKey, replacement);
+      runtime.commit(replacePreviewTab(state, requestKey, replacement));
+      state = runtime.getState();
     }
     render();
     schedulePersist();
   } finally {
-    previewRequests.finish(requestKey, requestToken);
+    previewController.finishLoad(requestKey, requestToken);
   }
 }
 
@@ -817,74 +998,57 @@ function ignoreActiveExternalChange(): void {
 }
 
 function closeActiveTab(): void {
-  if (!state.activeTabKey) return;
-  closeTabAndLoadNext(state.activeTabKey);
+  navigation.closeActiveTab();
 }
 
 function closeTabAndLoadNext(key: string): void {
-  captureActiveScroll();
-  previewRequests.invalidate(key);
-  pendingAnchors.delete(key);
-  externalChangeNotices.delete(key);
-  ignoredExternalChangeSignatures.delete(key);
-  lastFreshnessCheckAt.delete(key);
-  state = closeTab(state, key);
-  recordActiveDocumentVisit();
-  render();
-  schedulePersist();
-  void syncReopenClosedTabAvailability();
-  void ensurePreviewLoaded(state.activeTabKey).then(() =>
-    checkActiveDocumentFreshness(),
-  );
+  const index = state.tabs.findIndex((tab) => tab.key === key);
+  if (index >= 0) {
+    const remaining = state.tabs.filter((tab) => tab.key !== key);
+    const fallback = remaining[Math.min(index, remaining.length - 1)];
+    if (fallback) {
+      pendingFocusKey = { kind: "tab", tabKey: fallback.key };
+    }
+  }
+  navigation.closeTabAndLoadNext(key);
+  state = runtime.getState();
 }
 
 function reopenLastClosedTab(): void {
-  state = reopenClosedTab(state);
-  recordActiveDocumentVisit();
-  render();
-  schedulePersist();
-  void syncReopenClosedTabAvailability();
-  void ensurePreviewLoaded(state.activeTabKey).then(() =>
-    checkActiveDocumentFreshness(),
-  );
+  navigation.reopenLastClosedTab();
 }
 
 function showSettings(): void {
   captureActiveScroll();
-  state = openSettings(state);
+  runtime.commit(openSettings(state));
+  state = runtime.getState();
   render();
   schedulePersist();
 }
 
 function selectRelativeTab(direction: 1 | -1): void {
-  captureActiveScroll();
-  state = cycleTab(state, direction);
-  recordActiveDocumentVisit();
-  render();
-  schedulePersist();
-  void ensurePreviewLoaded(state.activeTabKey).then(() =>
-    checkActiveDocumentFreshness(),
-  );
+  navigation.selectRelativeTab(direction);
 }
 
 async function ensurePreviewLoaded(key: string | null, force = false): Promise<void> {
-  if (!key || (!force && previewRequests.has(key))) return;
+  if (!key || (!force && previewController.hasLoad(key))) return;
   const tab = state.tabs.find((candidate) => candidate.key === key);
   if (!tab || tab.kind === "settings" || tab.status !== "loading") return;
 
   const wasActive = state.activeTabKey === key;
   const path = previewPath(tab);
-  const token = previewRequests.begin(key);
+  const { token, taskId } = previewController.beginLoad(key);
   try {
-    const [result] = await invoke<PreviewLoadResult[]>("load_preview_paths", {
-      paths: [path],
+    const [outcome] = await invoke<PreviewTaskOutcome[]>("load_preview_paths", {
+      requests: [{ taskId, path }],
       mermaidTheme: activeMermaidTheme(),
       colorTheme: state.colorTheme,
     });
-    if (!previewRequests.isCurrent(key, token)) return;
+    if (!previewController.isLoadCurrent(key, token)) return;
+    if (!outcome || outcome.status === "cancelled") return;
+    const result = outcome.result;
     const latest = state.tabs.find((candidate) => candidate.key === key);
     if (
-      !result ||
       !latest ||
       latest.kind === "settings" ||
       latest.status !== "loading"
@@ -907,7 +1071,7 @@ async function ensurePreviewLoaded(key: string | null, force = false): Promise<v
     render();
     schedulePersist();
   } catch (error) {
-    if (!previewRequests.isCurrent(key, token)) return;
+    if (!previewController.isLoadCurrent(key, token)) return;
     const latest = state.tabs.find((candidate) => candidate.key === key);
     if (
       !latest ||
@@ -916,16 +1080,20 @@ async function ensurePreviewLoaded(key: string | null, force = false): Promise<v
     ) {
       return;
     }
-    state = replacePreviewTab(
-      state,
-      key,
-      errorTabForLoading(latest, invokeFailureMessage(error)),
+    recordDiagnosticError("load-preview-path", error);
+    runtime.commit(
+      replacePreviewTab(
+        state,
+        key,
+        errorTabForLoading(latest, invokeFailureMessage(error)),
+      ),
     );
+    state = runtime.getState();
     pendingAnchors.delete(key);
     render();
     schedulePersist();
   } finally {
-    previewRequests.finish(key, token);
+    previewController.finishLoad(key, token);
   }
 }
 
@@ -953,16 +1121,17 @@ function captureActiveScroll(): void {
   const current = activeTab(state);
   const scroller = root.querySelector<HTMLElement>(".document-scroll, .preview-scroll");
   if (!current || current.kind === "settings" || !scroller) return;
-  state = updateScroll(state, current.key, scroller.scrollTop);
+  runtime.commit(updateScroll(state, current.key, scroller.scrollTop));
+  state = runtime.getState();
   if (current.kind === "document" && current.status === "ready") {
     const visit = state.documentVisitHistory[state.documentVisitHistoryIndex];
-    state = updateDocumentVisit(state, {
-      path: current.canonicalPath,
+    runtime.commit(updateDocumentVisit(state, {      path: current.canonicalPath,
       scrollTop: scroller.scrollTop,
       ...(visit?.path === current.canonicalPath && visit.fragment
         ? { fragment: visit.fragment }
         : {}),
-    });
+    }));
+    state = runtime.getState();
   }
 }
 
@@ -970,15 +1139,8 @@ function recordActiveDocumentVisit(
   fragment: string | null = null,
   scrollTop?: number,
 ): void {
-  const current = activeTab(state);
-  if (!current || current.kind !== "document" || current.status !== "ready") {
-    return;
-  }
-  state = recordDocumentVisit(state, {
-    path: current.canonicalPath,
-    scrollTop: scrollTop ?? current.scrollTop,
-    ...(fragment ? { fragment } : {}),
-  });
+  navigation.recordActiveDocumentVisit(fragment, scrollTop);
+  state = runtime.getState();
 }
 
 function showGlobalNotice(message: string): void {
@@ -998,12 +1160,22 @@ function dismissGlobalNotice(): void {
 }
 
 function render(): void {
-  dismissTabContextMenu();
-  dismissWorkspaceContextMenu();
+  dismissTabContextMenu(false);
+  dismissWorkspaceContextMenu(false);
   applyTheme();
+  const overlayOpen =
+    quickSwitcher.visible || exportController.isVisible() || Boolean(workspaceDialog);
+  let focusToRestore: FocusKey | null = null;
+  if (pendingFocusKey) {
+    focusToRestore = pendingFocusKey;
+    pendingFocusKey = null;
+  } else if (!suppressFocusRestore && !overlayOpen) {
+    focusToRestore = focusKeyFromElement(document.activeElement);
+  }
+  suppressFocusRestore = false;
   const current = activeTab(state);
   const topTabs =
-    state.tabPlacement === "top" ? renderTabList(state.tabs) : "";
+    state.tabPlacement === "top" ? renderTabList(state.tabs, "horizontal") : "";
   const title = escapeHtml(windowTitle(current));
   const sidebarWidth = clampSidebarWidth(state.sidebarWidth);
   const sidebarToggle = `<button class="icon-button ${UI.iconButton}" type="button" data-action="toggle-left-sidebar" title="${state.leftSidebarVisible ? "Hide" : "Show"} sidebar" aria-label="${state.leftSidebarVisible ? "Hide" : "Show"} sidebar" aria-pressed="${state.leftSidebarVisible}">
@@ -1068,18 +1240,19 @@ function render(): void {
           state.leftSidebarVisible
             ? `<aside class="sidebar ${UI.sidebar}" aria-label="Workspace sidebar">
                 ${renderSidebarChrome()}
-                <div class="sidebar-body">
+                <div class="sidebar-body" id="sidebar-panel" role="tabpanel" aria-labelledby="${state.sidebarView === "files" ? "sidebar-tab-files" : "sidebar-tab-tabs"}">
                   ${
                     state.sidebarView === "files"
                       ? renderFilesSidebar()
-                      : renderTabList(state.tabs)
+                      : renderTabList(state.tabs, "vertical")
                   }
                 </div>
-                <div class="sidebar-resize" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabindex="0"></div>
+                <div class="sidebar-resize" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" aria-valuemin="${MIN_SIDEBAR_WIDTH}" aria-valuemax="${MAX_SIDEBAR_WIDTH}" aria-valuenow="${sidebarWidth}" tabindex="0"></div>
               </aside>`
             : ""
         }
-        <main class="content-stage ${UI.contentStage}" id="content-stage" aria-live="polite"></main>
+        <div class="sr-only" id="status-announcer" role="status" aria-live="polite" aria-atomic="true">${escapeHtml(statusAnnouncement)}</div>
+        <main class="content-stage ${UI.contentStage}" id="content-stage" role="tabpanel" aria-label="Document preview"></main>
       </div>
       ${renderStatusBar(status)}
       <div class="drop-overlay ${UI.dropOverlay}" aria-hidden="true">
@@ -1091,7 +1264,7 @@ function render(): void {
       ${documentSearch.visible ? renderDocumentSearch() : ""}
       ${quickSwitcher.visible ? renderQuickSwitcher() : ""}
       ${workspaceDialog ? renderWorkspaceDialog() : ""}
-      ${exportModalVisible ? renderExportModal() : ""}
+      ${exportController.isVisible() ? renderExportModal() : ""}
     </div>
   `;
 
@@ -1106,8 +1279,25 @@ function render(): void {
   bindQuickSwitcher();
   bindExportModal();
   renderIcons(root);
+  restoreShellFocus(focusToRestore);
   if (documentSearch.visible && documentSearch.query) {
     requestAnimationFrame(() => refreshDocumentSearch(false));
+  }
+}
+
+function restoreShellFocus(key: FocusKey | null): void {
+  if (!key) return;
+  const target = root.querySelector<HTMLElement>(focusKeySelector(key));
+  if (target) {
+    target.focus();
+    return;
+  }
+  if (key.kind === "tab" && state.activeTabKey) {
+    root
+      .querySelector<HTMLElement>(
+        focusKeySelector({ kind: "tab", tabKey: state.activeTabKey }),
+      )
+      ?.focus();
   }
 }
 
@@ -1326,61 +1516,21 @@ function updateQuickSwitcherResults(): void {
 }
 
 function openExportModal(): void {
-  const current = activeTab(state);
-  if (!isReadyDocumentTab(current)) return;
-
-  quickSwitcher.visible = false;
-  documentSearch.visible = false;
-  exportNotice = null;
-  exportModalVisible = true;
-  exportModalConfig = { ...DEFAULT_EXPORT_CONFIG };
-  exportModalTabKey = current.key;
-  previousActiveElementBeforeExport = document.activeElement as HTMLElement | null;
-
-  render();
-  requestAnimationFrame(() => {
-    root.querySelector<HTMLSelectElement>("#export-format")?.focus();
-  });
+  exportController.open();
+  state = runtime.getState();
 }
 
 function closeExportModal(): void {
-  if (!exportModalVisible) return;
-  exportModalVisible = false;
-  exportModalTabKey = null;
-  render();
-  if (
-    previousActiveElementBeforeExport &&
-    document.contains(previousActiveElementBeforeExport)
-  ) {
-    previousActiveElementBeforeExport.focus();
-  }
-  previousActiveElementBeforeExport = null;
-}
-
-async function confirmExportModal(): Promise<void> {
-  if (!exportModalVisible || !exportModalTabKey) return;
-  const current = activeTab(state);
-  if (!isReadyDocumentTab(current) || current.key !== exportModalTabKey) {
-    closeExportModal();
-    return;
-  }
-  const tab = current;
-  const config = { ...exportModalConfig };
-  closeExportModal();
-  await delegateExport(tab, config);
+  exportController.close();
 }
 
 async function submitExportModal(): Promise<void> {
-  try {
-    await confirmExportModal();
-  } catch (error) {
-    exportNotice = exportFailureMessage(error);
-    render();
-  }
+  await exportController.submit();
 }
 
+
 function renderExportModal(): string {
-  if (!exportModalVisible) return "";
+  if (!exportController.isVisible()) return "";
   const current = activeTab(state);
   const docName = isReadyDocumentTab(current) ? current.displayName : "Document";
 
@@ -1391,7 +1541,7 @@ function renderExportModal(): string {
           <h2 id="export-modal-title">Export Document</h2>
           <p class="export-modal-subtitle">Configure format and layout options for <strong>${escapeHtml(docName)}</strong></p>
           <p class="export-modal-subtitle">${
-            exportModalConfig.format === "pdf"
+            exportController.model.config.format === "pdf"
               ? "The macOS print sheet lets you choose Save as PDF, a filename, and a destination."
               : "After confirming, choose the HTML filename and destination in the save dialog."
           }</p>
@@ -1400,30 +1550,30 @@ function renderExportModal(): string {
           <div class="export-field-group">
             <label for="export-format" class="export-label">Export Format</label>
             <select id="export-format" class="export-select" data-export-field="format">
-              <option value="html" ${exportModalConfig.format === "html" ? "selected" : ""}>HTML Document (.html)</option>
-              <option value="pdf" ${exportModalConfig.format === "pdf" ? "selected" : ""}>PDF Document (.pdf)</option>
+              <option value="html" ${exportController.model.config.format === "html" ? "selected" : ""}>HTML Document (.html)</option>
+              <option value="pdf" ${exportController.model.config.format === "pdf" ? "selected" : ""}>PDF Document (.pdf)</option>
             </select>
           </div>
           <div class="export-field-group">
             <label for="export-paper-size" class="export-label">Paper Size</label>
             <select id="export-paper-size" class="export-select" data-export-field="paperSize">
-              <option value="a4" ${exportModalConfig.paperSize === "a4" ? "selected" : ""}>A4 (210 × 297 mm)</option>
-              <option value="a5" ${exportModalConfig.paperSize === "a5" ? "selected" : ""}>A5 (148 × 210 mm)</option>
+              <option value="a4" ${exportController.model.config.paperSize === "a4" ? "selected" : ""}>A4 (210 × 297 mm)</option>
+              <option value="a5" ${exportController.model.config.paperSize === "a5" ? "selected" : ""}>A5 (148 × 210 mm)</option>
             </select>
           </div>
           <div class="export-field-group">
             <label for="export-orientation" class="export-label">Orientation</label>
             <select id="export-orientation" class="export-select" data-export-field="orientation">
-              <option value="portrait" ${exportModalConfig.orientation === "portrait" ? "selected" : ""}>Portrait</option>
-              <option value="landscape" ${exportModalConfig.orientation === "landscape" ? "selected" : ""}>Landscape</option>
+              <option value="portrait" ${exportController.model.config.orientation === "portrait" ? "selected" : ""}>Portrait</option>
+              <option value="landscape" ${exportController.model.config.orientation === "landscape" ? "selected" : ""}>Landscape</option>
             </select>
           </div>
           <div class="export-field-group">
             <label for="export-margins" class="export-label">Page Margins</label>
             <select id="export-margins" class="export-select" data-export-field="margins">
-              <option value="normal" ${exportModalConfig.margins === "normal" ? "selected" : ""}>Normal (20 mm)</option>
-              <option value="compact" ${exportModalConfig.margins === "compact" ? "selected" : ""}>Compact (10 mm)</option>
-              <option value="wide" ${exportModalConfig.margins === "wide" ? "selected" : ""}>Wide (30 mm)</option>
+              <option value="normal" ${exportController.model.config.margins === "normal" ? "selected" : ""}>Normal (20 mm)</option>
+              <option value="compact" ${exportController.model.config.margins === "compact" ? "selected" : ""}>Compact (10 mm)</option>
+              <option value="wide" ${exportController.model.config.margins === "wide" ? "selected" : ""}>Wide (30 mm)</option>
             </select>
           </div>
         </div>
@@ -1437,7 +1587,7 @@ function renderExportModal(): string {
 }
 
 function bindExportModal(): void {
-  if (!exportModalVisible) return;
+  if (!exportController.isVisible()) return;
   const backdrop = root.querySelector<HTMLElement>("[data-export-backdrop]");
   backdrop?.addEventListener("click", (event) => {
     if (event.target === backdrop) {
@@ -1453,48 +1603,25 @@ function bindExportModal(): void {
 
   root.querySelectorAll<HTMLSelectElement>("[data-export-field]").forEach((select) => {
     select.addEventListener("change", () => {
-      exportModalConfig = updateExportConfig(
-        exportModalConfig,
-        select.dataset.exportField,
-        select.value,
-      );
-      render();
+      exportController.setField(select.dataset.exportField, select.value);
     });
   });
 }
 
 function openQuickSwitcher(): void {
-  documentSearch.visible = false;
-  documentSearch.matches = [];
-  documentSearch.activeIndex = -1;
-  quickSwitcher.visible = true;
-  quickSwitcher.query = "";
-  quickSwitcher.activeIndex = 0;
-  quickSwitcher.activeItemId = null;
-  quickSwitcher.index = null;
-  quickSwitcher.indexError = null;
-  quickSwitcher.indexing = state.workspaceRoots.length > 0;
-  const requestId = ++quickSwitcher.indexRequestId;
-  render();
-  requestAnimationFrame(() => {
-    root.querySelector<HTMLInputElement>("[data-quick-switcher-input]")?.focus();
-  });
-  void refreshWorkspaceMarkdownIndex(requestId);
+  overlay.openQuickSwitcher();
 }
 
 function closeQuickSwitcher(): void {
-  if (!quickSwitcher.visible) return;
-  quickSwitcher.visible = false;
-  quickSwitcher.indexRequestId += 1;
-  quickSwitcher.indexing = false;
-  quickSwitcher.activeItemId = null;
-  render();
+  overlay.closeQuickSwitcher();
 }
+
 
 function invalidateWorkspaceMarkdownIndex(): void {
   quickSwitcher.indexRequestId += 1;
   quickSwitcher.index = null;
   quickSwitcher.indexError = null;
+  workspaceController.cancelIndex();
   if (!quickSwitcher.visible) {
     quickSwitcher.indexing = false;
     return;
@@ -1519,17 +1646,28 @@ async function refreshWorkspaceMarkdownIndex(requestId: number): Promise<void> {
     return;
   }
 
+  const { token, taskId } = workspaceController.beginIndex();
   try {
-    const index = await invoke<WorkspaceMarkdownIndex>("index_workspace_markdown", {
-      rootIds: state.workspaceRoots.map((root) => root.id),
-    });
-    if (requestId !== quickSwitcher.indexRequestId || !quickSwitcher.visible) return;
-    quickSwitcher.index = index;
+    const outcome = await invoke<TaskOutcome<WorkspaceMarkdownIndex>>(
+      "index_workspace_markdown",
+      {
+        taskId,
+        rootIds: state.workspaceRoots.map((root) => root.id),
+      },
+    );
+    if (
+      requestId !== quickSwitcher.indexRequestId ||
+      !quickSwitcher.visible ||
+      !workspaceController.isIndexCurrent(token)
+    ) return;
+    if (outcome.status === "cancelled") return;
+    quickSwitcher.index = outcome.result;
     quickSwitcher.indexing = false;
     quickSwitcher.indexError = null;
     updateQuickSwitcherResults();
   } catch (error) {
     if (requestId !== quickSwitcher.indexRequestId || !quickSwitcher.visible) return;
+    recordDiagnosticError("index-workspace-markdown", error);
     quickSwitcher.indexing = false;
     quickSwitcher.index = {
       entries: [],
@@ -1541,6 +1679,8 @@ async function refreshWorkspaceMarkdownIndex(requestId: number): Promise<void> {
         ? `Pinned folder search unavailable: ${error.message}`
         : "Pinned folder search unavailable";
     updateQuickSwitcherResults();
+  } finally {
+    workspaceController.finishIndex(token);
   }
 }
 
@@ -1557,17 +1697,10 @@ function moveQuickSwitcherSelection(direction: 1 | -1): void {
 }
 
 async function activateQuickSwitcherItem(item: QuickSwitcherItem): Promise<void> {
-  quickSwitcher.visible = false;
-  quickSwitcher.indexRequestId += 1;
-  quickSwitcher.indexing = false;
+  overlay.dismissQuickSwitcher();
   if (item.kind === "tab" && item.tabKey) {
-    captureActiveScroll();
-    state = { ...state, activeTabKey: item.tabKey };
-    recordActiveDocumentVisit();
-    render();
-    schedulePersist();
-    await ensurePreviewLoaded(item.tabKey);
-    await checkActiveDocumentFreshness();
+    navigation.selectTab(item.tabKey);
+    state = runtime.getState();
     return;
   }
   if ((item.kind === "recent" || item.kind === "workspace") && item.path) {
@@ -1589,11 +1722,13 @@ function renderDocumentSearch(): string {
 }
 
 function renderSidebarChrome(): string {
+  const tabsSelected = state.sidebarView === "tabs";
+  const filesSelected = state.sidebarView === "files";
   return `
     <div class="sidebar-chrome">
-      <div class="sidebar-view-switch" role="tablist" aria-label="Sidebar view">
-        <button class="sidebar-view-button ${state.sidebarView === "tabs" ? "is-active" : ""}" type="button" role="tab" aria-selected="${state.sidebarView === "tabs"}" data-sidebar-view="tabs">Open Tabs</button>
-        <button class="sidebar-view-button ${state.sidebarView === "files" ? "is-active" : ""}" type="button" role="tab" aria-selected="${state.sidebarView === "files"}" data-sidebar-view="files">Files</button>
+      <div class="sidebar-view-switch" role="tablist" aria-label="Sidebar view" aria-orientation="horizontal">
+        <button class="sidebar-view-button ${tabsSelected ? "is-active" : ""}" type="button" role="tab" id="sidebar-tab-tabs" aria-controls="sidebar-panel" aria-selected="${tabsSelected}" tabindex="${tabsSelected ? 0 : -1}" data-sidebar-view="tabs">Open Tabs</button>
+        <button class="sidebar-view-button ${filesSelected ? "is-active" : ""}" type="button" role="tab" id="sidebar-tab-files" aria-controls="sidebar-panel" aria-selected="${filesSelected}" tabindex="${filesSelected ? 0 : -1}" data-sidebar-view="files">Files</button>
       </div>
     </div>
   `;
@@ -1620,14 +1755,30 @@ function renderFilesSidebar(): string {
               <button class="primary-button ${UI.primaryButton}" type="button" data-action="add-workspace-root">Add Folder</button>
             </div>`
           : `<div class="workspace-tree" role="tree" aria-label="Workspace files">
-              ${state.workspaceRoots.map((rootEntry) => renderWorkspaceRoot(rootEntry)).join("")}
+              ${state.workspaceRoots.map((rootEntry, index) => renderWorkspaceRoot(rootEntry, index, state.workspaceRoots.length)).join("")}
             </div>`
       }
     </div>
   `;
 }
 
-function renderWorkspaceRoot(rootEntry: WorkspaceRoot): string {
+function workspaceNodeTabIndex(rootId: string, relativePath: string): number {
+  const focus = workspaceTreeFocus ?? selectedWorkspaceNode;
+  if (focus) {
+    return focus.rootId === rootId && focus.relativePath === relativePath
+      ? 0
+      : -1;
+  }
+  // First visible root becomes the single tab stop when nothing is focused yet.
+  const firstRoot = state.workspaceRoots[0];
+  return firstRoot && firstRoot.id === rootId && relativePath === "" ? 0 : -1;
+}
+
+function renderWorkspaceRoot(
+  rootEntry: WorkspaceRoot,
+  index: number,
+  total: number,
+): string {
   const expanded = expandedPathsForRoot(
     state.expandedWorkspacePaths,
     rootEntry.id,
@@ -1635,12 +1786,16 @@ function renderWorkspaceRoot(rootEntry: WorkspaceRoot): string {
   const selected =
     selectedWorkspaceNode?.rootId === rootEntry.id &&
     selectedWorkspaceNode.relativePath === "";
+  const tabIndex = workspaceNodeTabIndex(rootEntry.id, "");
   return `
-    <div class="workspace-root" data-root-id="${escapeAttribute(rootEntry.id)}">
+    <div class="workspace-root" role="none" data-root-id="${escapeAttribute(rootEntry.id)}" data-drag-root="${escapeAttribute(rootEntry.id)}">
       <div
-        class="workspace-node is-directory ${selected ? "is-selected" : ""} ${expanded ? "is-expanded" : ""}"
+        class="workspace-node is-directory is-root ${selected ? "is-selected" : ""} ${expanded ? "is-expanded" : ""}"
         role="treeitem"
-        tabindex="0"
+        tabindex="${tabIndex}"
+        aria-level="1"
+        aria-posinset="${index + 1}"
+        aria-setsize="${total}"
         aria-expanded="${expanded}"
         data-workspace-node
         data-root-id="${escapeAttribute(rootEntry.id)}"
@@ -1649,7 +1804,8 @@ function renderWorkspaceRoot(rootEntry: WorkspaceRoot): string {
         data-canonical-path="${escapeAttribute(rootEntry.canonicalPath)}"
         title="${escapeAttribute(rootEntry.canonicalPath)}"
       >
-        <button class="workspace-twistie" type="button" data-toggle-expand aria-label="${expanded ? "Collapse" : "Expand"}">${icon(expanded ? "chevron-down" : "chevron-right")}</button>
+        <button class="workspace-drag-handle" type="button" tabindex="-1" data-drag-root-handle="${escapeAttribute(rootEntry.id)}" aria-label="Reorder ${escapeAttribute(rootEntry.displayName)}" title="Drag to reorder">${icon("grip-vertical")}</button>
+        <button class="workspace-twistie" type="button" tabindex="-1" data-toggle-expand aria-label="${expanded ? "Collapse" : "Expand"}">${icon(expanded ? "chevron-down" : "chevron-right")}</button>
         <span class="workspace-label">${escapeHtml(rootEntry.displayName)}</span>
       </div>
       ${expanded ? renderWorkspaceChildren(rootEntry.id, "", 1) : ""}
@@ -1662,32 +1818,35 @@ function renderWorkspaceChildren(
   parentRelativePath: string,
   depth: number,
 ): string {
-  const cacheKey = workspaceCacheKey(rootId, parentRelativePath);
-  const children = workspaceChildrenCache.get(cacheKey);
+  const children = workspaceController.cachedChildren(rootId, parentRelativePath);
   if (!children) {
-    return `<div class="workspace-children" style="--depth: ${depth}"><div class="workspace-empty-branch">Loading…</div></div>`;
+    return `<div class="workspace-children" role="none" style="--depth: ${depth}"><div class="workspace-empty-branch">Loading…</div></div>`;
   }
   if (children.length === 0) {
-    return `<div class="workspace-children" style="--depth: ${depth}"><div class="workspace-empty-branch">No visible items</div></div>`;
+    return `<div class="workspace-children" role="none" style="--depth: ${depth}"><div class="workspace-empty-branch">No visible items</div></div>`;
   }
   const expanded = new Set(
     expandedPathsForRoot(state.expandedWorkspacePaths, rootId),
   );
   return `
-    <div class="workspace-children" style="--depth: ${depth}">
+    <div class="workspace-children" role="none" style="--depth: ${depth}">
       ${children
-        .map((entry) => {
+        .map((entry, index) => {
           const isDirectory = entry.kind === "directory";
           const isExpanded = expanded.has(entry.relativePath);
           const selected =
             selectedWorkspaceNode?.rootId === entry.rootId &&
             selectedWorkspaceNode.relativePath === entry.relativePath;
+          const tabIndex = workspaceNodeTabIndex(entry.rootId, entry.relativePath);
           return `
-            <div>
+            <div role="none">
               <div
                 class="workspace-node ${isDirectory ? "is-directory" : "is-file"} ${selected ? "is-selected" : ""} ${isExpanded ? "is-expanded" : ""}"
                 role="treeitem"
-                tabindex="0"
+                tabindex="${tabIndex}"
+                aria-level="${depth + 1}"
+                aria-posinset="${index + 1}"
+                aria-setsize="${children.length}"
                 ${isDirectory ? `aria-expanded="${isExpanded}"` : ""}
                 data-workspace-node
                 data-root-id="${escapeAttribute(entry.rootId)}"
@@ -1698,7 +1857,7 @@ function renderWorkspaceChildren(
               >
                 ${
                   isDirectory
-                    ? `<button class="workspace-twistie" type="button" data-toggle-expand aria-label="${isExpanded ? "Collapse" : "Expand"}">${icon(isExpanded ? "chevron-down" : "chevron-right")}</button>`
+                    ? `<button class="workspace-twistie" type="button" tabindex="-1" data-toggle-expand aria-label="${isExpanded ? "Collapse" : "Expand"}">${icon(isExpanded ? "chevron-down" : "chevron-right")}</button>`
                     : `<span class="workspace-twistie-spacer" aria-hidden="true"></span>`
                 }
                 <span class="workspace-label">${escapeHtml(entry.name)}</span>
@@ -1747,45 +1906,18 @@ function renderWorkspaceDialog(): string {
   `;
 }
 
-function workspaceCacheKey(rootId: string, relativePath: string): string {
-  return `${rootId}:${relativePath}`;
-}
-
 async function ensureWorkspaceChildren(
   rootId: string,
   relativePath: string,
 ): Promise<WorkspaceEntry[]> {
-  const key = workspaceCacheKey(rootId, relativePath);
-  const cached = workspaceChildrenCache.get(key);
-  if (cached) return cached;
-  try {
-    const children = await invoke<WorkspaceEntry[]>("list_workspace_children", {
-      rootId,
-      relativePath,
-    });
-    workspaceChildrenCache.set(key, children);
-    return children;
-  } catch (error) {
-    workspaceNotice = workspaceInvokeError(error);
-    workspaceChildrenCache.set(key, []);
-    return [];
-  }
+  return workspaceController.ensureChildren(rootId, relativePath);
 }
 
 function invalidateWorkspaceCache(
   rootId: string,
   relativePaths: string[] = [],
 ): void {
-  if (relativePaths.length === 0) {
-    for (const key of [...workspaceChildrenCache.keys()]) {
-      if (key.startsWith(`${rootId}:`)) workspaceChildrenCache.delete(key);
-    }
-  } else {
-    for (const relativePath of relativePaths) {
-      workspaceChildrenCache.delete(workspaceCacheKey(rootId, relativePath));
-    }
-  }
-  invalidateWorkspaceMarkdownIndex();
+  workspaceController.invalidateChildren(rootId, relativePaths);
 }
 
 function workspaceInvokeError(error: unknown): string {
@@ -1794,10 +1926,13 @@ function workspaceInvokeError(error: unknown): string {
   return workspaceErrorMessage(code || "permission_denied");
 }
 
-function renderTabList(tabs: AppTab[]): string {
+function renderTabList(
+  tabs: AppTab[],
+  orientation: "horizontal" | "vertical",
+): string {
   const labels = disambiguatedTabLabels(tabs);
   return `
-    <div class="tab-list" role="tablist" aria-label="Open tabs">
+    <div class="tab-list" role="tablist" aria-label="Open tabs" aria-orientation="${orientation}">
       ${tabs
         .map((tab) => {
           const label =
@@ -1814,6 +1949,8 @@ function renderTabList(tabs: AppTab[]): string {
                 type="button"
                 role="tab"
                 aria-selected="${active}"
+                aria-controls="content-stage"
+                tabindex="${active ? 0 : -1}"
                 data-tab-key="${escapeAttribute(tab.key)}"
                 title="${escapeAttribute(tabTitle(tab))}"
               >
@@ -1823,6 +1960,7 @@ function renderTabList(tabs: AppTab[]): string {
               <button
                 class="tab-close"
                 type="button"
+                tabindex="-1"
                 data-close-tab="${escapeAttribute(tab.key)}"
                 aria-label="Close ${escapeAttribute(label)}"
               >${icon("x")}</button>
@@ -1843,12 +1981,13 @@ function bindWorkspaceInteractions(): void {
   root.querySelectorAll<HTMLElement>("[data-workspace-node]").forEach((node) => {
     node.addEventListener("click", (event) => {
       const target = event.target as HTMLElement;
-      if (target.closest("[data-toggle-expand]")) return;
+      if (target.closest("[data-toggle-expand], [data-drag-root-handle]")) return;
       const rootId = node.dataset.rootId ?? "";
       const relativePath = node.dataset.relativePath ?? "";
       selectWorkspaceNode(rootId, relativePath);
     });
     node.addEventListener("dblclick", (event) => {
+      if ((event.target as HTMLElement).closest("[data-drag-root-handle]")) return;
       event.preventDefault();
       void handleWorkspaceActivate(node);
     });
@@ -1861,67 +2000,259 @@ function bindWorkspaceInteractions(): void {
     });
     node
       .querySelector<HTMLElement>("[data-toggle-expand]")
+      ?.addEventListener("mousedown", (event) => {
+        event.preventDefault();
+      });
+    node
+      .querySelector<HTMLElement>("[data-toggle-expand]")
       ?.addEventListener("click", (event) => {
         event.stopPropagation();
         void toggleWorkspaceNode(node.dataset.rootId ?? "", node.dataset.relativePath ?? "");
       });
+    node
+      .querySelector<HTMLElement>("[data-drag-root-handle]")
+      ?.addEventListener("mousedown", (event) => {
+        // Keep treeitem focus; the handle is not a tab stop.
+        if (event.button === 0) event.preventDefault();
+      });
   });
+
+  bindRootReordering();
+}
+
+let rootDragSession: {
+  rootId: string;
+  pointerId: number;
+  startX: number;
+  startY: number;
+  dragging: boolean;
+  targetIndex: number | null;
+  element: HTMLElement;
+} | null = null;
+
+function bindRootReordering(): void {
+  root.querySelectorAll<HTMLElement>("[data-drag-root-handle]").forEach((handle) => {
+    handle.addEventListener("pointerdown", (event) => {
+      const rootId = handle.dataset.dragRootHandle;
+      if (!rootId || event.button !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const element =
+        root.querySelector<HTMLElement>(`[data-drag-root="${CSS.escape(rootId)}"]`) ??
+        handle.closest<HTMLElement>(".workspace-root");
+      if (!element) return;
+      rootDragSession = {
+        rootId,
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        dragging: false,
+        targetIndex: null,
+        element,
+      };
+    });
+
+    handle.addEventListener("pointermove", (event) => {
+      const session = rootDragSession;
+      if (!session || event.pointerId !== session.pointerId) return;
+      if ((event.buttons & 1) === 0) {
+        finishRootPointerDrag(event, true);
+        return;
+      }
+      if (!session.dragging) {
+        if (
+          !shouldBeginPointerDrag(
+            session.startX,
+            session.startY,
+            event.clientX,
+            event.clientY,
+            POINTER_DRAG_THRESHOLD_PX,
+          )
+        ) {
+          return;
+        }
+        session.dragging = true;
+        handle.setPointerCapture(event.pointerId);
+        session.element.classList.add("is-dragging");
+        document.documentElement.classList.add("is-reordering-roots");
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      session.targetIndex = resolveRootDropIndex(event.clientY);
+      clearRootDropIndicators();
+      if (session.targetIndex !== null) {
+        setRootDropIndicator(session.targetIndex);
+      }
+    });
+
+    handle.addEventListener("pointerup", (event) =>
+      finishRootPointerDrag(event, false),
+    );
+    handle.addEventListener("pointercancel", (event) =>
+      finishRootPointerDrag(event, true),
+    );
+  });
+}
+
+function resolveRootDropIndex(clientY: number): number | null {
+  const roots = Array.from(
+    root.querySelectorAll<HTMLElement>("[data-drag-root]"),
+  );
+  if (roots.length === 0) return null;
+  for (let index = 0; index < roots.length; index += 1) {
+    const bounds = roots[index].getBoundingClientRect();
+    const midpoint = bounds.top + bounds.height / 2;
+    if (clientY < midpoint) return index;
+  }
+  return roots.length;
+}
+
+function setRootDropIndicator(targetIndex: number): void {
+  const roots = Array.from(
+    root.querySelectorAll<HTMLElement>("[data-drag-root]"),
+  );
+  if (targetIndex < roots.length) {
+    roots[targetIndex]?.classList.add("drop-before");
+  } else {
+    roots.at(-1)?.classList.add("drop-after");
+  }
+}
+
+function clearRootDropIndicators(): void {
+  root
+    .querySelectorAll<HTMLElement>("[data-drag-root].drop-before, [data-drag-root].drop-after")
+    .forEach((element) => {
+      element.classList.remove("drop-before", "drop-after");
+    });
+}
+
+function finishRootPointerDrag(event: PointerEvent, cancelled: boolean): void {
+  const session = rootDragSession;
+  if (!session || event.pointerId !== session.pointerId) return;
+  rootDragSession = null;
+  clearRootDropIndicators();
+  session.element.classList.remove("is-dragging");
+  document.documentElement.classList.remove("is-reordering-roots");
+  try {
+    (event.target as HTMLElement | null)?.releasePointerCapture?.(event.pointerId);
+  } catch {
+    // Pointer capture may already be released.
+  }
+  if (cancelled || !session.dragging || session.targetIndex === null) return;
+
+  const fromIndex = state.workspaceRoots.findIndex(
+    (item) => item.id === session.rootId,
+  );
+  if (fromIndex < 0) return;
+  let targetIndex = session.targetIndex;
+  if (targetIndex > fromIndex) targetIndex -= 1;
+  workspaceController.reorderRoot(session.rootId, targetIndex);
 }
 
 function selectWorkspaceNode(rootId: string, relativePath: string): void {
   selectedWorkspaceNode = { rootId, relativePath };
+  workspaceTreeFocus = { rootId, relativePath };
   root.querySelectorAll<HTMLElement>("[data-workspace-node]").forEach((node) => {
-    const selected =
+    const matched =
       node.dataset.rootId === rootId &&
       node.dataset.relativePath === relativePath;
-    node.classList.toggle("is-selected", selected);
+    node.classList.toggle("is-selected", matched);
+    node.tabIndex = matched ? 0 : -1;
   });
+}
+
+function visibleWorkspaceTreeItems(): TreeItemModel[] {
+  return Array.from(
+    root.querySelectorAll<HTMLElement>("[data-workspace-node]"),
+  ).map((node) => {
+    const rootId = node.dataset.rootId ?? "";
+    const relativePath = node.dataset.relativePath ?? "";
+    const expandable = node.dataset.kind === "directory";
+    return {
+      id: workspaceNodeFocusId(rootId, relativePath),
+      expandable,
+      expanded: expandable && node.getAttribute("aria-expanded") === "true",
+      parentId:
+        relativePath === ""
+          ? null
+          : workspaceNodeFocusId(rootId, parentRelativePath(relativePath)),
+    };
+  });
+}
+
+function focusWorkspaceTreeNode(rootId: string, relativePath: string): void {
+  selectWorkspaceNode(rootId, relativePath);
+  root
+    .querySelector<HTMLElement>(
+      `[data-workspace-node][data-root-id="${CSS.escape(rootId)}"][data-relative-path="${CSS.escape(relativePath)}"]`,
+    )
+    ?.focus();
+}
+
+function closeWorkspaceDialog(): void {
+  if (!workspaceDialog) return;
+  workspaceDialog = null;
+  suppressFocusRestore = true;
+  render();
+  restoreFocus(overlayFocusReturn);
+  overlayFocusReturn = null;
+}
+
+function openWorkspaceDialog(
+  dialog: NonNullable<typeof workspaceDialog>,
+): void {
+  overlayFocusReturn = document.activeElement as HTMLElement | null;
+  suppressFocusRestore = true;
+  workspaceDialog = dialog;
+  render();
 }
 
 function bindWorkspaceDialog(): void {
   if (!workspaceDialog) return;
+  const dialog = root.querySelector<HTMLElement>(".workspace-dialog");
   const input = root.querySelector<HTMLInputElement>("#workspace-dialog-input");
+  const closeDialog = (): void => {
+    closeWorkspaceDialog();
+  };
+  if (!overlayFocusReturn) {
+    overlayFocusReturn = document.activeElement as HTMLElement | null;
+  }
   input?.focus();
   input?.select();
+  if (!input) {
+    root.querySelector<HTMLElement>("[data-dialog-confirm]")?.focus();
+  }
   root
     .querySelector<HTMLElement>("[data-dialog-cancel]")
-    ?.addEventListener("click", () => {
-      workspaceDialog = null;
-      render();
-    });
+    ?.addEventListener("click", closeDialog);
   root
     .querySelector<HTMLElement>("[data-dialog-confirm]")
     ?.addEventListener("click", () => void confirmWorkspaceDialog());
   root
     .querySelector<HTMLElement>("[data-dialog-backdrop]")
     ?.addEventListener("click", (event) => {
-      if (event.target === event.currentTarget) {
-        workspaceDialog = null;
-        render();
-      }
+      if (event.target === event.currentTarget) closeDialog();
     });
+  dialog?.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeDialog();
+      return;
+    }
+    if (event.key === "Tab" && dialog) {
+      handleFocusTrapTab(
+        event,
+        collectFocusableElements(dialog),
+        document.activeElement,
+      );
+    }
+  });
   input?.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
       void confirmWorkspaceDialog();
     }
-    if (event.key === "Escape") {
-      workspaceDialog = null;
-      render();
-    }
   });
-}
-
-let workspaceContextMenu: HTMLElement | null = null;
-let dismissWorkspaceContextMenuListener: ((event: PointerEvent) => void) | null = null;
-
-function dismissWorkspaceContextMenu(): void {
-  workspaceContextMenu?.remove();
-  workspaceContextMenu = null;
-  if (dismissWorkspaceContextMenuListener) {
-    document.removeEventListener("pointerdown", dismissWorkspaceContextMenuListener, true);
-    dismissWorkspaceContextMenuListener = null;
-  }
 }
 
 async function addWorkspaceRoot(): Promise<void> {
@@ -1935,22 +2266,13 @@ async function addWorkspaceRoot(): Promise<void> {
     const rootEntry = await invoke<WorkspaceRoot>("register_workspace_root", {
       path: selected,
     });
-    state = setPreferences(state, {
-      workspaceRoots: upsertWorkspaceRoot(state.workspaceRoots, rootEntry),
-      sidebarView: "files",
-      leftSidebarVisible: true,
-      expandedWorkspacePaths: setExpandedPathsForRoot(
-        state.expandedWorkspacePaths,
-        rootEntry.id,
-        [""],
-      ),
-    });
+    workspaceController.applyRegisteredRoot(rootEntry);
     invalidateWorkspaceCache(rootEntry.id);
     await ensureWorkspaceChildren(rootEntry.id, "");
     workspaceNotice = null;
     render();
-    schedulePersist();
   } catch (error) {
+    recordDiagnosticError("add-workspace-root", error);
     workspaceNotice = workspaceInvokeError(error);
     render();
   }
@@ -1965,10 +2287,13 @@ async function toggleWorkspaceNode(
     rootId,
     relativePath,
   );
-  state = setPreferences(state, { expandedWorkspacePaths: nextExpanded });
+  runtime.commit(setPreferences(state, { expandedWorkspacePaths: nextExpanded }));
+  state = runtime.getState();
   if (expandedPathsForRoot(nextExpanded, rootId).includes(relativePath)) {
     invalidateWorkspaceCache(rootId, [relativePath]);
     await ensureWorkspaceChildren(rootId, relativePath);
+  } else {
+    workspaceController.cancelChildren(rootId, relativePath);
   }
   render();
   schedulePersist();
@@ -1980,6 +2305,7 @@ async function handleWorkspaceActivate(node: HTMLElement): Promise<void> {
   const relativePath = node.dataset.relativePath ?? "";
   const canonicalPath = node.dataset.canonicalPath ?? "";
   selectedWorkspaceNode = { rootId, relativePath };
+  workspaceTreeFocus = { rootId, relativePath };
   if (kind === "directory") {
     await toggleWorkspaceNode(rootId, relativePath);
     return;
@@ -1993,28 +2319,41 @@ async function handleWorkspaceNodeKeydown(
   event: KeyboardEvent,
   node: HTMLElement,
 ): Promise<void> {
+  if (event.target !== node) return;
   const rootId = node.dataset.rootId ?? "";
   const relativePath = node.dataset.relativePath ?? "";
-  const kind = node.dataset.kind ?? "";
-  if (event.key === "Enter") {
+  const focusedId = workspaceNodeFocusId(rootId, relativePath);
+  const action = resolveTreeKeyAction(
+    event.key,
+    focusedId,
+    visibleWorkspaceTreeItems(),
+  );
+
+  if (action) {
     event.preventDefault();
-    await handleWorkspaceActivate(node);
-    return;
-  }
-  if (event.key === "ArrowRight" && kind === "directory") {
-    event.preventDefault();
-    if (!expandedPathsForRoot(state.expandedWorkspacePaths, rootId).includes(relativePath)) {
-      await toggleWorkspaceNode(rootId, relativePath);
+    if (action.type === "focus") {
+      const separator = action.id.indexOf("\0");
+      const nextRootId = action.id.slice(0, separator);
+      const nextRelativePath = action.id.slice(separator + 1);
+      focusWorkspaceTreeNode(nextRootId, nextRelativePath);
+      return;
     }
-    return;
-  }
-  if (event.key === "ArrowLeft" && kind === "directory") {
-    event.preventDefault();
-    if (expandedPathsForRoot(state.expandedWorkspacePaths, rootId).includes(relativePath)) {
+    if (action.type === "expand" || action.type === "collapse") {
+      pendingFocusKey = {
+        kind: "workspace-node",
+        rootId,
+        relativePath,
+      };
+      workspaceTreeFocus = { rootId, relativePath };
       await toggleWorkspaceNode(rootId, relativePath);
+      return;
     }
-    return;
+    if (action.type === "activate") {
+      await handleWorkspaceActivate(node);
+      return;
+    }
   }
+
   if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
     event.preventDefault();
     const rect = node.getBoundingClientRect();
@@ -2038,6 +2377,8 @@ function showWorkspaceContextMenu(event: MouseEvent, node: HTMLElement): void {
   const isRoot = relativePath === "";
   const menu = document.createElement("div");
   menu.className = "context-menu workspace-context-menu";
+  menu.setAttribute("role", "menu");
+  menu.setAttribute("aria-label", "Workspace item actions");
   menu.style.left = `${event.clientX}px`;
   menu.style.top = `${event.clientY}px`;
 
@@ -2053,7 +2394,13 @@ function showWorkspaceContextMenu(event: MouseEvent, node: HTMLElement): void {
       { label: "Reveal in Finder", action: "reveal" },
       { label: "Refresh", action: "refresh" },
     );
-    if (isRoot) items.push({ label: "Remove from Workspace", action: "unregister" });
+    if (isRoot) {
+      items.push(
+        { label: "Move Up", action: "move-up" },
+        { label: "Move Down", action: "move-down" },
+        { label: "Remove from Workspace", action: "unregister" },
+      );
+    }
   } else {
     items.push(
       { label: "Open Preview", action: "open" },
@@ -2064,13 +2411,15 @@ function showWorkspaceContextMenu(event: MouseEvent, node: HTMLElement): void {
   }
 
   menu.innerHTML = items
-    .map(
-      (item) =>
-        `<button type="button" data-workspace-action="${item.action}">${escapeHtml(item.label)}</button>`,
-    )
+    .map((item) => {
+      const disabled =
+        (item.action === "move-up" &&
+          !workspaceController.canMoveRoot(rootId, -1)) ||
+        (item.action === "move-down" &&
+          !workspaceController.canMoveRoot(rootId, 1));
+      return `<button type="button" role="menuitem" tabindex="-1" data-workspace-action="${item.action}" ${disabled ? "disabled" : ""}>${escapeHtml(item.label)}</button>`;
+    })
     .join("");
-  document.body.append(menu);
-  workspaceContextMenu = menu;
   menu.querySelectorAll<HTMLElement>("[data-workspace-action]").forEach((button) => {
     button.addEventListener("click", () => {
       const action = button.dataset.workspaceAction ?? "";
@@ -2078,12 +2427,11 @@ function showWorkspaceContextMenu(event: MouseEvent, node: HTMLElement): void {
       void runWorkspaceAction(action, rootId, relativePath, kind, canonicalPath);
     });
   });
-  dismissWorkspaceContextMenuListener = (pointerEvent) => {
-    if (workspaceContextMenu && !workspaceContextMenu.contains(pointerEvent.target as Node)) {
-      dismissWorkspaceContextMenu();
-    }
-  };
-  document.addEventListener("pointerdown", dismissWorkspaceContextMenuListener, true);
+  workspaceContextMenuSession.present(menu, { restoreFocus: node });
+}
+
+function dismissWorkspaceContextMenu(restore = true): void {
+  workspaceContextMenuSession.dismiss({ restore });
 }
 
 async function runWorkspaceAction(
@@ -2100,7 +2448,7 @@ async function runWorkspaceAction(
       }
       break;
     case "new-markdown":
-      workspaceDialog = {
+      openWorkspaceDialog({
         kind: "create-markdown",
         rootId,
         relativePath,
@@ -2108,11 +2456,10 @@ async function runWorkspaceAction(
         label: "File name",
         initialValue: "Untitled.md",
         confirmLabel: "Create",
-      };
-      render();
+      });
       break;
     case "new-folder":
-      workspaceDialog = {
+      openWorkspaceDialog({
         kind: "create-folder",
         rootId,
         relativePath,
@@ -2120,12 +2467,11 @@ async function runWorkspaceAction(
         label: "Folder name",
         initialValue: "New Folder",
         confirmLabel: "Create",
-      };
-      render();
+      });
       break;
     case "rename": {
       const name = canonicalPath.split("/").filter(Boolean).at(-1) ?? "";
-      workspaceDialog = {
+      openWorkspaceDialog({
         kind: "rename",
         rootId,
         relativePath,
@@ -2133,14 +2479,13 @@ async function runWorkspaceAction(
         label: "Name",
         initialValue: name,
         confirmLabel: "Rename",
-      };
-      render();
+      });
       break;
     }
     case "trash": {
       const name = canonicalPath.split("/").filter(Boolean).at(-1) ?? "";
       const isDirectory = kind === "directory";
-      workspaceDialog = {
+      openWorkspaceDialog({
         kind: "confirm-trash",
         rootId,
         relativePath,
@@ -2151,8 +2496,7 @@ async function runWorkspaceAction(
         message: isDirectory
           ? "This folder and its contents will be moved to Trash."
           : undefined,
-      };
-      render();
+      });
       break;
     }
     case "reveal":
@@ -2163,19 +2507,36 @@ async function runWorkspaceAction(
       await ensureWorkspaceChildren(rootId, relativePath);
       render();
       break;
-    case "unregister":
+    case "unregister": {
+      const roots = state.workspaceRoots;
+      const index = roots.findIndex((item) => item.id === rootId);
+      const neighbor =
+        index >= 0
+          ? roots[index + 1] ?? roots[index - 1] ?? null
+          : null;
       await invoke("unregister_workspace_root", { rootId });
       invalidateWorkspaceCache(rootId);
-      state = setPreferences(state, {
-        workspaceRoots: removeWorkspaceRoot(state.workspaceRoots, rootId),
-        expandedWorkspacePaths: setExpandedPathsForRoot(
-          state.expandedWorkspacePaths,
-          rootId,
-          [],
-        ),
-      });
-      render();
-      schedulePersist();
+      workspaceController.unregisterRoot(rootId);
+      if (selectedWorkspaceNode?.rootId === rootId) {
+        selectedWorkspaceNode = neighbor
+          ? { rootId: neighbor.id, relativePath: "" }
+          : null;
+        workspaceTreeFocus = selectedWorkspaceNode;
+        if (neighbor) {
+          pendingFocusKey = {
+            kind: "workspace-node",
+            rootId: neighbor.id,
+            relativePath: "",
+          };
+        }
+      }
+      break;
+    }
+    case "move-up":
+      workspaceController.moveRoot(rootId, -1);
+      break;
+    case "move-down":
+      workspaceController.moveRoot(rootId, 1);
       break;
     default:
       break;
@@ -2192,20 +2553,22 @@ async function confirmWorkspaceDialog(): Promise<void> {
         relativePath: dialog.relativePath,
       });
       if (mutation.removedPathPrefix) {
-        state = applyWorkspaceTrash(state, mutation.removedPathPrefix);
+        runtime.commit(applyWorkspaceTrash(state, mutation.removedPathPrefix));
+        state = runtime.getState();
         void syncReopenClosedTabAvailability();
       }
       invalidateWorkspaceCache(dialog.rootId, [parentRelativePath(dialog.relativePath)]);
       await ensureWorkspaceChildren(dialog.rootId, parentRelativePath(dialog.relativePath));
       workspaceDialog = null;
       workspaceNotice = null;
+      overlayFocusReturn = null;
       render();
       schedulePersist();
       await syncRecentDocuments();
     } catch (error) {
+      recordDiagnosticError("trash-workspace-item", error);
       workspaceNotice = workspaceInvokeError(error);
-      workspaceDialog = null;
-      render();
+      closeWorkspaceDialog();
     }
     return;
   }
@@ -2230,7 +2593,8 @@ async function confirmWorkspaceDialog(): Promise<void> {
       if (!expandedPathsForRoot(ensured, dialog.rootId).includes(dialog.relativePath)) {
         ensured = toggleExpandedPath(ensured, dialog.rootId, dialog.relativePath);
       }
-      state = setPreferences(state, { expandedWorkspacePaths: ensured });
+      runtime.commit(setPreferences(state, { expandedWorkspacePaths: ensured }));
+      state = runtime.getState();
       invalidateWorkspaceCache(dialog.rootId, [dialog.relativePath]);
       await ensureWorkspaceChildren(dialog.rootId, dialog.relativePath);
       selectedWorkspaceNode = {
@@ -2244,7 +2608,8 @@ async function confirmWorkspaceDialog(): Promise<void> {
         newName: name,
       });
       if (mutation.oldPath && mutation.newPath) {
-        state = applyWorkspaceRename(state, mutation.oldPath, mutation.newPath);
+        runtime.commit(applyWorkspaceRename(state, mutation.oldPath, mutation.newPath));
+        state = runtime.getState();
       }
       invalidateWorkspaceCache(dialog.rootId, [
         parentRelativePath(dialog.relativePath),
@@ -2265,59 +2630,31 @@ async function confirmWorkspaceDialog(): Promise<void> {
     }
     workspaceDialog = null;
     workspaceNotice = null;
+    if (selectedWorkspaceNode) {
+      workspaceTreeFocus = selectedWorkspaceNode;
+      pendingFocusKey = {
+        kind: "workspace-node",
+        rootId: selectedWorkspaceNode.rootId,
+        relativePath: selectedWorkspaceNode.relativePath,
+      };
+    }
+    overlayFocusReturn = null;
     render();
     schedulePersist();
     void ensurePreviewLoaded(state.activeTabKey);
     await syncRecentDocuments();
   } catch (error) {
+    recordDiagnosticError("mutate-workspace-item", error);
     workspaceNotice = workspaceInvokeError(error);
-    workspaceDialog = null;
-    render();
+    closeWorkspaceDialog();
   }
 }
 
 async function navigateActiveDocumentHistory(
   direction: -1 | 1,
 ): Promise<void> {
-  captureActiveScroll();
-  const current = activeTab(state);
-  if (!current || current.kind !== "document" || current.status !== "ready") return;
-
-  const nextState = moveDocumentVisit(state, direction);
-  if (nextState === state) return;
-
-  state = nextState;
-  const targetEntry =
-    state.documentVisitHistory[state.documentVisitHistoryIndex];
-  if (!targetEntry) return;
-
-  const existing = state.tabs.find(
-    (tab): tab is ReadyDocumentTab =>
-      tab.kind === "document" &&
-      tab.status === "ready" &&
-      tab.canonicalPath === targetEntry.path,
-  );
-  if (existing) {
-    state = {
-      ...state,
-      activeTabKey: existing.key,
-    };
-  } else {
-    await openDocumentPaths(
-      [targetEntry.path],
-      targetEntry.fragment ?? null,
-      null,
-      false,
-    );
-  }
-  const target = activeTab(state);
-  if (!isReadyDocumentTab(target)) return;
-  state = updateScroll(state, target.key, targetEntry.scrollTop);
-  if (targetEntry.fragment) {
-    pendingAnchors.set(target.key, targetEntry.fragment);
-  }
-  render();
-  schedulePersist();
+  await navigation.navigateDocumentHistory(direction);
+  state = runtime.getState();
 }
 
 function bindShellInteractions(): void {
@@ -2336,14 +2673,8 @@ function bindShellInteractions(): void {
         event.stopPropagation();
         return;
       }
-      captureActiveScroll();
-      state = { ...state, activeTabKey: key };
-      recordActiveDocumentVisit();
-      render();
-      schedulePersist();
-      void ensurePreviewLoaded(state.activeTabKey).then(() =>
-        checkActiveDocumentFreshness(),
-      );
+      navigation.selectTab(key);
+      state = runtime.getState();
     });
   });
 
@@ -2372,18 +2703,18 @@ function bindShellInteractions(): void {
     .querySelector<HTMLElement>('[data-action="toggle-outline"]')
     ?.addEventListener("click", () => {
       captureActiveScroll();
-      state = setPreferences(state, {
-        tableOfContentsVisible: !state.tableOfContentsVisible,
-      });
+      runtime.commit(setPreferences(state, {        tableOfContentsVisible: !state.tableOfContentsVisible,
+      }));
+      state = runtime.getState();
       render();
       schedulePersist();
     });
   root
     .querySelector<HTMLElement>('[data-action="toggle-left-sidebar"]')
     ?.addEventListener("click", () => {
-      state = setPreferences(state, {
-        leftSidebarVisible: !state.leftSidebarVisible,
-      });
+      runtime.commit(setPreferences(state, {        leftSidebarVisible: !state.leftSidebarVisible,
+      }));
+      state = runtime.getState();
       render();
       schedulePersist();
     });
@@ -2392,7 +2723,35 @@ function bindShellInteractions(): void {
     button.addEventListener("click", () => {
       const view = button.dataset.sidebarView as SidebarView;
       if (view === state.sidebarView) return;
-      state = setPreferences(state, { sidebarView: view });
+      pendingFocusKey = { kind: "sidebar-view", view };
+      runtime.commit(setPreferences(state, { sidebarView: view }));
+      state = runtime.getState();
+      render();
+      schedulePersist();
+    });
+    button.addEventListener("keydown", (event) => {
+      const tabs = Array.from(
+        root.querySelectorAll<HTMLElement>("[data-sidebar-view]"),
+      );
+      const currentIndex = tabs.indexOf(button);
+      const action = resolveTabListKeyAction(
+        event.key,
+        "horizontal",
+        currentIndex,
+        tabs.length,
+        event,
+      );
+      if (!action) return;
+      event.preventDefault();
+      const next = tabs[action.index];
+      const view = next?.dataset.sidebarView as SidebarView | undefined;
+      if (!view || view === state.sidebarView) {
+        next?.focus();
+        return;
+      }
+      pendingFocusKey = { kind: "sidebar-view", view };
+      runtime.commit(setPreferences(state, { sidebarView: view }));
+      state = runtime.getState();
       render();
       schedulePersist();
     });
@@ -2466,11 +2825,17 @@ function bindTabReordering(): void {
       }
 
       if (!session.dragging) {
-        const distance = Math.hypot(
-          event.clientX - session.startX,
-          event.clientY - session.startY,
-        );
-        if (distance < 4) return;
+        if (
+          !shouldBeginPointerDrag(
+            session.startX,
+            session.startY,
+            event.clientX,
+            event.clientY,
+            POINTER_DRAG_THRESHOLD_PX,
+          )
+        ) {
+          return;
+        }
         session.dragging = true;
         session.element.setPointerCapture(event.pointerId);
         suppressNativeDropUntil = Date.now() + 300;
@@ -2575,7 +2940,18 @@ function finishTabPointerDrag(event: PointerEvent, cancelled: boolean): void {
   clearTabDropIndicators();
 
   if (!session.dragging || !dropTarget) return;
-  state = moveTab(state, session.key, dropTarget.key, dropTarget.placeAfter);
+  runtime.commit(moveTab(state, session.key, dropTarget.key, dropTarget.placeAfter));
+  state = runtime.getState();
+  const nextIndex = state.tabs.findIndex((tab) => tab.key === session.key);
+  const moved = state.tabs[nextIndex];
+  if (moved && nextIndex >= 0) {
+    statusAnnouncement = formatPositionAnnouncement(
+      tabLabel(moved),
+      nextIndex + 1,
+      state.tabs.length,
+    );
+  }
+  pendingFocusKey = { kind: "tab", tabKey: session.key };
   render();
   schedulePersist();
 }
@@ -2585,6 +2961,9 @@ function showTabContextMenu(event: MouseEvent, tabKey: string): void {
   if (!tab) return;
 
   dismissTabContextMenu();
+  const invoker =
+    (event.currentTarget as HTMLElement | null) ??
+    root.querySelector<HTMLElement>(`[data-tab-key="${CSS.escape(tabKey)}"]`);
   const menu = document.createElement("div");
   menu.className =
     "tab-context-menu fixed z-50 min-w-52 rounded-[10px] border border-app-border bg-surface-raised p-1.5 text-sm text-app-text shadow-app";
@@ -2594,13 +2973,16 @@ function showTabContextMenu(event: MouseEvent, tabKey: string): void {
   const addAction = (
     label: string,
     action: () => void | Promise<unknown>,
+    disabled = false,
   ): void => {
     const button = document.createElement("button");
     button.className =
-      "block w-full rounded-md px-2.5 py-1.5 text-left text-sm text-app-text transition-colors hover:bg-surface-hover";
+      "block w-full rounded-md px-2.5 py-1.5 text-left text-sm text-app-text transition-colors hover:bg-surface-hover disabled:cursor-default disabled:opacity-45";
     button.type = "button";
     button.setAttribute("role", "menuitem");
+    button.tabIndex = -1;
     button.textContent = label;
+    if (disabled) button.disabled = true;
     button.addEventListener("click", () => {
       dismissTabContextMenu();
       void action();
@@ -2614,9 +2996,26 @@ function showTabContextMenu(event: MouseEvent, tabKey: string): void {
     menu.append(separator);
   };
 
+  const tabIndex = state.tabs.findIndex((candidate) => candidate.key === tabKey);
+  const moveEarlierLabel =
+    state.tabPlacement === "top" ? "Move Left" : "Move Up";
+  const moveLaterLabel =
+    state.tabPlacement === "top" ? "Move Right" : "Move Down";
+
   addAction("Close", () => {
     closeTabAndLoadNext(tabKey);
   });
+  addSeparator();
+  addAction(
+    moveEarlierLabel,
+    () => moveTabByOffset(tabKey, -1),
+    tabIndex <= 0,
+  );
+  addAction(
+    moveLaterLabel,
+    () => moveTabByOffset(tabKey, 1),
+    tabIndex < 0 || tabIndex >= state.tabs.length - 1,
+  );
 
   if (tab.kind === "document") {
     const path =
@@ -2631,39 +3030,41 @@ function showTabContextMenu(event: MouseEvent, tabKey: string): void {
     addAction("Reveal in Finder", () => revealItemInDir(path));
   }
 
-  document.body.append(menu);
+  tabContextMenuSession.present(menu, { restoreFocus: invoker });
   const bounds = menu.getBoundingClientRect();
   menu.style.left = `${Math.max(8, Math.min(event.clientX, window.innerWidth - bounds.width - 8))}px`;
   menu.style.top = `${Math.max(8, Math.min(event.clientY, window.innerHeight - bounds.height - 8))}px`;
-  tabContextMenu = menu;
-
-  const dismiss = (dismissEvent: PointerEvent | KeyboardEvent): void => {
-    if (dismissEvent instanceof KeyboardEvent && dismissEvent.key !== "Escape") return;
-    if (
-      dismissEvent instanceof PointerEvent &&
-      menu.contains(dismissEvent.target as Node)
-    ) {
-      return;
-    }
-    dismissTabContextMenu();
-  };
-  document.addEventListener("pointerdown", dismiss);
-  document.addEventListener("keydown", dismiss);
-  dismissTabContextMenuListener = () => {
-    document.removeEventListener("pointerdown", dismiss);
-    document.removeEventListener("keydown", dismiss);
-  };
 }
 
-function dismissTabContextMenu(): void {
-  tabContextMenu?.remove();
-  tabContextMenu = null;
-  dismissTabContextMenuListener?.();
-  dismissTabContextMenuListener = null;
+function moveTabByOffset(tabKey: string, offset: -1 | 1): void {
+  const index = state.tabs.findIndex((tab) => tab.key === tabKey);
+  if (index < 0) return;
+  const targetIndex = index + offset;
+  if (targetIndex < 0 || targetIndex >= state.tabs.length) return;
+  const target = state.tabs[targetIndex];
+  if (!target) return;
+  runtime.commit(moveTab(state, tabKey, target.key, offset > 0));
+  state = runtime.getState();
+  const nextIndex = state.tabs.findIndex((tab) => tab.key === tabKey);
+  const moved = state.tabs[nextIndex];
+  if (moved) {
+    statusAnnouncement = formatPositionAnnouncement(
+      tabLabel(moved),
+      nextIndex + 1,
+      state.tabs.length,
+    );
+  }
+  pendingFocusKey = { kind: "tab", tabKey };
+  render();
+  schedulePersist();
+}
+
+function dismissTabContextMenu(restore = true): void {
+  tabContextMenuSession.dismiss({ restore });
 }
 
 function handleDocumentSearchShortcut(event: KeyboardEvent): void {
-  if (exportModalVisible && (event.metaKey || event.ctrlKey)) {
+  if (exportController.isVisible() && (event.metaKey || event.ctrlKey)) {
     event.preventDefault();
     return;
   }
@@ -2708,7 +3109,7 @@ function handleDocumentSearchShortcut(event: KeyboardEvent): void {
     openExportModal();
     return;
   }
-  if (exportModalVisible) {
+  if (exportController.isVisible()) {
     if (event.isComposing) return;
     if (event.key === "Escape") {
       event.preventDefault();
@@ -2725,23 +3126,11 @@ function handleDocumentSearchShortcut(event: KeyboardEvent): void {
     } else if (event.key === "Tab") {
       const modal = root.querySelector<HTMLElement>(".export-modal");
       if (modal) {
-        const focusables = Array.from(
-          modal.querySelectorAll<HTMLElement>(
-            'select, button, [tabindex]:not([tabindex="-1"])',
-          ),
-        ).filter((el) => !el.hasAttribute("disabled"));
-        if (focusables.length > 0) {
-          const first = focusables[0];
-          const last = focusables[focusables.length - 1];
-          const active = document.activeElement;
-          if (event.shiftKey && active === first) {
-            event.preventDefault();
-            last.focus();
-          } else if (!event.shiftKey && active === last) {
-            event.preventDefault();
-            first.focus();
-          }
-        }
+        handleFocusTrapTab(
+          event,
+          collectFocusableElements(modal),
+          document.activeElement,
+        );
       }
     }
     return;
@@ -2758,6 +3147,17 @@ function handleDocumentSearchShortcut(event: KeyboardEvent): void {
       event.preventDefault();
       const item = quickSwitcherItems()[quickSwitcher.activeIndex];
       if (item) void activateQuickSwitcherItem(item);
+    } else if (event.key === "Tab") {
+      const dialog = root.querySelector<HTMLElement>(
+        '[role="dialog"][aria-label="Quick open"]',
+      );
+      if (dialog) {
+        handleFocusTrapTab(
+          event,
+          collectFocusableElements(dialog),
+          document.activeElement,
+        );
+      }
     }
     return;
   }
@@ -2782,26 +3182,13 @@ function handleDocumentSearchShortcut(event: KeyboardEvent): void {
 }
 
 function openDocumentSearch(): void {
-  const current = activeTab(state);
-  if (current?.kind !== "document" || current.status !== "ready") return;
-  quickSwitcher.visible = false;
-  documentSearch.visible = true;
-  render();
-  requestAnimationFrame(() => {
-    const input = root.querySelector<HTMLInputElement>("[data-document-search-input]");
-    input?.focus();
-    input?.select();
-  });
+  overlay.openDocumentSearch();
 }
 
 function closeDocumentSearch(): void {
-  documentSearchRevealSequence += 1;
-  clearDocumentSearchHighlights();
-  documentSearch.visible = false;
-  documentSearch.matches = [];
-  documentSearch.activeIndex = -1;
-  render();
+  overlay.closeDocumentSearch();
 }
+
 
 function bindDocumentSearch(): void {
   const input = root.querySelector<HTMLInputElement>("[data-document-search-input]");
@@ -2822,7 +3209,7 @@ function bindDocumentSearch(): void {
 }
 
 function refreshDocumentSearch(selectFirst: boolean): void {
-  documentSearchRevealSequence += 1;
+  overlay.beginDocumentSearchReveal();
   clearDocumentSearchHighlights();
   const query = documentSearch.query.trim();
   if (!query) {
@@ -2987,8 +3374,8 @@ function moveDocumentSearchMatch(direction: 1 | -1): void {
 
 async function activateDocumentSearchMatch(scroll: boolean): Promise<void> {
   const sequence = scroll
-    ? ++documentSearchRevealSequence
-    : documentSearchRevealSequence;
+    ? overlay.beginDocumentSearchReveal()
+    : overlay.documentSearchRevealSequence();
   root
     .querySelectorAll<HTMLElement>(".document-search-source-target")
     .forEach((element) => element.classList.remove("document-search-source-target"));
@@ -3008,7 +3395,7 @@ async function activateDocumentSearchMatch(scroll: boolean): Promise<void> {
     ) {
       try {
         await revealDeferredCodeLine(activeMatch.target, activeMatch.codeLine);
-        if (sequence !== documentSearchRevealSequence) return;
+        if (sequence !== overlay.documentSearchRevealSequence()) return;
         refreshDocumentSearch(false);
       } catch {
         // Keep the source result navigable at the code-block level if expansion fails.
@@ -3107,18 +3494,36 @@ function bindSidebarResize(): void {
     }
     applyWidth(next);
     if (next === state.sidebarWidth) return;
-    state = setPreferences(state, { sidebarWidth: next });
+    runtime.commit(setPreferences(state, { sidebarWidth: next }));
+    state = runtime.getState();
     schedulePersist();
   };
 
   handle.addEventListener("pointerup", finishResize);
   handle.addEventListener("pointercancel", finishResize);
+  handle.addEventListener("keydown", (event) => {
+    const next = sidebarResizeStep(
+      event.key,
+      clampSidebarWidth(state.sidebarWidth),
+      MIN_SIDEBAR_WIDTH,
+      MAX_SIDEBAR_WIDTH,
+    );
+    if (next === null) return;
+    event.preventDefault();
+    applyWidth(next);
+    handle.setAttribute("aria-valuenow", String(next));
+    if (next === state.sidebarWidth) return;
+    runtime.commit(setPreferences(state, { sidebarWidth: next }));
+    state = runtime.getState();
+    schedulePersist();
+  });
   handle.addEventListener("dblclick", () => {
     sidebarResizeSession = null;
     document.documentElement.classList.remove("is-resizing-sidebar");
     applyWidth(DEFAULT_SIDEBAR_WIDTH);
     if (state.sidebarWidth === DEFAULT_SIDEBAR_WIDTH) return;
-    state = setPreferences(state, { sidebarWidth: DEFAULT_SIDEBAR_WIDTH });
+    runtime.commit(setPreferences(state, { sidebarWidth: DEFAULT_SIDEBAR_WIDTH }));
+    state = runtime.getState();
     schedulePersist();
   });
 }
@@ -3235,7 +3640,8 @@ function renderMermaidPreview(
   if (article) enhanceDiagramViewers(article);
   scroller.scrollTop = tab.scrollTop;
   scroller.addEventListener("scroll", () => {
-    state = updateScroll(state, tab.key, scroller.scrollTop);
+    runtime.commit(updateScroll(state, tab.key, scroller.scrollTop));
+    state = runtime.getState();
     schedulePersist();
   }, { passive: true });
   container.replaceChildren(scroller);
@@ -3262,14 +3668,14 @@ function renderImagePreview(
   image?.addEventListener("load", () => {
     const width = image.naturalWidth;
     const height = image.naturalHeight;
-    state = {
-      ...state,
+    runtime.commit({      ...state,
       tabs: state.tabs.map((candidate) =>
         candidate.key === tab.key && candidate.kind === "image" && candidate.status === "ready"
           ? { ...candidate, dimensions: { width, height } }
           : candidate,
       ),
-    };
+    });
+    state = runtime.getState();
     const status = buildStatusBar(activeTab(state), {
       colorTheme: state.colorTheme,
       theme: state.theme,
@@ -3281,8 +3687,7 @@ function renderImagePreview(
     if (right) right.textContent = status.right;
   });
   image?.addEventListener("error", () => {
-    state = upsertPreviewTab(state, {
-      kind: "image",
+    runtime.commit(upsertPreviewTab(state, {      kind: "image",
       key: tab.key,
       status: "error",
       requestedPath: tab.canonicalPath,
@@ -3291,12 +3696,14 @@ function renderImagePreview(
       code: "preview_failed",
       message: "The image could not be previewed.",
       scrollTop: tab.scrollTop,
-    });
+    }));
+    state = runtime.getState();
     render();
   });
   scroller.scrollTop = tab.scrollTop;
   scroller.addEventListener("scroll", () => {
-    state = updateScroll(state, tab.key, scroller.scrollTop);
+    runtime.commit(updateScroll(state, tab.key, scroller.scrollTop));
+    state = runtime.getState();
     schedulePersist();
   }, { passive: true });
   container.replaceChildren(scroller);
@@ -3341,7 +3748,8 @@ function renderDocument(
     .querySelector<HTMLElement>("[data-document-reload]")
     ?.addEventListener("click", () => void reloadActiveDocument());
   scroller.addEventListener("scroll", () => {
-    state = updateScroll(state, tab.key, scroller.scrollTop);
+    runtime.commit(updateScroll(state, tab.key, scroller.scrollTop));
+    state = runtime.getState();
     schedulePersist();
     outline?.updateActiveHeading();
   });
@@ -3504,9 +3912,58 @@ async function handleDocumentLink(
   if (classifyOpenablePath(path)) {
     await openDocumentPaths([path], decodeFragment(fragment), tab.key);
   } else {
-    showGlobalNotice(`Cannot open ${displayNameForPath(path)}: unsupported file type.`);
+    runtime.showNotice("global", `Cannot open ${displayNameForPath(path)}: unsupported file type.`);
     render();
   }
+}
+
+
+function recordDiagnosticError(operation: string, error: unknown): void {
+  recentDiagnosticError = normalizeDiagnosticError(operation, error);
+}
+
+function quickOpenDiagnosticsStatus(): QuickOpenDiagnosticsStatus {
+  if (quickSwitcher.indexing) return "indexing";
+  if (quickSwitcher.indexError) return "failed";
+  if (quickSwitcher.index) return "ready";
+  return "idle";
+}
+
+function expandedWorkspaceNodeCount(): number {
+  return Object.values(state.expandedWorkspacePaths).reduce(
+    (total, paths) => total + paths.length,
+    0,
+  );
+}
+
+async function copyDiagnosticsReport(): Promise<void> {
+  try {
+    const environment = await invoke<DiagnosticsEnvironment>(
+      "get_diagnostics_environment",
+    );
+    const report = formatDiagnosticsReport({
+      environment,
+      state: runtime.getState(),
+      expandedNodeCount: expandedWorkspaceNodeCount(),
+      quickOpenStatus: quickOpenDiagnosticsStatus(),
+      quickOpenIndex: quickSwitcher.index,
+      recentError: recentDiagnosticError,
+      resolvedAppearance: resolvedAppearance(),
+    });
+    const copied = await copyText(report);
+    if (copied) {
+      statusAnnouncement = "Diagnostics copied to the clipboard";
+      runtime.showNotice("global", "Diagnostics copied to the clipboard.");
+    } else {
+      statusAnnouncement = "Could not copy diagnostics";
+      runtime.showNotice("global", "Could not copy diagnostics to the clipboard.");
+    }
+  } catch (error) {
+    recordDiagnosticError("copy-diagnostics", error);
+    statusAnnouncement = "Could not copy diagnostics";
+    runtime.showNotice("global", "Could not copy diagnostics to the clipboard.");
+  }
+  render();
 }
 
 function renderSettings(container: HTMLElement): void {
@@ -3606,6 +4063,32 @@ function renderSettings(container: HTMLElement): void {
         </div>
       </section>
 
+      <section class="${UI.settingsSection}" aria-labelledby="diagnostics-settings">
+        <h2 id="diagnostics-settings" class="${UI.settingsSectionTitle}">Diagnostics</h2>
+        <div class="${UI.settingsSectionBody}">
+          <div class="setting-group ${UI.settingGroup}">
+            <div class="setting-copy">
+              <h3 class="${UI.settingTitle}">Copy diagnostics</h3>
+              <p class="${UI.settingDescription}">Copies a privacy-safe environment and state summary. Document contents, filenames, and full paths are never included.</p>
+            </div>
+            <button class="secondary-button ${UI.secondaryButton}" type="button" data-copy-diagnostics>Copy Diagnostics</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="${UI.settingsSection}" aria-labelledby="diagnostics-settings">
+        <h2 id="diagnostics-settings" class="${UI.settingsSectionTitle}">Diagnostics</h2>
+        <div class="${UI.settingsSectionBody}">
+          <div class="setting-group ${UI.settingGroup}">
+            <div class="setting-copy">
+              <h3 class="${UI.settingTitle}">Copy diagnostics</h3>
+              <p class="${UI.settingDescription}">Copies a privacy-safe environment and state summary. Document contents, filenames, and full paths are never included.</p>
+            </div>
+            <button class="secondary-button ${UI.secondaryButton}" type="button" data-copy-diagnostics>Copy Diagnostics</button>
+          </div>
+        </div>
+      </section>
+
       <footer class="settings-note ${UI.settingsNote}">
         GFM and Mermaid preview are enabled. Editing and automatic file refresh are not part of this version.
       </footer>
@@ -3613,13 +4096,19 @@ function renderSettings(container: HTMLElement): void {
     </section>
   `;
 
+  container
+    .querySelector<HTMLElement>("[data-copy-diagnostics]")
+    ?.addEventListener("click", () => {
+      void copyDiagnosticsReport();
+    });
+
   container.querySelectorAll<HTMLElement>("[data-theme]").forEach((button) => {
     button.addEventListener("click", () => {
       const previousMermaidTheme = activeMermaidTheme();
       captureActiveScroll();
-      state = setPreferences(state, {
-        theme: button.dataset.theme as ThemeMode,
-      });
+      runtime.commit(setPreferences(state, {        theme: button.dataset.theme as ThemeMode,
+      }));
+      state = runtime.getState();
       render();
       schedulePersist();
       const nextMermaidTheme = activeMermaidTheme();
@@ -3632,9 +4121,9 @@ function renderSettings(container: HTMLElement): void {
     .querySelectorAll<HTMLElement>("[data-placement]")
     .forEach((button) => {
       button.addEventListener("click", () => {
-        state = setPreferences(state, {
-          tabPlacement: button.dataset.placement as TabPlacement,
-        });
+        runtime.commit(setPreferences(state, {          tabPlacement: button.dataset.placement as TabPlacement,
+        }));
+        state = runtime.getState();
         render();
         schedulePersist();
       });
@@ -3644,9 +4133,9 @@ function renderSettings(container: HTMLElement): void {
     .forEach((select) => {
       select.addEventListener("change", () => {
         captureActiveScroll();
-        state = setPreferences(state, {
-          colorTheme: select.value as ColorTheme,
-        });
+        runtime.commit(setPreferences(state, {          colorTheme: select.value as ColorTheme,
+        }));
+        state = runtime.getState();
         applyTheme();
         schedulePersist();
         void rerenderDocumentsForMermaidTheme(
@@ -3662,7 +4151,8 @@ function renderSettings(container: HTMLElement): void {
         const mermaidLightTheme = button.value as MermaidLightTheme;
         if (mermaidLightTheme === state.mermaidLightTheme) return;
         captureActiveScroll();
-        state = setPreferences(state, { mermaidLightTheme });
+        runtime.commit(setPreferences(state, { mermaidLightTheme }));
+        state = runtime.getState();
         render();
         schedulePersist();
         if (resolvedAppearance() === "light") {
@@ -3677,7 +4167,8 @@ function renderSettings(container: HTMLElement): void {
         const mermaidDarkTheme = button.value as MermaidDarkTheme;
         if (mermaidDarkTheme === state.mermaidDarkTheme) return;
         captureActiveScroll();
-        state = setPreferences(state, { mermaidDarkTheme });
+        runtime.commit(setPreferences(state, { mermaidDarkTheme }));
+        state = runtime.getState();
         render();
         schedulePersist();
         if (resolvedAppearance() === "dark") {
@@ -3689,7 +4180,8 @@ function renderSettings(container: HTMLElement): void {
     .querySelectorAll<HTMLInputElement>("[data-text-font]")
     .forEach((input) => {
       input.addEventListener("input", () => {
-        state = setPreferences(state, { textFont: input.value.trim() });
+        runtime.commit(setPreferences(state, { textFont: input.value.trim() }));
+        state = runtime.getState();
         applyFontPreferences();
         schedulePersist();
       });
@@ -3698,7 +4190,8 @@ function renderSettings(container: HTMLElement): void {
     .querySelectorAll<HTMLInputElement>("[data-code-font]")
     .forEach((input) => {
       input.addEventListener("input", () => {
-        state = setPreferences(state, { codeFont: input.value.trim() });
+        runtime.commit(setPreferences(state, { codeFont: input.value.trim() }));
+        state = runtime.getState();
         applyFontPreferences();
         schedulePersist();
       });
@@ -3707,7 +4200,8 @@ function renderSettings(container: HTMLElement): void {
     .querySelectorAll<HTMLSelectElement>("[data-page-width]")
     .forEach((select) => {
       select.addEventListener("change", () => {
-        state = setPreferences(state, { pageWidth: select.value as PageWidth });
+        runtime.commit(setPreferences(state, { pageWidth: select.value as PageWidth }));
+        state = runtime.getState();
         render();
         schedulePersist();
       });
@@ -3722,37 +4216,63 @@ async function rerenderDocumentsForMermaidTheme(
     key: string;
     path: string;
     kind: "document" | "mermaid";
+    token: number;
+    taskId: string;
   }> = [];
   for (const tab of state.tabs) {
     if (tab.kind === "document" && tab.status === "ready") {
-      requests.push({ key: tab.key, path: tab.canonicalPath, kind: tab.kind });
+      const started = previewController.beginTheme(tab.key);
+      requests.push({
+        key: tab.key,
+        path: tab.canonicalPath,
+        kind: tab.kind,
+        token: started.token,
+        taskId: started.taskId,
+      });
     }
     if (tab.kind === "mermaid" && tab.status === "ready") {
-      requests.push({ key: tab.key, path: tab.canonicalPath, kind: tab.kind });
+      const started = previewController.beginTheme(tab.key);
+      requests.push({
+        key: tab.key,
+        path: tab.canonicalPath,
+        kind: tab.kind,
+        token: started.token,
+        taskId: started.taskId,
+      });
     }
   }
   if (requests.length === 0) return;
-  const sequence = ++mermaidThemeReloadSequence;
+  const sequence = previewController.beginThemeBatch();
   try {
-    const results = await invoke<PreviewLoadResult[]>("load_preview_paths", {
-      paths: requests.map((request) => request.path),
+    const outcomes = await invoke<PreviewTaskOutcome[]>("load_preview_paths", {
+      requests: requests.map((request) => ({
+        taskId: request.taskId,
+        path: request.path,
+      })),
       mermaidTheme,
       colorTheme,
     });
     if (
-      sequence !== mermaidThemeReloadSequence ||
+      !previewController.isThemeBatchCurrent(sequence) ||
       activeMermaidTheme() !== mermaidTheme ||
       state.colorTheme !== colorTheme
     ) {
       return;
     }
     for (const [index, request] of requests.entries()) {
-      const result = results[index];
+      const outcome = outcomes[index];
+      if (
+        !outcome ||
+        outcome.status === "cancelled" ||
+        !previewController.isThemeCurrent(request.key, request.token)
+      ) {
+        continue;
+      }
+      const result = outcome.result;
       const current = state.tabs.find(
         (tab): tab is PreviewTab => tab.kind !== "settings" && tab.key === request.key,
       );
       if (
-        !result ||
         !current ||
         current.status !== "ready" ||
         previewResultRequestedPath(result) !== request.path ||
@@ -3761,21 +4281,32 @@ async function rerenderDocumentsForMermaidTheme(
         continue;
       }
       if (result.kind === "document" && result.result.status === "ready") {
-        state = replacePreviewTab(
-          state,
-          request.key,
-          tabFromResult(result.result, current.scrollTop),
+        runtime.commit(
+          replacePreviewTab(
+            state,
+            request.key,
+            tabFromResult(result.result, current.scrollTop),
+          ),
         );
+        state = runtime.getState();
       } else if (result.kind === "mermaid" && result.result.status === "ready") {
-        state = replacePreviewTab(
-          state,
-          request.key,
-          tabFromMermaidPreview(result.result, current.scrollTop),
+        runtime.commit(
+          replacePreviewTab(
+            state,
+            request.key,
+            tabFromMermaidPreview(result.result, current.scrollTop),
+          ),
         );
+        state = runtime.getState();
       }
     }
-  } catch {
+  } catch (error) {
+    recordDiagnosticError("rerender-preview-theme", error);
     // Keep the previous previews if theme re-rendering fails.
+  } finally {
+    for (const request of requests) {
+      previewController.finishTheme(request.key, request.token);
+    }
   }
 
   render();
@@ -3936,22 +4467,15 @@ colorScheme.addEventListener("change", () => {
 });
 
 function schedulePersist(): void {
-  if (!stateStore) return;
-  if (persistTimer !== null) window.clearTimeout(persistTimer);
-  persistTimer = window.setTimeout(() => {
-    persistTimer = null;
-    void stateStore?.set(SESSION_KEY, toPersistedSession(state));
-  }, 180);
+  persistence.schedulePersist();
 }
 
 async function syncRecentDocuments(): Promise<void> {
-  await invoke("sync_recent_documents", { paths: state.recentDocuments });
+  await persistence.syncRecentDocuments();
 }
 
 async function syncReopenClosedTabAvailability(): Promise<void> {
-  await invoke("sync_reopen_closed_tab_availability", {
-    available: state.closedTabsHistory.length > 0,
-  });
+  await persistence.syncReopenClosedTabAvailability();
 }
 
 function scrollToAnchor(

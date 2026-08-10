@@ -105,6 +105,9 @@ export function buildQuickSwitcherItems(
   const rootsById = new Map(
     (options.workspaceRoots ?? []).map((root) => [root.id, root]),
   );
+  const rootOrder = new Map(
+    (options.workspaceRoots ?? []).map((root, index) => [root.id, index]),
+  );
 
   for (const tab of tabs) {
     if (tab.kind === "settings") {
@@ -185,6 +188,9 @@ export function buildQuickSwitcherItems(
     .filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== null)
     .sort((left, right) => {
       if (left.rank !== right.rank) return left.rank - right.rank;
+      const leftRootOrder = rootOrder.get(left.entry.rootId) ?? Number.MAX_SAFE_INTEGER;
+      const rightRootOrder = rootOrder.get(right.entry.rootId) ?? Number.MAX_SAFE_INTEGER;
+      if (leftRootOrder !== rightRootOrder) return leftRootOrder - rightRootOrder;
       return left.entry.canonicalPath.localeCompare(right.entry.canonicalPath);
     });
 
@@ -214,6 +220,40 @@ export function shouldSuppressTabClick(
   now: number,
 ): boolean {
   return Boolean(key && key === suppressedKey && now < suppressedUntil);
+}
+
+/** Movement threshold before a pointer session becomes a drag (tabs and roots). */
+export const POINTER_DRAG_THRESHOLD_PX = 4;
+
+export function shouldBeginPointerDrag(
+  startX: number,
+  startY: number,
+  clientX: number,
+  clientY: number,
+  thresholdPx = POINTER_DRAG_THRESHOLD_PX,
+): boolean {
+  return Math.hypot(clientX - startX, clientY - startY) >= thresholdPx;
+}
+
+export { resolveRestoredFocusTarget } from "./accessibility";
+
+export type OverlayKind = "quick-open" | "export" | "document-search" | "workspace-dialog";
+
+/**
+ * Characterize exclusive overlay visibility: opening one dismisses competing search/switcher surfaces.
+ */
+export function exclusiveOverlayVisibility(
+  opening: OverlayKind,
+): {
+  quickOpen: boolean;
+  exportModal: boolean;
+  documentSearch: boolean;
+} {
+  return {
+    quickOpen: opening === "quick-open",
+    exportModal: opening === "export",
+    documentSearch: opening === "document-search",
+  };
 }
 
 export interface NavigationControlState {

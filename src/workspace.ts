@@ -42,6 +42,41 @@ export function removeWorkspaceRoot(
   return roots.filter((root) => root.id !== rootId);
 }
 
+export function workspaceRootIndex(
+  roots: WorkspaceRoot[],
+  rootId: string,
+): number {
+  return roots.findIndex((root) => root.id === rootId);
+}
+
+export function moveWorkspaceRoot(
+  roots: WorkspaceRoot[],
+  rootId: string,
+  targetIndex: number,
+): WorkspaceRoot[] {
+  const fromIndex = workspaceRootIndex(roots, rootId);
+  if (fromIndex < 0 || roots.length === 0) return roots;
+
+  const clamped = Math.max(0, Math.min(roots.length - 1, targetIndex));
+  if (clamped === fromIndex) return roots;
+
+  const next = [...roots];
+  const [moved] = next.splice(fromIndex, 1);
+  next.splice(clamped, 0, moved);
+  return next;
+}
+
+export function canMoveWorkspaceRoot(
+  roots: WorkspaceRoot[],
+  rootId: string,
+  direction: -1 | 1,
+): boolean {
+  const index = workspaceRootIndex(roots, rootId);
+  if (index < 0) return false;
+  const target = index + direction;
+  return target >= 0 && target < roots.length;
+}
+
 export function expandedPathsForRoot(
   expanded: Record<string, string[]>,
   rootId: string,
@@ -109,6 +144,10 @@ export function applyWorkspaceTrash(
   return closeTabsMatchingPaths(state, (path) =>
     isPathPrefix(path, removedPathPrefix),
   );
+}
+
+export function workspaceCacheKey(rootId: string, relativePath: string): string {
+  return `${rootId}:${relativePath}`;
 }
 
 export function parentRelativePath(relativePath: string): string {

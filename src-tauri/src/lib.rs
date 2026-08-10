@@ -1,5 +1,7 @@
+mod diagnostics;
 mod document;
 mod printing;
+mod tasks;
 mod workspace;
 
 use std::{
@@ -7,12 +9,14 @@ use std::{
     sync::Mutex,
 };
 
+use diagnostics::get_diagnostics_environment;
 use document::{
     check_document_revisions, export_html, export_svg, highlight_code_chunk, reload_document,
 };
 use printing::{
     finish_print_export, mark_print_export_ready, print_export_html, start_print_export,
 };
+use tasks::{BackgroundTaskRegistry, cancel_background_task};
 use tauri::{
     AppHandle, Emitter, Manager, RunEvent, State,
     menu::{Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder},
@@ -414,6 +418,7 @@ pub fn run() {
         .manage(RecentDocuments::default())
         .manage(ReopenClosedTabAvailability::default())
         .manage(WorkspaceRegistry::default())
+        .manage(BackgroundTaskRegistry::default())
         .plugin(tauri_plugin_single_instance::init(
             |app, arguments, current_directory| {
                 let paths = paths_from_arguments(&arguments, &current_directory);
@@ -462,7 +467,9 @@ pub fn run() {
             create_workspace_item,
             rename_workspace_item,
             trash_workspace_item,
-            index_workspace_markdown
+            index_workspace_markdown,
+            get_diagnostics_environment,
+            cancel_background_task
         ]);
 
     let app = builder
