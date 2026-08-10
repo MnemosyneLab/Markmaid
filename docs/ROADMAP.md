@@ -1,8 +1,9 @@
 # MarkMaid Roadmap
 
-Last reviewed: 2026-08-08
+Last reviewed: 2026-08-10
 
-This document tracks candidate work after v0.1.5. It is a prioritization tool,
+This document tracks candidate work after the v0.1.6 implementation milestone.
+It is a prioritization tool,
 not a promise that every item will ship. An item moves into a version plan only
 after its user value, product behavior, safety boundary, and acceptance tests
 are written down.
@@ -31,7 +32,7 @@ release policy until that decision changes.
 | Horizon | Theme | Outcome |
 | --- | --- | --- |
 | v0.1.5 | Released | Hardened preview opening, navigation, workspace bounds, local assets, and printing |
-| v0.1.6 planned | Workspace polish and diagnostics | Reorder roots, copy safe diagnostics, cancel stale work, split the shell, and improve accessibility |
+| v0.1.6 release preparation | Workspace polish and diagnostics | Root reorder, safe diagnostics, cooperative cancellation, shell controllers, and accessible navigation are implemented; release QA remains |
 | v0.2 candidate | On-demand knowledge discovery | Search document contents and understand relationships without a background watcher |
 | Later | Reading depth and scale | Better long-document performance, export control, and optional local metadata |
 
@@ -42,19 +43,19 @@ v0.1.5 has been published. Its
 release-preparation record. Post-release regressions still take priority over
 every item below.
 
-## v0.1.6 planned — workspace polish and diagnostics
+## v0.1.6 release preparation — workspace polish and diagnostics
 
 The selected implementation scope is documented in the
-[`v0.1.6 plan`](plans/v0.1.6_plan.md).
+[`v0.1.6 plan`](plans/v0.1.6_plan.md). The five promoted items are implemented;
+the mutable [`release checklist`](releases/v0.1.6-checklist.md) tracks manual QA,
+artifacts, and publication without treating them as already complete.
 
-Do not treat every checkbox in this section as v0.1.6 scope. The recommended
-first cut is pinned-folder reorder, Copy Diagnostics, backend cancellation, the
-frontend shell split, and the accessibility audit. Promote additional items
-only if that set remains small enough for one reviewable release.
+The remaining unchecked items stay deferred. Do not pull them into v0.1.6 during
+release preparation.
 
 ### User-facing candidates
 
-- [ ] **Pinned-folder reorder.** Support keyboard-accessible and pointer-based
+- [x] **Pinned-folder reorder.** Support keyboard-accessible and pointer-based
   reordering while preserving stable root identity and session restoration.
 - [ ] **Workspace switcher.** Save named sets of pinned folders and switch
   between them without losing the current set accidentally.
@@ -70,15 +71,16 @@ only if that set remains small enough for one reviewable release.
 
 ### Reliability and usability candidates
 
-- [ ] **Diagnostic report.** Provide a Copy Diagnostics action containing app
+- [x] **Diagnostic report.** Provide a Copy Diagnostics action containing app
   version, macOS/architecture, active preview kind, bounded error details, and
   non-sensitive configuration. Never include document contents or full local
   paths by default.
-- [ ] **Backend task cancellation.** Cancel superseded render/index work instead
+- [x] **Backend task cancellation.** Cancel superseded render/index work instead
   of only discarding stale results after completion.
-- [ ] **Accessible navigation audit.** Verify VoiceOver names, focus order,
+- [x] **Accessible navigation implementation.** Add VoiceOver names, focus order,
   contrast, reduced motion, keyboard-only Files operations, modals, viewers,
-  and drag alternatives.
+  and drag alternatives. The release checklist retains the manual VoiceOver and
+  display-mode smoke pass.
 - [ ] **Native interaction smoke harness.** Automate launch, open forwarding,
   session restore, and print-window cleanup where macOS test APIs allow it;
   retain a short manual print-sheet checklist for OS-owned UI.
@@ -87,7 +89,7 @@ only if that set remains small enough for one reviewable release.
 
 ### Engineering checklist
 
-- [ ] Split the large frontend shell into preview loading, navigation, workspace,
+- [x] Split the large frontend shell into preview loading, navigation, workspace,
   overlays, export, and persistence controllers with pure state transitions.
 - [ ] Establish a typed frontend/Rust command contract so renamed fields and
   tagged-result variants fail during generation or compilation.

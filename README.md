@@ -6,7 +6,8 @@ reading session the next time the app starts.
 
 Features include:
 
-- Workspace sidebar with pinned folders, lazy directory tree, and Open Tabs view
+- Workspace sidebar with reorderable pinned folders, a lazy directory tree, and
+  an Open Tabs view
 - In-folder file management: create empty Markdown / folders, rename, Trash, Reveal in Finder
 - GFM tables, task lists, autolinks, strikethrough, and heading anchors
 - Native Rust Mermaid-to-SVG preview (fenced blocks and standalone `.mmd`) with themes and fullscreen zoom
@@ -19,6 +20,8 @@ Features include:
 - Reopen Closed Tab (`⇧⌘T`) for recently closed preview tabs
 - Quick Open (`⌘P`) across open tabs, pinned Markdown files, and recent documents
   (path/name match only; refreshes the pinned-folder index each time it opens)
+- Privacy-safe Copy Diagnostics from Settings with environment and bounded state
+  counts, but no document contents, filenames, full paths, or automatic upload
 - Multiple reorderable preview tabs plus a singleton Settings tab
 - Same-named tabs and Open Recent entries disambiguated with the shortest useful parent path
 - Top or left tab placement, resizable workspace sidebar, and tab context actions
@@ -32,6 +35,10 @@ Features include:
 - Local and HTTPS images with scoped, session-lifetime Tauri asset authorization
 - External-change alerts on window focus and tab activation, with Reload or Ignore
 - Manual reload that preserves the previous Markdown preview when reloading fails
+- Cooperative cancellation for superseded preview, workspace-listing, and Quick
+  Open index work while frontend generation checks continue to reject stale results
+- Keyboard and focus support for the Files tree, tab lists, context menus,
+  dialogs, viewers, and the sidebar resize separator
 
 MarkMaid does not include a Markdown editor, continuous filesystem watching, or
 file management outside pinned workspace folders. Mermaid fenced code blocks and
@@ -74,7 +81,16 @@ collapsed code blocks expand when you navigate to them. In Quick Open: `↑` /
 `↓` move, `Enter` opens, `Esc` closes. Quick Open matches file names and paths
 only (not Markdown body text), includes Markdown under pinned folders, and
 excludes `.mmd` / image files. The pinned-folder list refreshes each time you
-open it.
+open it. In the Files tree, Arrow keys navigate and expand/collapse nodes,
+Home / End move to the boundaries, Enter activates an item, and `Shift+F10`
+opens its context menu. Pinned folders can be reordered with their drag handle
+or the context menu's Move Up / Move Down actions.
+
+Settings includes Copy Diagnostics for support and bug reports. The report is
+generated on demand and copied locally; MarkMaid has no telemetry or automatic
+diagnostic upload. Native cancellation is cooperative and best-effort: a render
+already inside one non-interruptible Markdown or Mermaid call may finish, but
+its stale result is never applied.
 
 ## Preview limits and local assets
 
@@ -122,7 +138,11 @@ Future feature and optimization candidates are tracked in
 
 ## Structure
 
-- `src/main.ts`: Tauri event wiring, workspace UI, and read-only preview chrome
+- `src/main.ts`: top-level Tauri composition, native listeners, and shell render
+- `src/app/`: preview, workspace, navigation, overlay, export, persistence, and
+  runtime controllers
+- `src/accessibility.ts` / `src/diagnostics.ts`: keyboard/focus utilities and the
+  privacy-safe diagnostic report model
 - `src/state.ts`: tab, workspace-root, and persisted-session state model
 - `src/workspace.ts` / `src/status.ts` / `src/ui-logic.ts`: workspace helpers, status bar, Quick Open matching
 - `src/search.ts`: source-backed in-document Find matching
@@ -132,6 +152,8 @@ Future feature and optimization candidates are tracked in
 - `src/diagram-viewer.ts`: Mermaid and Markdown-image fullscreen viewers
 - `src-tauri/src/document.rs`: validated file loading and GFM / Mermaid rendering
 - `src-tauri/src/workspace.rs`: pinned roots, tree listing, file ops, and Markdown index for Quick Open
+- `src-tauri/src/tasks.rs` / `src-tauri/src/diagnostics.rs`: cooperative native
+  task cancellation and read-only environment diagnostics
 - `src-tauri/src/lib.rs`: menus, plugins, single-instance, and macOS open events
 - `src-tauri/capabilities/`: Tauri permission capabilities
 - `src-tauri/tauri.conf.json`: window, bundle, and build configuration

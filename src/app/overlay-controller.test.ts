@@ -67,7 +67,7 @@ describe("overlay controller", () => {
     expect(onClosed).toHaveBeenCalled();
   });
 
-  it("opens Find only when allowed and hides Quick Open without cancelling index", () => {
+  it("opens Find only when allowed and cancels replaced Quick Open indexing", () => {
     const onClosed = vi.fn();
     const focusSearch = vi.fn();
     const overlay = createOverlayController({
@@ -89,21 +89,31 @@ describe("overlay controller", () => {
     overlay.openDocumentSearch();
     expect(overlay.documentSearch.visible).toBe(true);
     expect(overlay.quickSwitcher.visible).toBe(false);
-    expect(overlay.quickSwitcher.indexRequestId).toBe(requestId);
-    expect(onClosed).not.toHaveBeenCalled();
+    expect(overlay.quickSwitcher.indexRequestId).toBe(requestId + 1);
+    expect(overlay.quickSwitcher.indexing).toBe(false);
+    expect(onClosed).toHaveBeenCalledOnce();
     expect(focusSearch).toHaveBeenCalledOnce();
   });
 
-  it("hides search overlays for exclusivity without clearing Find state", () => {
+  it("fully dismisses search overlays before another modal opens", () => {
+    const onClosed = vi.fn();
+    const clearHighlights = vi.fn();
+    const restore = vi.fn();
     const overlay = createOverlayController({
       render: () => {},
       hasWorkspaceRoots: () => false,
       canOpenDocumentSearch: () => true,
       onQuickOpenOpened: () => {},
-      onQuickOpenClosed: () => {},
-      clearDocumentSearchHighlights: () => {},
+      onQuickOpenClosed: onClosed,
+      clearDocumentSearchHighlights: clearHighlights,
       focusQuickOpenInput: () => {},
       focusDocumentSearchInput: () => {},
+      focusSession: {
+        capture: () => {},
+        restore,
+        peek: () => null,
+        clear: () => {},
+      },
     });
     overlay.documentSearch.visible = true;
     overlay.documentSearch.query = "todo";
@@ -113,7 +123,73 @@ describe("overlay controller", () => {
     expect(overlay.documentSearch.visible).toBe(false);
     expect(overlay.quickSwitcher.visible).toBe(false);
     expect(overlay.documentSearch.query).toBe("todo");
-    expect(overlay.documentSearch.matches).toEqual([{ id: 1 }]);
+    expect(overlay.documentSearch.matches).toEqual([]);
+    expect(overlay.documentSearch.activeIndex).toBe(-1);
+    expect(overlay.quickSwitcher.indexRequestId).toBe(1);
+    expect(overlay.quickSwitcher.indexing).toBe(false);
+    expect(onClosed).toHaveBeenCalledOnce();
+    expect(clearHighlights).toHaveBeenCalledOnce();
+    expect(restore).toHaveBeenCalledOnce();
+  });
+
+  it("preserves the original shell opener when replacing one search overlay", () => {
+    const capture = vi.fn();
+    const restore = vi.fn();
+    const overlay = createOverlayController({
+      render: () => {},
+      hasWorkspaceRoots: () => true,
+      canOpenDocumentSearch: () => true,
+      onQuickOpenOpened: () => {},
+      onQuickOpenClosed: () => {},
+      clearDocumentSearchHighlights: () => {},
+      focusQuickOpenInput: () => {},
+      focusDocumentSearchInput: () => {},
+      requestAnimationFrame: () => 1,
+      focusSession: {
+        capture,
+        restore,
+        peek: () => null,
+        clear: () => {},
+      },
+    });
+
+    overlay.openQuickSwitcher();
+    overlay.openDocumentSearch();
+    overlay.closeDocumentSearch();
+
+    expect(capture).toHaveBeenCalledOnce();
+    expect(restore).toHaveBeenCalledOnce();
+  });
+
+  it("cancels an in-flight index when Quick Open is opened again", () => {
+    const onClosed = vi.fn();
+    const capture = vi.fn();
+    const overlay = createOverlayController({
+      render: () => {},
+      hasWorkspaceRoots: () => true,
+      canOpenDocumentSearch: () => true,
+      onQuickOpenOpened: () => {},
+      onQuickOpenClosed: onClosed,
+      clearDocumentSearchHighlights: () => {},
+      focusQuickOpenInput: () => {},
+      focusDocumentSearchInput: () => {},
+      requestAnimationFrame: () => 1,
+      focusSession: {
+        capture,
+        restore: () => {},
+        peek: () => null,
+        clear: () => {},
+      },
+    });
+
+    overlay.openQuickSwitcher();
+    const requestId = overlay.quickSwitcher.indexRequestId;
+    overlay.openQuickSwitcher();
+
+    expect(onClosed).toHaveBeenCalledOnce();
+    expect(overlay.quickSwitcher.indexRequestId).toBe(requestId + 2);
+    expect(overlay.quickSwitcher.indexing).toBe(true);
+    expect(capture).toHaveBeenCalledOnce();
   });
 
   it("restores captured focus when the opener is still present", () => {

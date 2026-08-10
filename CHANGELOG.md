@@ -2,6 +2,39 @@
 
 All notable changes to MarkMaid are documented in this file.
 
+## [0.1.6] - 2026-08-10
+
+### Added
+
+- Pointer and context-menu reordering for pinned workspace folders, with
+  persisted order, deterministic focus restoration, and live position
+  announcements
+- Privacy-safe Copy Diagnostics in Settings with app/runtime information,
+  bounded state counts, and normalized operation/error codes only
+- Cooperative native cancellation for preview loads and reloads, Mermaid theme
+  rerenders, workspace child listing, and Quick Open indexing
+- Standard keyboard and focus behavior for Files tree navigation, tab lists,
+  context menus, dialogs, viewers, notices, and the sidebar resize separator
+
+### Changed
+
+- Use pinned-root order only as the final Quick Open tie-breaker between equally
+  ranked workspace matches
+- Split preview, workspace, navigation, overlay, export, persistence, and runtime
+  behavior into explicit tested controllers while retaining the existing shell
+  and session-v1 format
+- Keep frontend generation checks authoritative while cancelled native commands
+  return explicit silent `cancelled` outcomes
+
+### Fixed
+
+- Prevent arbitrary backend error prose, filenames, or local paths from being
+  transformed into copied diagnostic error codes
+- Cancel duplicate or superseded workspace/preview work without turning expected
+  cancellation into an error tab or notice
+- Expose one roving Files-tree tab stop plus explicit tree levels and positions
+  to assistive technology
+
 ## [0.1.5] - 2026-08-08
 
 ### Added
@@ -124,6 +157,7 @@ All notable changes to MarkMaid are documented in this file.
 - Manual reload that preserves the previous preview when reloading fails
 - Local release tooling for version sync, ARM builds, and GitHub Releases
 
+[0.1.6]: https://github.com/Weichen-LF/Markmaid/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/Weichen-LF/Markmaid/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/Weichen-LF/Markmaid/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/Weichen-LF/Markmaid/compare/v0.1.2...v0.1.3

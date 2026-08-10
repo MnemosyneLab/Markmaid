@@ -260,4 +260,28 @@ describe("focus keys", () => {
     );
     button.remove();
   });
+
+  it("scopes duplicate tab keys to their tab-list orientation", () => {
+    const tabList = document.createElement("div");
+    tabList.setAttribute("role", "tablist");
+    tabList.setAttribute("aria-orientation", "vertical");
+    const button = document.createElement("button");
+    button.dataset.tabKey = "document:/a.md";
+    tabList.append(button);
+    document.body.append(tabList);
+
+    expect(focusKeyFromElement(button)).toEqual({
+      kind: "tab",
+      tabKey: "document:/a.md",
+      orientation: "vertical",
+    });
+    expect(
+      focusKeySelector({
+        kind: "tab",
+        tabKey: "document:/a.md",
+        orientation: "vertical",
+      }),
+    ).toContain('[role="tablist"][aria-orientation="vertical"]');
+    tabList.remove();
+  });
 });

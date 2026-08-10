@@ -31,7 +31,7 @@ export interface ExportController {
 
 export interface ExportControllerDeps {
   render: () => void;
-  /** Hide Quick Open / Find (and any other competing overlays) without rendering. */
+  /** Fully dismiss Quick Open / Find before rendering the export modal. */
   hideCompetingOverlays: () => void;
   focusFormatSelect: () => void;
   isElementPresent: (element: HTMLElement) => boolean;

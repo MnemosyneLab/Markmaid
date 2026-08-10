@@ -16,15 +16,23 @@ describe("PreviewController", () => {
     expect(second.taskId).toMatch(/^preview-/);
   });
 
-  it("cancels both load and theme work when a tab closes", () => {
+  it("lets the newest load or theme task own the shared tab generation", () => {
     const cancelled: string[] = [];
     const controller = createPreviewController((taskId) => cancelled.push(taskId));
     const load = controller.beginLoad("tab-a");
     const theme = controller.beginTheme("tab-a");
 
-    controller.invalidateTab("tab-a");
+    expect(cancelled).toEqual([load.taskId]);
+    expect(controller.isLoadCurrent("tab-a", load.token)).toBe(false);
+    expect(controller.isThemeCurrent("tab-a", theme.token)).toBe(true);
 
-    expect(cancelled.sort()).toEqual([load.taskId, theme.taskId].sort());
+    const reload = controller.beginLoad("tab-a");
+    expect(cancelled).toEqual([load.taskId, theme.taskId]);
+    expect(controller.isThemeCurrent("tab-a", theme.token)).toBe(false);
+    expect(controller.isLoadCurrent("tab-a", reload.token)).toBe(true);
+
+    controller.invalidateTab("tab-a");
+    expect(cancelled).toEqual([load.taskId, theme.taskId, reload.taskId]);
   });
 
   it("owns the theme batch sequence", () => {

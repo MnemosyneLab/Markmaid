@@ -39,8 +39,9 @@ export interface OverlayController<TMatch = unknown> {
   openDocumentSearch(): void;
   closeDocumentSearch(): void;
   /**
-   * Hide Quick Open / Find for exclusivity without cancelling index work or
-   * clearing Find query/matches (matches openExportModal / openDocumentSearch).
+   * Fully dismiss Quick Open / Find for another modal without rendering. This
+   * still cancels indexing, clears search state, and restores the shell opener
+   * so the replacing modal can capture a stable focus target.
    */
   hideSearchOverlays(): void;
   beginDocumentSearchReveal(): number;
@@ -103,13 +104,26 @@ export function createOverlayController<TMatch = unknown>(
     deps.onQuickOpenClosed();
   }
 
+  function dismissDocumentSearch(): void {
+    documentSearchRevealSequence += 1;
+    deps.clearDocumentSearchHighlights();
+    documentSearch.visible = false;
+    documentSearch.matches = [];
+    documentSearch.activeIndex = -1;
+  }
+
   return {
     quickSwitcher,
     documentSearch,
 
     hideSearchOverlays() {
-      quickSwitcher.visible = false;
-      documentSearch.visible = false;
+      const hadQuickSwitcher = quickSwitcher.visible;
+      const hadDocumentSearch = documentSearch.visible;
+      if (hadQuickSwitcher) dismissQuickSwitcher();
+      if (hadDocumentSearch) dismissDocumentSearch();
+      if (hadQuickSwitcher || hadDocumentSearch) {
+        focusSession.restore(isPresent);
+      }
     },
 
     documentSearchRevealSequence() {
@@ -122,6 +136,10 @@ export function createOverlayController<TMatch = unknown>(
     },
 
     openQuickSwitcher() {
+      const replacingOverlay =
+        quickSwitcher.visible || documentSearch.visible;
+      if (quickSwitcher.visible) dismissQuickSwitcher();
+      if (documentSearch.visible) dismissDocumentSearch();
       const visibility = exclusiveOverlayVisibility("quick-open");
       documentSearch.visible = visibility.documentSearch;
       documentSearch.matches = [];
@@ -134,7 +152,7 @@ export function createOverlayController<TMatch = unknown>(
       quickSwitcher.indexError = null;
       quickSwitcher.indexing = deps.hasWorkspaceRoots();
       const requestId = ++quickSwitcher.indexRequestId;
-      focusSession.capture();
+      if (!replacingOverlay) focusSession.capture();
       deps.render();
       raf(() => {
         deps.focusQuickOpenInput();
@@ -153,10 +171,13 @@ export function createOverlayController<TMatch = unknown>(
 
     openDocumentSearch() {
       if (!deps.canOpenDocumentSearch()) return;
+      const replacingOverlay =
+        quickSwitcher.visible || documentSearch.visible;
+      if (quickSwitcher.visible) dismissQuickSwitcher();
       const visibility = exclusiveOverlayVisibility("document-search");
       quickSwitcher.visible = visibility.quickOpen;
       documentSearch.visible = visibility.documentSearch;
-      focusSession.capture();
+      if (!replacingOverlay) focusSession.capture();
       deps.render();
       raf(() => {
         deps.focusDocumentSearchInput();
@@ -164,11 +185,7 @@ export function createOverlayController<TMatch = unknown>(
     },
 
     closeDocumentSearch() {
-      documentSearchRevealSequence += 1;
-      deps.clearDocumentSearchHighlights();
-      documentSearch.visible = false;
-      documentSearch.matches = [];
-      documentSearch.activeIndex = -1;
+      dismissDocumentSearch();
       deps.render();
       focusSession.restore(isPresent);
     },

@@ -27,7 +27,11 @@ export type MenuKeyAction =
 
 export type FocusKey =
   | { kind: "workspace-node"; rootId: string; relativePath: string }
-  | { kind: "tab"; tabKey: string }
+  | {
+      kind: "tab";
+      tabKey: string;
+      orientation?: "horizontal" | "vertical";
+    }
   | { kind: "sidebar-view"; view: string }
   | { kind: "sidebar-resize" }
   | { kind: "title-action"; action: string };
@@ -357,7 +361,16 @@ export function focusKeyFromElement(element: Element | null): FocusKey | null {
 
   const tab = element.closest<HTMLElement>("[data-tab-key]");
   if (tab?.dataset.tabKey) {
-    return { kind: "tab", tabKey: tab.dataset.tabKey };
+    const orientation = tab
+      .closest<HTMLElement>('[role="tablist"]')
+      ?.getAttribute("aria-orientation");
+    return {
+      kind: "tab",
+      tabKey: tab.dataset.tabKey,
+      ...(orientation === "horizontal" || orientation === "vertical"
+        ? { orientation }
+        : {}),
+    };
   }
 
   const sidebarView = element.closest<HTMLElement>("[data-sidebar-view]");
@@ -382,7 +395,7 @@ export function focusKeySelector(key: FocusKey): string {
     case "workspace-node":
       return `[data-workspace-node][data-root-id="${cssEscape(key.rootId)}"][data-relative-path="${cssEscape(key.relativePath)}"]`;
     case "tab":
-      return `[data-tab-key="${cssEscape(key.tabKey)}"]`;
+      return `${key.orientation ? `[role="tablist"][aria-orientation="${key.orientation}"] ` : ""}[data-tab-key="${cssEscape(key.tabKey)}"]`;
     case "sidebar-view":
       return `[data-sidebar-view="${cssEscape(key.view)}"]`;
     case "sidebar-resize":

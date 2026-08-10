@@ -71,7 +71,6 @@ import {
   handleFocusTrapTab,
   resolveTabListKeyAction,
   resolveTreeKeyAction,
-  restoreFocus,
   sidebarResizeStep,
   workspaceNodeFocusId,
   type FocusKey,
@@ -102,6 +101,7 @@ import { createNavigationController } from "./app/navigation-controller";
 import {
   createFloatingMenuSession,
   createOverlayController,
+  type FocusRestoreSession,
 } from "./app/overlay-controller";
 import {
   createPersistence,
@@ -310,10 +310,41 @@ const runtimeHooks: AppRuntimeHooks = {
 const runtime = createAppRuntime({ ...DEFAULT_STATE }, runtimeHooks);
 /** Local mirror kept in sync by runtime.commit for shell code paths. */
 let state: AppState = runtime.getState();
+
+function createShellFocusRestoreSession(): FocusRestoreSession {
+  let focusKey: FocusKey | null = null;
+  return {
+    capture() {
+      focusKey = focusKeyFromElement(document.activeElement);
+      if (!focusKey && state.activeTabKey) {
+        focusKey = { kind: "tab", tabKey: state.activeTabKey };
+      }
+    },
+    restore() {
+      const key = focusKey;
+      focusKey = null;
+      const target = key
+        ? root.querySelector<HTMLElement>(focusKeySelector(key))
+        : null;
+      (
+        target ??
+        root.querySelector<HTMLElement>('[data-action="settings"]')
+      )?.focus();
+    },
+    peek() {
+      return focusKey
+        ? root.querySelector<HTMLElement>(focusKeySelector(focusKey))
+        : null;
+    },
+    clear() {
+      focusKey = null;
+    },
+  };
+}
 let statusAnnouncement = "";
 let pendingFocusKey: FocusKey | null = null;
 let suppressFocusRestore = false;
-let overlayFocusReturn: HTMLElement | null = null;
+const workspaceDialogFocusSession = createShellFocusRestoreSession();
 let workspaceTreeFocus: { rootId: string; relativePath: string } | null = null;
 let recentDiagnosticError: DiagnosticErrorRecord | null = null;
 const workspaceController = createWorkspaceController(runtime, {
@@ -362,7 +393,13 @@ let workspaceDialog: {
   message?: string;
 } | null = null;
 let workspaceNotice: string | null = null;
-let globalNotice: string | null = null;
+interface GlobalNotice {
+  title: string;
+  message: string;
+  tone: "error" | "success";
+  dismissTitle: string;
+}
+let globalNotice: GlobalNotice | null = null;
 let globalNoticeTimer: number | null = null;
 let sidebarResizeSession: {
   pointerId: number;
@@ -438,6 +475,7 @@ const overlay = createOverlayController<DocumentSearchMatch>({
     input?.focus();
     input?.select();
   },
+  focusSession: createShellFocusRestoreSession(),
 });
 const documentSearch = overlay.documentSearch;
 const quickSwitcher = overlay.quickSwitcher;
@@ -461,6 +499,7 @@ const exportController = createExportController(runtime, {
   clearExportNotice: () => {
     exportNotice = null;
   },
+  focusSession: createShellFocusRestoreSession(),
 });
 
 const navigation = createNavigationController(runtime, {
@@ -1143,8 +1182,16 @@ function recordActiveDocumentVisit(
   state = runtime.getState();
 }
 
-function showGlobalNotice(message: string): void {
-  globalNotice = message;
+function showGlobalNotice(
+  message: string,
+  options: Partial<Omit<GlobalNotice, "message">> = {},
+): void {
+  globalNotice = {
+    title: options.title ?? "Preview not opened.",
+    message,
+    tone: options.tone ?? "error",
+    dismissTitle: options.dismissTitle ?? "Dismiss preview notice",
+  };
   if (globalNoticeTimer !== null) window.clearTimeout(globalNoticeTimer);
   globalNoticeTimer = window.setTimeout(() => {
     globalNotice = null;
@@ -1319,16 +1366,17 @@ function renderStatusBar(status: StatusBarModel): string {
     `;
   }
   if (globalNotice) {
+    const success = globalNotice.tone === "success";
     return `
-      <footer class="${UI.statusBar} is-alert status-alert-reload-error" aria-label="Status">
+      <footer class="${UI.statusBar} is-alert ${success ? "status-alert-changed" : "status-alert-reload-error"}" aria-label="Status">
         <div class="status-alert">
-          <span class="status-alert-icon" aria-hidden="true">${icon("circle-alert")}</span>
-          <span class="status-alert-copy" role="status" aria-live="polite" aria-atomic="true">
-            <strong class="status-alert-title">Preview not opened.</strong>
-            <span class="status-alert-detail">${escapeHtml(globalNotice)}</span>
+          <span class="status-alert-icon" aria-hidden="true">${icon(success ? "copy" : "circle-alert")}</span>
+          <span class="status-alert-copy" role="status" aria-atomic="true">
+            <strong class="status-alert-title">${escapeHtml(globalNotice.title)}</strong>
+            <span class="status-alert-detail">${escapeHtml(globalNotice.message)}</span>
           </span>
           <div class="status-alert-actions">
-            <button class="status-alert-button" type="button" data-global-notice-dismiss title="Dismiss preview notice">${icon("x")}<span>Dismiss</span></button>
+            <button class="status-alert-button" type="button" data-global-notice-dismiss title="${escapeAttribute(globalNotice.dismissTitle)}">${icon("x")}<span>Dismiss</span></button>
           </div>
         </div>
       </footer>
@@ -2194,14 +2242,13 @@ function closeWorkspaceDialog(): void {
   workspaceDialog = null;
   suppressFocusRestore = true;
   render();
-  restoreFocus(overlayFocusReturn);
-  overlayFocusReturn = null;
+  workspaceDialogFocusSession.restore(() => true);
 }
 
 function openWorkspaceDialog(
   dialog: NonNullable<typeof workspaceDialog>,
 ): void {
-  overlayFocusReturn = document.activeElement as HTMLElement | null;
+  workspaceDialogFocusSession.capture();
   suppressFocusRestore = true;
   workspaceDialog = dialog;
   render();
@@ -2214,9 +2261,6 @@ function bindWorkspaceDialog(): void {
   const closeDialog = (): void => {
     closeWorkspaceDialog();
   };
-  if (!overlayFocusReturn) {
-    overlayFocusReturn = document.activeElement as HTMLElement | null;
-  }
   input?.focus();
   input?.select();
   if (!input) {
@@ -2561,7 +2605,7 @@ async function confirmWorkspaceDialog(): Promise<void> {
       await ensureWorkspaceChildren(dialog.rootId, parentRelativePath(dialog.relativePath));
       workspaceDialog = null;
       workspaceNotice = null;
-      overlayFocusReturn = null;
+      workspaceDialogFocusSession.clear();
       render();
       schedulePersist();
       await syncRecentDocuments();
@@ -2638,7 +2682,7 @@ async function confirmWorkspaceDialog(): Promise<void> {
         relativePath: selectedWorkspaceNode.relativePath,
       };
     }
-    overlayFocusReturn = null;
+    workspaceDialogFocusSession.clear();
     render();
     schedulePersist();
     void ensurePreviewLoaded(state.activeTabKey);
@@ -2673,6 +2717,37 @@ function bindShellInteractions(): void {
         event.stopPropagation();
         return;
       }
+      navigation.selectTab(key);
+      state = runtime.getState();
+    });
+    element.addEventListener("keydown", (event) => {
+      const list = element.closest<HTMLElement>('[role="tablist"]');
+      if (!list) return;
+      const tabs = Array.from(
+        list.querySelectorAll<HTMLElement>("[data-tab-key]"),
+      );
+      const currentIndex = tabs.indexOf(element);
+      const orientation =
+        list.getAttribute("aria-orientation") === "vertical"
+          ? "vertical"
+          : "horizontal";
+      const action = resolveTabListKeyAction(
+        event.key,
+        orientation,
+        currentIndex,
+        tabs.length,
+        event,
+      );
+      if (!action) return;
+      event.preventDefault();
+      const next = tabs[action.index];
+      const key = next?.dataset.tabKey;
+      if (!next || !key) return;
+      if (key === state.activeTabKey) {
+        next.focus();
+        return;
+      }
+      pendingFocusKey = { kind: "tab", tabKey: key, orientation };
       navigation.selectTab(key);
       state = runtime.getState();
     });
@@ -3951,17 +4026,26 @@ async function copyDiagnosticsReport(): Promise<void> {
       resolvedAppearance: resolvedAppearance(),
     });
     const copied = await copyText(report);
+    statusAnnouncement = "";
     if (copied) {
-      statusAnnouncement = "Diagnostics copied to the clipboard";
-      runtime.showNotice("global", "Diagnostics copied to the clipboard.");
+      showGlobalNotice("Privacy-safe report copied to the clipboard.", {
+        title: "Diagnostics copied.",
+        tone: "success",
+        dismissTitle: "Dismiss diagnostics notice",
+      });
     } else {
-      statusAnnouncement = "Could not copy diagnostics";
-      runtime.showNotice("global", "Could not copy diagnostics to the clipboard.");
+      showGlobalNotice("Could not copy diagnostics to the clipboard.", {
+        title: "Copy failed.",
+        dismissTitle: "Dismiss diagnostics error",
+      });
     }
   } catch (error) {
     recordDiagnosticError("copy-diagnostics", error);
-    statusAnnouncement = "Could not copy diagnostics";
-    runtime.showNotice("global", "Could not copy diagnostics to the clipboard.");
+    statusAnnouncement = "";
+    showGlobalNotice("Could not copy diagnostics to the clipboard.", {
+      title: "Copy failed.",
+      dismissTitle: "Dismiss diagnostics error",
+    });
   }
   render();
 }
@@ -4059,19 +4143,6 @@ function renderSettings(container: HTMLElement): void {
               <p class="${UI.settingDescription}">Used whenever the app appearance is dark.</p>
             </div>
             ${settingSelect("mermaid-dark", DARK_MERMAID_THEMES, state.mermaidDarkTheme)}
-          </div>
-        </div>
-      </section>
-
-      <section class="${UI.settingsSection}" aria-labelledby="diagnostics-settings">
-        <h2 id="diagnostics-settings" class="${UI.settingsSectionTitle}">Diagnostics</h2>
-        <div class="${UI.settingsSectionBody}">
-          <div class="setting-group ${UI.settingGroup}">
-            <div class="setting-copy">
-              <h3 class="${UI.settingTitle}">Copy diagnostics</h3>
-              <p class="${UI.settingDescription}">Copies a privacy-safe environment and state summary. Document contents, filenames, and full paths are never included.</p>
-            </div>
-            <button class="secondary-button ${UI.secondaryButton}" type="button" data-copy-diagnostics>Copy Diagnostics</button>
           </div>
         </div>
       </section>
@@ -4212,6 +4283,20 @@ async function rerenderDocumentsForMermaidTheme(
   mermaidTheme: MermaidTheme,
   colorTheme: ColorTheme = state.colorTheme,
 ): Promise<void> {
+  // A loading preview captured the theme that was active when its native task
+  // started. Restart text previews so an old-theme result cannot become the
+  // first rendered content after the user changes appearance.
+  for (const tab of state.tabs) {
+    if (
+      tab.kind !== "settings" &&
+      tab.status === "loading" &&
+      (tab.kind === "document" || tab.kind === "mermaid")
+    ) {
+      previewController.invalidateLoad(tab.key);
+      void ensurePreviewLoaded(tab.key, true);
+    }
+  }
+
   const requests: Array<{
     key: string;
     path: string;
