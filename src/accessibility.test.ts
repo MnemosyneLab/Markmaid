@@ -19,6 +19,7 @@ import {
   restoreFocus,
   rovingTabIndexes,
   sidebarResizeStep,
+  tableOfContentsResizeStep,
   workspaceNodeFocusId,
   type TreeItemModel,
 } from "./accessibility";
@@ -237,6 +238,17 @@ describe("announcements and resize", () => {
     expect(sidebarResizeStep("Home", 300, 160, 420)).toBe(160);
     expect(sidebarResizeStep("End", 300, 160, 420)).toBe(420);
     expect(sidebarResizeStep("Enter", 300, 160, 420)).toBeNull();
+  });
+
+  it("steps the right-side outline width in the mirrored direction", () => {
+    expect(tableOfContentsResizeStep("ArrowLeft", 248, 180, 420, 16)).toBe(
+      264,
+    );
+    expect(tableOfContentsResizeStep("ArrowRight", 248, 180, 420, 16)).toBe(
+      232,
+    );
+    expect(tableOfContentsResizeStep("Home", 248, 180, 420)).toBe(180);
+    expect(tableOfContentsResizeStep("End", 248, 180, 420)).toBe(420);
   });
 });
 

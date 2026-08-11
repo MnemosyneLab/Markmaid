@@ -285,6 +285,7 @@ export interface AppState {
   tabPlacement: TabPlacement;
   sidebarView: SidebarView;
   sidebarWidth: number;
+  tableOfContentsWidth: number;
   leftSidebarVisible: boolean;
   workspaceRoots: WorkspaceRoot[];
   expandedWorkspacePaths: Record<string, string[]>;
@@ -312,6 +313,7 @@ export interface PersistedSessionV1 {
   tabPlacement: TabPlacement;
   sidebarView?: SidebarView;
   sidebarWidth?: number;
+  tableOfContentsWidth?: number;
   leftSidebarVisible?: boolean;
   workspaceRoots?: WorkspaceRoot[];
   expandedWorkspacePaths?: Record<string, string[]>;

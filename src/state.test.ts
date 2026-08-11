@@ -3,12 +3,14 @@ import { describe, expect, it } from "vitest";
 import {
   addDocumentResults,
   addRecentDocuments,
+  clampTableOfContentsWidth,
   clampSidebarWidth,
   clearRecentDocuments,
   closeTab,
   closeTabsMatchingPaths,
   cycleTab,
   DEFAULT_SIDEBAR_WIDTH,
+  DEFAULT_TABLE_OF_CONTENTS_WIDTH,
   DEFAULT_STATE,
   errorTabForLoading,
   fromPersistedSession,
@@ -442,6 +444,7 @@ describe("tab state", () => {
         colorTheme: "nord",
         tabPlacement: "left",
         sidebarWidth: 300,
+        tableOfContentsWidth: 336,
         leftSidebarVisible: false,
         mermaidLightTheme: "forest",
         mermaidDarkTheme: "redux-dark-color",
@@ -461,6 +464,7 @@ describe("tab state", () => {
     expect(restored.colorTheme).toBe("nord");
     expect(restored.tabPlacement).toBe("left");
     expect(restored.sidebarWidth).toBe(300);
+    expect(restored.tableOfContentsWidth).toBe(336);
     expect(restored.leftSidebarVisible).toBe(false);
     expect(restored.mermaidLightTheme).toBe("forest");
     expect(restored.mermaidDarkTheme).toBe("redux-dark-color");
@@ -525,6 +529,15 @@ describe("tab state", () => {
         tabPlacement: "top",
       }).sidebarWidth,
     ).toBe(DEFAULT_SIDEBAR_WIDTH);
+    expect(
+      fromPersistedSession({
+        version: 1,
+        tabs: [],
+        activeTabKey: null,
+        theme: "system",
+        tabPlacement: "top",
+      }).tableOfContentsWidth,
+    ).toBe(DEFAULT_TABLE_OF_CONTENTS_WIDTH);
     expect(
       fromPersistedSession({
         version: 1,
@@ -605,6 +618,17 @@ describe("tab state", () => {
       setPreferences(baseState(), { sidebarWidth: 900 }).sidebarWidth,
     ).toBe(420);
     expect(clampSidebarWidth(Number.NaN)).toBe(DEFAULT_SIDEBAR_WIDTH);
+    expect(
+      setPreferences(baseState(), { tableOfContentsWidth: 90 })
+        .tableOfContentsWidth,
+    ).toBe(180);
+    expect(
+      setPreferences(baseState(), { tableOfContentsWidth: 900 })
+        .tableOfContentsWidth,
+    ).toBe(420);
+    expect(clampTableOfContentsWidth(Number.NaN)).toBe(
+      DEFAULT_TABLE_OF_CONTENTS_WIDTH,
+    );
   });
 
   it("falls back safely for invalid persisted state", () => {

@@ -37,6 +37,9 @@ import type {
 export const DEFAULT_SIDEBAR_WIDTH = 232;
 export const MIN_SIDEBAR_WIDTH = 160;
 export const MAX_SIDEBAR_WIDTH = 420;
+export const DEFAULT_TABLE_OF_CONTENTS_WIDTH = 248;
+export const MIN_TABLE_OF_CONTENTS_WIDTH = 180;
+export const MAX_TABLE_OF_CONTENTS_WIDTH = 420;
 export const MAX_RECENT_DOCUMENTS = 10;
 export const MAX_CLOSED_TABS_HISTORY = 20;
 export const MAX_DOCUMENT_NAVIGATION_HISTORY = 50;
@@ -52,6 +55,7 @@ export const DEFAULT_STATE: AppState = {
   tabPlacement: "left",
   sidebarView: "tabs",
   sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
+  tableOfContentsWidth: DEFAULT_TABLE_OF_CONTENTS_WIDTH,
   leftSidebarVisible: true,
   workspaceRoots: [],
   expandedWorkspacePaths: {},
@@ -69,6 +73,14 @@ export function clampSidebarWidth(width: number): number {
   return Math.min(
     MAX_SIDEBAR_WIDTH,
     Math.max(MIN_SIDEBAR_WIDTH, Math.round(width)),
+  );
+}
+
+export function clampTableOfContentsWidth(width: number): number {
+  if (!Number.isFinite(width)) return DEFAULT_TABLE_OF_CONTENTS_WIDTH;
+  return Math.min(
+    MAX_TABLE_OF_CONTENTS_WIDTH,
+    Math.max(MIN_TABLE_OF_CONTENTS_WIDTH, Math.round(width)),
   );
 }
 
@@ -648,6 +660,7 @@ export function setPreferences(
     tabPlacement?: TabPlacement;
     sidebarView?: SidebarView;
     sidebarWidth?: number;
+    tableOfContentsWidth?: number;
     leftSidebarVisible?: boolean;
     workspaceRoots?: WorkspaceRoot[];
     expandedWorkspacePaths?: Record<string, string[]>;
@@ -662,6 +675,11 @@ export function setPreferences(
   const next = { ...state, ...preferences };
   if (preferences.sidebarWidth !== undefined) {
     next.sidebarWidth = clampSidebarWidth(preferences.sidebarWidth);
+  }
+  if (preferences.tableOfContentsWidth !== undefined) {
+    next.tableOfContentsWidth = clampTableOfContentsWidth(
+      preferences.tableOfContentsWidth,
+    );
   }
   return next;
 }
@@ -688,6 +706,9 @@ export function toPersistedSession(state: AppState): PersistedSessionV1 {
     tabPlacement: state.tabPlacement,
     sidebarView: state.sidebarView,
     sidebarWidth: clampSidebarWidth(state.sidebarWidth),
+    tableOfContentsWidth: clampTableOfContentsWidth(
+      state.tableOfContentsWidth,
+    ),
     leftSidebarVisible: state.leftSidebarVisible,
     workspaceRoots: state.workspaceRoots,
     expandedWorkspacePaths: state.expandedWorkspacePaths,
@@ -721,6 +742,11 @@ export function fromPersistedSession(value: unknown): AppState {
       typeof value.sidebarWidth === "number"
         ? value.sidebarWidth
         : DEFAULT_SIDEBAR_WIDTH,
+    ),
+    tableOfContentsWidth: clampTableOfContentsWidth(
+      typeof value.tableOfContentsWidth === "number"
+        ? value.tableOfContentsWidth
+        : DEFAULT_TABLE_OF_CONTENTS_WIDTH,
     ),
     leftSidebarVisible:
       typeof value.leftSidebarVisible === "boolean"

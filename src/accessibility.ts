@@ -34,6 +34,7 @@ export type FocusKey =
     }
   | { kind: "sidebar-view"; view: string }
   | { kind: "sidebar-resize" }
+  | { kind: "table-of-contents-resize" }
   | { kind: "title-action"; action: string };
 
 /** Exactly one item receives tabindex 0; all others -1. Empty list → []. */
@@ -329,6 +330,28 @@ export function sidebarResizeStep(
   return Math.min(maxWidth, Math.max(minWidth, Math.round(next)));
 }
 
+export function tableOfContentsResizeStep(
+  key: string,
+  currentWidth: number,
+  minWidth: number,
+  maxWidth: number,
+  step = 16,
+): number | null {
+  const mirroredKey =
+    key === "ArrowLeft"
+      ? "ArrowRight"
+      : key === "ArrowRight"
+        ? "ArrowLeft"
+        : key;
+  return sidebarResizeStep(
+    mirroredKey,
+    currentWidth,
+    minWidth,
+    maxWidth,
+    step,
+  );
+}
+
 export function workspaceNodeFocusId(
   rootId: string,
   relativePath: string,
@@ -382,6 +405,10 @@ export function focusKeyFromElement(element: Element | null): FocusKey | null {
     return { kind: "sidebar-resize" };
   }
 
+  if (element.closest(".document-outline-resize")) {
+    return { kind: "table-of-contents-resize" };
+  }
+
   const action = element.closest<HTMLElement>("[data-action]");
   if (action?.dataset.action) {
     return { kind: "title-action", action: action.dataset.action };
@@ -400,6 +427,8 @@ export function focusKeySelector(key: FocusKey): string {
       return `[data-sidebar-view="${cssEscape(key.view)}"]`;
     case "sidebar-resize":
       return ".sidebar-resize";
+    case "table-of-contents-resize":
+      return ".document-outline-resize";
     case "title-action":
       return `[data-action="${cssEscape(key.action)}"]`;
   }

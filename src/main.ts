@@ -39,16 +39,20 @@ import {
   activeTab,
   addRecentDocuments,
   clampSidebarWidth,
+  clampTableOfContentsWidth,
   clearRecentDocuments,
   DEFAULT_SIDEBAR_WIDTH,
   DEFAULT_STATE,
+  DEFAULT_TABLE_OF_CONTENTS_WIDTH,
   documentKey,
   errorTabForLoading,
   loadingImageTab,
   loadingMermaidTab,
   loadingTab,
   MAX_SIDEBAR_WIDTH,
+  MAX_TABLE_OF_CONTENTS_WIDTH,
   MIN_SIDEBAR_WIDTH,
+  MIN_TABLE_OF_CONTENTS_WIDTH,
   moveTab,
   openSettings,
   previewPath,
@@ -72,6 +76,7 @@ import {
   resolveTabListKeyAction,
   resolveTreeKeyAction,
   sidebarResizeStep,
+  tableOfContentsResizeStep,
   workspaceNodeFocusId,
   type FocusKey,
   type TreeItemModel,
@@ -402,6 +407,11 @@ interface GlobalNotice {
 let globalNotice: GlobalNotice | null = null;
 let globalNoticeTimer: number | null = null;
 let sidebarResizeSession: {
+  pointerId: number;
+  startX: number;
+  startWidth: number;
+} | null = null;
+let tableOfContentsResizeSession: {
   pointerId: number;
   startX: number;
   startWidth: number;
@@ -1225,6 +1235,9 @@ function render(): void {
     state.tabPlacement === "top" ? renderTabList(state.tabs, "horizontal") : "";
   const title = escapeHtml(windowTitle(current));
   const sidebarWidth = clampSidebarWidth(state.sidebarWidth);
+  const tableOfContentsWidth = clampTableOfContentsWidth(
+    state.tableOfContentsWidth,
+  );
   const sidebarToggle = `<button class="icon-button ${UI.iconButton}" type="button" data-action="toggle-left-sidebar" title="${state.leftSidebarVisible ? "Hide" : "Show"} sidebar" aria-label="${state.leftSidebarVisible ? "Hide" : "Show"} sidebar" aria-pressed="${state.leftSidebarVisible}">
           ${icon(state.leftSidebarVisible ? "panel-left-close" : "panel-left-open")}
           <span class="sr-only">${state.leftSidebarVisible ? "Hide" : "Show"} sidebar</span>
@@ -1260,7 +1273,7 @@ function render(): void {
   root.innerHTML = `
     <div
       class="app-frame placement-${state.tabPlacement} ${status.alert ? "is-status-alert" : ""} ${UI.frame}"
-      style="--sidebar-width: ${sidebarWidth}px"
+      style="--sidebar-width: ${sidebarWidth}px; --table-of-contents-width: ${tableOfContentsWidth}px"
     >
       <header class="titlebar ${UI.titlebar}" data-tauri-drag-region>
         <div class="titlebar-leading ${UI.titlebarLeading} gap-1.5">${sidebarToggle}${navButtons}</div>
@@ -3816,8 +3829,9 @@ function renderDocument(
   const layout = document.createElement("div");
   layout.className = UI.documentLayout;
   layout.append(scroller);
-  if (outline) layout.append(outline.element);
+  if (outline) layout.append(outline.resizeHandle, outline.element);
   container.append(layout);
+  if (outline) bindTableOfContentsResize(outline.resizeHandle);
 
   header
     .querySelector<HTMLElement>("[data-document-reload]")
@@ -3842,6 +3856,7 @@ function renderDocument(
 
 interface DocumentOutline {
   element: HTMLElement;
+  resizeHandle: HTMLElement;
   updateActiveHeading: () => void;
 }
 
@@ -3857,6 +3872,25 @@ function createDocumentOutline(
   const aside = document.createElement("aside");
   aside.className = UI.documentOutline;
   aside.setAttribute("aria-label", "Document outline");
+
+  const resizeHandle = document.createElement("div");
+  resizeHandle.className = "document-outline-resize";
+  resizeHandle.setAttribute("role", "separator");
+  resizeHandle.setAttribute("aria-orientation", "vertical");
+  resizeHandle.setAttribute("aria-label", "Resize document outline");
+  resizeHandle.setAttribute(
+    "aria-valuemin",
+    String(MIN_TABLE_OF_CONTENTS_WIDTH),
+  );
+  resizeHandle.setAttribute(
+    "aria-valuemax",
+    String(MAX_TABLE_OF_CONTENTS_WIDTH),
+  );
+  resizeHandle.setAttribute(
+    "aria-valuenow",
+    String(clampTableOfContentsWidth(state.tableOfContentsWidth)),
+  );
+  resizeHandle.tabIndex = 0;
 
   const title = document.createElement("h2");
   title.className = UI.documentOutlineTitle;
@@ -3913,7 +3947,101 @@ function createDocumentOutline(
     });
   };
 
-  return { element: aside, updateActiveHeading };
+  return { element: aside, resizeHandle, updateActiveHeading };
+}
+
+function bindTableOfContentsResize(handle: HTMLElement): void {
+  const frame = root.querySelector<HTMLElement>(".app-frame");
+  if (!frame) return;
+
+  const applyWidth = (width: number): void => {
+    frame.style.setProperty("--table-of-contents-width", `${width}px`);
+    handle.setAttribute("aria-valuenow", String(width));
+  };
+
+  handle.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    handle.setPointerCapture(event.pointerId);
+    tableOfContentsResizeSession = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startWidth: clampTableOfContentsWidth(state.tableOfContentsWidth),
+    };
+    document.documentElement.classList.add("is-resizing-document-outline");
+  });
+
+  handle.addEventListener("pointermove", (event) => {
+    if (
+      !tableOfContentsResizeSession ||
+      event.pointerId !== tableOfContentsResizeSession.pointerId
+    ) {
+      return;
+    }
+    const next = clampTableOfContentsWidth(
+      tableOfContentsResizeSession.startWidth +
+        (tableOfContentsResizeSession.startX - event.clientX),
+    );
+    applyWidth(next);
+  });
+
+  const finishResize = (event: PointerEvent): void => {
+    if (
+      !tableOfContentsResizeSession ||
+      event.pointerId !== tableOfContentsResizeSession.pointerId
+    ) {
+      return;
+    }
+    const next = clampTableOfContentsWidth(
+      tableOfContentsResizeSession.startWidth +
+        (tableOfContentsResizeSession.startX - event.clientX),
+    );
+    tableOfContentsResizeSession = null;
+    document.documentElement.classList.remove(
+      "is-resizing-document-outline",
+    );
+    if (handle.hasPointerCapture(event.pointerId)) {
+      handle.releasePointerCapture(event.pointerId);
+    }
+    applyWidth(next);
+    if (next === state.tableOfContentsWidth) return;
+    runtime.commit(setPreferences(state, { tableOfContentsWidth: next }));
+    state = runtime.getState();
+    schedulePersist();
+  };
+
+  handle.addEventListener("pointerup", finishResize);
+  handle.addEventListener("pointercancel", finishResize);
+  handle.addEventListener("keydown", (event) => {
+    const next = tableOfContentsResizeStep(
+      event.key,
+      clampTableOfContentsWidth(state.tableOfContentsWidth),
+      MIN_TABLE_OF_CONTENTS_WIDTH,
+      MAX_TABLE_OF_CONTENTS_WIDTH,
+    );
+    if (next === null) return;
+    event.preventDefault();
+    applyWidth(next);
+    if (next === state.tableOfContentsWidth) return;
+    runtime.commit(setPreferences(state, { tableOfContentsWidth: next }));
+    state = runtime.getState();
+    schedulePersist();
+  });
+  handle.addEventListener("dblclick", () => {
+    tableOfContentsResizeSession = null;
+    document.documentElement.classList.remove(
+      "is-resizing-document-outline",
+    );
+    applyWidth(DEFAULT_TABLE_OF_CONTENTS_WIDTH);
+    if (state.tableOfContentsWidth === DEFAULT_TABLE_OF_CONTENTS_WIDTH) return;
+    runtime.commit(
+      setPreferences(state, {
+        tableOfContentsWidth: DEFAULT_TABLE_OF_CONTENTS_WIDTH,
+      }),
+    );
+    state = runtime.getState();
+    schedulePersist();
+  });
 }
 
 function prepareDocumentContent(
@@ -4283,14 +4411,16 @@ async function rerenderDocumentsForMermaidTheme(
   mermaidTheme: MermaidTheme,
   colorTheme: ColorTheme = state.colorTheme,
 ): Promise<void> {
-  // A loading preview captured the theme that was active when its native task
-  // started. Restart text previews so an old-theme result cannot become the
-  // first rendered content after the user changes appearance.
+  // An in-flight preview captured the theme that was active when its native
+  // task started. Restart it so an old-theme result cannot become the first
+  // rendered content after the user changes appearance. Restored, deferred
+  // tabs have no task to replace and should stay unloaded.
   for (const tab of state.tabs) {
     if (
       tab.kind !== "settings" &&
       tab.status === "loading" &&
-      (tab.kind === "document" || tab.kind === "mermaid")
+      (tab.kind === "document" || tab.kind === "mermaid") &&
+      previewController.hasLoad(tab.key)
     ) {
       previewController.invalidateLoad(tab.key);
       void ensurePreviewLoaded(tab.key, true);

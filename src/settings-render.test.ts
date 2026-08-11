@@ -62,13 +62,22 @@ describe("settings rendering", () => {
     expect(interactions).toContain("navigation.selectTab(key)");
   });
 
-  it("restarts loading previews when the Mermaid theme changes", () => {
+  it("restarts only in-flight loading previews when the Mermaid theme changes", () => {
     const themeSource = sourceBetween(
       "async function rerenderDocumentsForMermaidTheme(",
       "function settingButton(",
     );
 
-    expect(themeSource).toContain("previewController.invalidateLoad(tab.key)");
-    expect(themeSource).toContain("ensurePreviewLoaded(tab.key, true)");
+    const inFlightGuard = themeSource.indexOf(
+      "previewController.hasLoad(tab.key)",
+    );
+    const invalidate = themeSource.indexOf(
+      "previewController.invalidateLoad(tab.key)",
+    );
+    const restart = themeSource.indexOf("ensurePreviewLoaded(tab.key, true)");
+
+    expect(inFlightGuard).toBeGreaterThanOrEqual(0);
+    expect(invalidate).toBeGreaterThan(inFlightGuard);
+    expect(restart).toBeGreaterThan(invalidate);
   });
 });

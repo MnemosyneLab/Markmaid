@@ -3,6 +3,17 @@ import { describe, expect, it } from "vitest";
 import { createPreviewController } from "./preview-controller";
 
 describe("PreviewController", () => {
+  it("distinguishes deferred tabs from tabs with an in-flight load", () => {
+    const controller = createPreviewController(() => {});
+
+    expect(controller.hasLoad("tab-a")).toBe(false);
+    const load = controller.beginLoad("tab-a");
+    expect(controller.hasLoad("tab-a")).toBe(true);
+
+    controller.finishLoad("tab-a", load.token);
+    expect(controller.hasLoad("tab-a")).toBe(false);
+  });
+
   it("cancels superseded loads and keeps generation checks authoritative", () => {
     const cancelled: string[] = [];
     const controller = createPreviewController((taskId) => cancelled.push(taskId));

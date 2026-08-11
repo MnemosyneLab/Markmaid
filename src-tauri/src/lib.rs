@@ -19,7 +19,7 @@ use printing::{
 use tasks::{BackgroundTaskRegistry, cancel_background_task};
 use tauri::{
     AppHandle, Emitter, Manager, RunEvent, State,
-    menu::{Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder},
+    menu::{AboutMetadata, Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder},
 };
 use workspace::{
     WorkspaceRegistry, create_workspace_item, index_workspace_markdown, list_workspace_children,
@@ -51,6 +51,21 @@ struct RecentDocuments(Mutex<Vec<String>>);
 
 #[derive(Default)]
 struct ReopenClosedTabAvailability(Mutex<bool>);
+
+fn about_metadata(icon: Option<tauri::image::Image<'static>>) -> AboutMetadata<'static> {
+    AboutMetadata {
+        name: Some("MarkMaid".to_string()),
+        version: Some(env!("CARGO_PKG_VERSION_PATCH").to_string()),
+        short_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        copyright: Some("Copyright © 2026 Walt Wang".to_string()),
+        credits: Some(
+            "A focused, read-only Markdown reader for macOS.\n\nMarkdown, Mermaid, math, code, and local images.\n\nBuilt by Walt Wang\nMIT License\ngithub.com/Weichen-LF/Markmaid"
+                .to_string(),
+        ),
+        icon,
+        ..Default::default()
+    }
+}
 
 #[tauri::command]
 fn take_pending_open_paths(state: tauri::State<'_, PendingOpenPaths>) -> Vec<String> {
@@ -148,7 +163,11 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let recent_menu = recent_menu.build()?;
 
     let app_menu = SubmenuBuilder::new(app, "MarkMaid")
-        .about(None)
+        .about(Some(about_metadata(
+            app.default_window_icon()
+                .cloned()
+                .map(tauri::image::Image::to_owned),
+        )))
         .separator()
         .item(&settings)
         .separator()
@@ -510,6 +529,36 @@ mod tests {
                 "/tmp/design.markdown".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn provides_complete_native_about_metadata() {
+        let metadata = about_metadata(Some(tauri::image::Image::new_owned(
+            vec![0, 0, 0, 255],
+            1,
+            1,
+        )));
+
+        assert_eq!(metadata.name.as_deref(), Some("MarkMaid"));
+        assert_eq!(
+            metadata.short_version.as_deref(),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
+        assert_eq!(
+            metadata.version.as_deref(),
+            Some(env!("CARGO_PKG_VERSION_PATCH"))
+        );
+        assert!(
+            metadata
+                .credits
+                .as_deref()
+                .is_some_and(|credits| credits.contains("Markdown, Mermaid"))
+        );
+        assert_eq!(
+            metadata.copyright.as_deref(),
+            Some("Copyright © 2026 Walt Wang")
+        );
+        assert!(metadata.icon.is_some());
     }
 
     #[test]
