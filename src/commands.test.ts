@@ -32,6 +32,10 @@ describe("command catalog", () => {
     expect(ids).toContain("view.toggle-focus-mode");
     expect(ids).toContain("external.choose-application");
     expect(ids).toContain("application.copy-diagnostics");
+    expect(ids).toContain("tabs.move-up");
+    expect(ids).toContain("tabs.move-down");
+    expect(ids).not.toContain("view.tabs-on-top");
+    expect(ids).not.toContain("view.tabs-on-left");
     expect(
       COMMAND_CATALOG_METADATA.every(
         (command) => command.label.length > 0 && command.keywords.length > 0,

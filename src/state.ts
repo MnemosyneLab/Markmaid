@@ -28,7 +28,6 @@ import type {
   ReadyMermaidTab,
   SettingsTab,
   SidebarView,
-  TabPlacement,
   TextFont,
   ThemeMode,
   WorkspaceRoot,
@@ -52,7 +51,6 @@ export const DEFAULT_STATE: AppState = {
   documentVisitHistoryIndex: -1,
   theme: "system",
   colorTheme: "default",
-  tabPlacement: "left",
   sidebarView: "tabs",
   sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
   tableOfContentsWidth: DEFAULT_TABLE_OF_CONTENTS_WIDTH,
@@ -659,7 +657,6 @@ export function setPreferences(
   preferences: {
     theme?: ThemeMode;
     colorTheme?: ColorTheme;
-    tabPlacement?: TabPlacement;
     sidebarView?: SidebarView;
     sidebarWidth?: number;
     tableOfContentsWidth?: number;
@@ -706,7 +703,6 @@ export function toPersistedSession(state: AppState): PersistedSessionV1 {
     activeTabKey: state.activeTabKey,
     theme: state.theme,
     colorTheme: state.colorTheme,
-    tabPlacement: state.tabPlacement,
     sidebarView: state.sidebarView,
     sidebarWidth: clampSidebarWidth(state.sidebarWidth),
     tableOfContentsWidth: clampTableOfContentsWidth(
@@ -750,7 +746,6 @@ export function fromPersistedSession(value: unknown): AppState {
     colorTheme: isColorTheme(value.colorTheme)
       ? value.colorTheme
       : DEFAULT_STATE.colorTheme,
-    tabPlacement: value.tabPlacement,
     sidebarView: isSidebarView(value.sidebarView)
       ? value.sidebarView
       : DEFAULT_STATE.sidebarView,
@@ -1097,8 +1092,7 @@ function isPersistedSession(value: unknown): value is PersistedSessionV1 {
     candidate.tabs.every(isPersistedTab) &&
     (candidate.activeTabKey === null ||
       typeof candidate.activeTabKey === "string") &&
-    ["system", "light", "dark"].includes(candidate.theme ?? "") &&
-    ["top", "left"].includes(candidate.tabPlacement ?? "")
+    ["system", "light", "dark"].includes(candidate.theme ?? "")
   );
 }
 

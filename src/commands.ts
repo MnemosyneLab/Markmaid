@@ -11,15 +11,13 @@ export type CommandId =
   | "tabs.reopen-closed"
   | "tabs.next"
   | "tabs.previous"
-  | "tabs.move-left"
-  | "tabs.move-right"
+  | "tabs.move-up"
+  | "tabs.move-down"
   | "view.toggle-focus-mode"
   | "view.show-sidebar"
   | "view.hide-sidebar"
   | "view.show-outline"
   | "view.hide-outline"
-  | "view.tabs-on-top"
-  | "view.tabs-on-left"
   | "appearance.system"
   | "appearance.light"
   | "appearance.dark"
@@ -175,14 +173,14 @@ export const COMMAND_CATALOG_METADATA: readonly CommandMetadata[] = [
     keywords: ["back", "document"],
   },
   {
-    id: "tabs.move-left",
-    label: "Move Tab Left",
+    id: "tabs.move-up",
+    label: "Move Tab Up",
     section: "Tabs",
     keywords: ["reorder", "previous"],
   },
   {
-    id: "tabs.move-right",
-    label: "Move Tab Right",
+    id: "tabs.move-down",
+    label: "Move Tab Down",
     section: "Tabs",
     keywords: ["reorder", "next"],
   },
@@ -216,18 +214,6 @@ export const COMMAND_CATALOG_METADATA: readonly CommandMetadata[] = [
     label: "Hide Outline",
     section: "View",
     keywords: ["contents", "headings", "navigation"],
-  },
-  {
-    id: "view.tabs-on-top",
-    label: "Tabs on Top",
-    section: "View",
-    keywords: ["placement", "horizontal"],
-  },
-  {
-    id: "view.tabs-on-left",
-    label: "Tabs on Left",
-    section: "View",
-    keywords: ["placement", "vertical", "sidebar"],
   },
   {
     id: "appearance.system",

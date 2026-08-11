@@ -442,7 +442,6 @@ describe("tab state", () => {
       baseState({
         theme: "dark",
         colorTheme: "nord",
-        tabPlacement: "left",
         sidebarWidth: 300,
         tableOfContentsWidth: 336,
         leftSidebarVisible: false,
@@ -462,7 +461,6 @@ describe("tab state", () => {
     const restored = fromPersistedSession(toPersistedSession(state));
     expect(restored.theme).toBe("dark");
     expect(restored.colorTheme).toBe("nord");
-    expect(restored.tabPlacement).toBe("left");
     expect(restored.sidebarWidth).toBe(300);
     expect(restored.tableOfContentsWidth).toBe(336);
     expect(restored.leftSidebarVisible).toBe(false);
@@ -508,109 +506,29 @@ describe("tab state", () => {
   });
 
   it("defaults missing sidebar width and clamps invalid values", () => {
-    expect(DEFAULT_STATE.tabPlacement).toBe("left");
     expect(DEFAULT_STATE.sidebarView).toBe("tabs");
     expect(DEFAULT_STATE.workspaceRoots).toEqual([]);
     expect(DEFAULT_STATE.focusMode).toBe(false);
-    expect(
-      fromPersistedSession({
-        version: 1,
-        tabs: [],
-        activeTabKey: null,
-        theme: "system",
-        tabPlacement: "top",
-      }).colorTheme,
-    ).toBe("default");
-    expect(
-      fromPersistedSession({
-        version: 1,
-        tabs: [],
-        activeTabKey: null,
-        theme: "system",
-        tabPlacement: "top",
-      }).sidebarWidth,
-    ).toBe(DEFAULT_SIDEBAR_WIDTH);
-    expect(
-      fromPersistedSession({
-        version: 1,
-        tabs: [],
-        activeTabKey: null,
-        theme: "system",
-        tabPlacement: "top",
-      }).tableOfContentsWidth,
-    ).toBe(DEFAULT_TABLE_OF_CONTENTS_WIDTH);
-    expect(
-      fromPersistedSession({
-        version: 1,
-        tabs: [],
-        activeTabKey: null,
-        theme: "system",
-        tabPlacement: "top",
-      }).leftSidebarVisible,
-    ).toBe(true);
-    expect(
-      fromPersistedSession({
-        version: 1,
-        tabs: [],
-        activeTabKey: null,
-        theme: "system",
-        tabPlacement: "top",
-      }).sidebarView,
-    ).toBe("tabs");
-    expect(
-      fromPersistedSession({
-        version: 1,
-        tabs: [],
-        activeTabKey: null,
-        theme: "system",
-        tabPlacement: "top",
-      }).mermaidLightTheme,
-    ).toBe("default");
-    expect(
-      fromPersistedSession({
-        version: 1,
-        tabs: [],
-        activeTabKey: null,
-        theme: "system",
-        tabPlacement: "top",
-      }).mermaidDarkTheme,
-    ).toBe("dark");
-    expect(
-      fromPersistedSession({
-        version: 1,
-        tabs: [],
-        activeTabKey: null,
-        theme: "system",
-        tabPlacement: "top",
-      }).textFont,
-    ).toBe("");
-    expect(
-      fromPersistedSession({
-        version: 1,
-        tabs: [],
-        activeTabKey: null,
-        theme: "system",
-        tabPlacement: "top",
-      }).codeFont,
-    ).toBe("");
-    expect(
-      fromPersistedSession({
-        version: 1,
-        tabs: [],
-        activeTabKey: null,
-        theme: "system",
-        tabPlacement: "top",
-      }).pageWidth,
-    ).toBe("default");
-    expect(
-      fromPersistedSession({
-        version: 1,
-        tabs: [],
-        activeTabKey: null,
-        theme: "system",
-        tabPlacement: "top",
-      }).tableOfContentsVisible,
-    ).toBe(false);
+    const restored = fromPersistedSession({
+      version: 1,
+      tabs: [],
+      activeTabKey: null,
+      theme: "system",
+      // Retired v0.1.6 preference is accepted as an unknown legacy field.
+      tabPlacement: "top",
+    });
+    expect(restored.colorTheme).toBe("default");
+    expect(restored.sidebarWidth).toBe(DEFAULT_SIDEBAR_WIDTH);
+    expect(restored.tableOfContentsWidth).toBe(DEFAULT_TABLE_OF_CONTENTS_WIDTH);
+    expect(restored.leftSidebarVisible).toBe(true);
+    expect(restored.sidebarView).toBe("tabs");
+    expect(restored.mermaidLightTheme).toBe("default");
+    expect(restored.mermaidDarkTheme).toBe("dark");
+    expect(restored.textFont).toBe("");
+    expect(restored.codeFont).toBe("");
+    expect(restored.pageWidth).toBe("default");
+    expect(restored.tableOfContentsVisible).toBe(false);
+    expect(toPersistedSession(restored)).not.toHaveProperty("tabPlacement");
 
     expect(
       setPreferences(baseState(), { sidebarWidth: 90 }).sidebarWidth,

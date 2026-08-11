@@ -183,7 +183,6 @@ import type {
   PreviewTaskOutcome,
   ReadyDocumentTab,
   SidebarView,
-  TabPlacement,
   TaskOutcome,
   ThemeMode,
   WorkspaceEntry,
@@ -1315,9 +1314,9 @@ function commandAvailability(
       return commandState.tabs.length > 1
         ? enabled
         : disabled("Only one tab is open");
-    case "tabs.move-left":
+    case "tabs.move-up":
       return currentIndex > 0 ? enabled : disabled("Tab is already first");
-    case "tabs.move-right":
+    case "tabs.move-down":
       return currentIndex >= 0 && currentIndex < commandState.tabs.length - 1
         ? enabled
         : disabled("Tab is already last");
@@ -1335,10 +1334,6 @@ function commandAvailability(
         return disabled("Open a ready Markdown document first");
       }
       return commandState.tableOfContentsVisible ? enabled : hidden;
-    case "view.tabs-on-top":
-      return commandState.tabPlacement === "top" ? hidden : enabled;
-    case "view.tabs-on-left":
-      return commandState.tabPlacement === "left" ? hidden : enabled;
   }
 }
 
@@ -1385,10 +1380,10 @@ async function executeCommand(
     case "tabs.previous":
       selectRelativeTab(-1);
       return;
-    case "tabs.move-left":
+    case "tabs.move-up":
       if (context.current) moveTabByOffset(context.current.key, -1);
       return;
-    case "tabs.move-right":
+    case "tabs.move-down":
       if (context.current) moveTabByOffset(context.current.key, 1);
       return;
     case "view.toggle-focus-mode":
@@ -1405,12 +1400,6 @@ async function executeCommand(
       return;
     case "view.hide-outline":
       setCommandPreferences({ tableOfContentsVisible: false });
-      return;
-    case "view.tabs-on-top":
-      setCommandPreferences({ tabPlacement: "top" });
-      return;
-    case "view.tabs-on-left":
-      setCommandPreferences({ tabPlacement: "left" });
       return;
     case "appearance.system":
     case "appearance.light":
@@ -1671,8 +1660,6 @@ function render(): void {
   ) {
     queueMicrotask(() => void externalApps.refresh());
   }
-  const topTabs =
-    state.tabPlacement === "top" ? renderTabList(state.tabs, "horizontal") : "";
   const title = escapeHtml(windowTitle(current));
   const sidebarWidth = clampSidebarWidth(state.sidebarWidth);
   const tableOfContentsWidth = clampTableOfContentsWidth(
@@ -1717,7 +1704,7 @@ function render(): void {
 
   root.innerHTML = `
     <div
-      class="app-frame placement-${state.tabPlacement} ${state.focusMode ? "is-focus-mode" : ""} ${showStatusBar ? "has-status-bar" : ""} ${status.alert ? "is-status-alert" : ""} ${UI.frame}"
+      class="app-frame ${state.focusMode ? "is-focus-mode" : ""} ${showStatusBar ? "has-status-bar" : ""} ${status.alert ? "is-status-alert" : ""} ${UI.frame}"
       style="--sidebar-width: ${sidebarWidth}px; --table-of-contents-width: ${tableOfContentsWidth}px"
     >
       <header class="titlebar ${UI.titlebar}" data-tauri-drag-region>
@@ -1739,11 +1726,6 @@ function render(): void {
           ${focusModeExit}
         </nav>
       </header>
-      ${
-        state.tabPlacement === "top"
-          ? `<div class="tab-strip" aria-label="Document tabs" data-focus-chrome>${topTabs}</div>`
-          : ""
-      }
       <div class="workspace ${UI.workspace}">
         ${
           state.leftSidebarVisible
@@ -1753,7 +1735,7 @@ function render(): void {
                   ${
                     state.sidebarView === "files"
                       ? renderFilesSidebar()
-                      : renderTabList(state.tabs, "vertical")
+                      : renderTabList(state.tabs)
                   }
                 </div>
                 <div class="sidebar-resize" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" aria-valuemin="${MIN_SIDEBAR_WIDTH}" aria-valuemax="${MAX_SIDEBAR_WIDTH}" aria-valuenow="${sidebarWidth}" tabindex="0"></div>
@@ -2809,13 +2791,10 @@ function workspaceInvokeError(error: unknown): string {
   return workspaceErrorMessage(code || "permission_denied");
 }
 
-function renderTabList(
-  tabs: AppTab[],
-  orientation: "horizontal" | "vertical",
-): string {
+function renderTabList(tabs: AppTab[]): string {
   const labels = disambiguatedTabLabels(tabs);
   return `
-    <div class="tab-list" role="tablist" aria-label="Open tabs" aria-orientation="${orientation}">
+    <div class="tab-list" role="tablist" aria-label="Open tabs" aria-orientation="vertical">
       ${tabs
         .map((tab) => {
           const label =
@@ -3649,13 +3628,9 @@ function bindShellInteractions(): void {
         list.querySelectorAll<HTMLElement>("[data-tab-key]"),
       );
       const currentIndex = tabs.indexOf(element);
-      const orientation =
-        list.getAttribute("aria-orientation") === "vertical"
-          ? "vertical"
-          : "horizontal";
       const action = resolveTabListKeyAction(
         event.key,
-        orientation,
+        "vertical",
         currentIndex,
         tabs.length,
         event,
@@ -3669,7 +3644,7 @@ function bindShellInteractions(): void {
         next.focus();
         return;
       }
-      pendingFocusKey = { kind: "tab", tabKey: key, orientation };
+      pendingFocusKey = { kind: "tab", tabKey: key };
       navigation.selectTab(key);
       state = runtime.getState();
     });
@@ -4018,22 +3993,17 @@ function showTabContextMenu(event: MouseEvent, tabKey: string): void {
   };
 
   const tabIndex = state.tabs.findIndex((candidate) => candidate.key === tabKey);
-  const moveEarlierLabel =
-    state.tabPlacement === "top" ? "Move Left" : "Move Up";
-  const moveLaterLabel =
-    state.tabPlacement === "top" ? "Move Right" : "Move Down";
-
   addAction("Close", () => {
     closeTabAndLoadNext(tabKey);
   });
   addSeparator();
   addAction(
-    moveEarlierLabel,
+    "Move Up",
     () => moveTabByOffset(tabKey, -1),
     tabIndex <= 0,
   );
   addAction(
-    moveLaterLabel,
+    "Move Down",
     () => moveTabByOffset(tabKey, 1),
     tabIndex < 0 || tabIndex >= state.tabs.length - 1,
   );
@@ -5359,16 +5329,6 @@ function renderSettings(container: HTMLElement): void {
             </div>
             ${selectControl("page-width", PAGE_WIDTH_OPTIONS, state.pageWidth, "Page width")}
           </div>
-          <div class="setting-group ${UI.settingGroup}">
-            <div class="setting-copy">
-              <h3 class="${UI.settingTitle}">Tab position</h3>
-              <p class="${UI.settingDescription}">Keep document tabs in a strip under the title bar or move them to a left rail.</p>
-            </div>
-            <div class="segmented-control ${UI.segmented}" role="group" aria-label="Tab position">
-              ${settingButton("placement", "top", "Top", state.tabPlacement)}
-              ${settingButton("placement", "left", "Left", state.tabPlacement)}
-            </div>
-          </div>
         </div>
       </section>
 
@@ -5433,17 +5393,6 @@ function renderSettings(container: HTMLElement): void {
       }
     });
   });
-  container
-    .querySelectorAll<HTMLElement>("[data-placement]")
-    .forEach((button) => {
-      button.addEventListener("click", () => {
-        runtime.commit(setPreferences(state, {          tabPlacement: button.dataset.placement as TabPlacement,
-        }));
-        state = runtime.getState();
-        render();
-        schedulePersist();
-      });
-    });
   container
     .querySelectorAll<HTMLSelectElement>("[data-color-theme]")
     .forEach((select) => {

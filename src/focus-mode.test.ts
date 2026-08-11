@@ -9,14 +9,12 @@ describe("Focus Mode", () => {
       ...DEFAULT_STATE,
       leftSidebarVisible: false,
       tableOfContentsVisible: true,
-      tabPlacement: "top" as const,
     };
     const focused = toggleFocusModeState(state);
 
     expect(focused.focusMode).toBe(true);
     expect(focused.leftSidebarVisible).toBe(false);
     expect(focused.tableOfContentsVisible).toBe(true);
-    expect(focused.tabPlacement).toBe("top");
     expect(toggleFocusModeState(focused)).toEqual(state);
   });
 

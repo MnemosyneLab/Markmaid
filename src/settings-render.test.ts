@@ -50,7 +50,7 @@ describe("settings rendering", () => {
     expect(statusSource).toContain('role="status" aria-atomic="true"');
   });
 
-  it("wires orientation-aware keyboard navigation to rendered tabs", () => {
+  it("wires vertical keyboard navigation to the left tab rail", () => {
     const interactions = sourceBetween(
       "function bindShellInteractions()",
       "function bindTabReordering()",
@@ -58,7 +58,8 @@ describe("settings rendering", () => {
 
     expect(interactions).toContain('element.addEventListener("keydown"');
     expect(interactions).toContain("resolveTabListKeyAction(");
-    expect(interactions).toContain('list.getAttribute("aria-orientation")');
+    expect(interactions).toContain('event.key,\n        "vertical"');
+    expect(interactions).not.toContain('list.getAttribute("aria-orientation")');
     expect(interactions).toContain("navigation.selectTab(key)");
   });
 

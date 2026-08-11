@@ -181,7 +181,6 @@ describe("workspace helpers", () => {
       tabs: [],
       activeTabKey: null,
       theme: "system",
-      tabPlacement: "top",
     });
     expect(restored.sidebarView).toBe("tabs");
     expect(restored.workspaceRoots).toEqual([]);

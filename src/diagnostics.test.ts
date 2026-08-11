@@ -12,7 +12,7 @@ import type { AppState, AppTab } from "./types";
 
 const environment: DiagnosticsEnvironment = {
   appName: "MarkMaid",
-  appVersion: "0.1.6",
+  appVersion: "0.1.7",
   osName: "macOS",
   osVersion: "unavailable",
   architecture: "aarch64",
@@ -25,7 +25,6 @@ describe("diagnostics", () => {
       ...DEFAULT_STATE,
       theme: "system",
       colorTheme: "nord",
-      tabPlacement: "left",
       workspaceRoots: [
         {
           id: "root-1",
@@ -101,13 +100,13 @@ describe("diagnostics", () => {
     expect(report).toBe(
       [
         "MarkMaid diagnostics v1",
-        "App: MarkMaid 0.1.6",
+        "App: MarkMaid 0.1.7",
         "Runtime: macOS unavailable (aarch64)",
         "Build: debug",
         "Tabs: total=4, document=1, mermaid=1, image=1, error=1, loading=1",
         "Workspace: roots=1, expanded-nodes=2",
         "Quick Open: failed, unavailable-roots=1, truncated-roots=0",
-        "UI: appearance=system, resolved=dark, palette=nord, tabs=left",
+        "UI: appearance=system, resolved=dark, palette=nord",
         "Recent error: operation=preview-load, code=permission_denied",
         "",
       ].join("\n"),

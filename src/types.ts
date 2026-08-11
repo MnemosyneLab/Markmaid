@@ -6,7 +6,6 @@ export type ColorTheme =
   | "gruvbox"
   | "catppuccin"
   | "high-contrast";
-export type TabPlacement = "top" | "left";
 export type SidebarView = "files" | "tabs";
 export type TextFont = string;
 export type CodeFont = string;
@@ -282,7 +281,6 @@ export interface AppState {
   documentVisitHistoryIndex: number;
   theme: ThemeMode;
   colorTheme: ColorTheme;
-  tabPlacement: TabPlacement;
   sidebarView: SidebarView;
   sidebarWidth: number;
   tableOfContentsWidth: number;
@@ -313,7 +311,6 @@ export interface PersistedSessionV1 {
   activeTabKey: string | null;
   theme: ThemeMode;
   colorTheme?: ColorTheme;
-  tabPlacement: TabPlacement;
   sidebarView?: SidebarView;
   sidebarWidth?: number;
   tableOfContentsWidth?: number;

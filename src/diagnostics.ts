@@ -2,7 +2,6 @@ import type {
   AppState,
   AppTab,
   ColorTheme,
-  TabPlacement,
   ThemeMode,
   WorkspaceMarkdownIndex,
 } from "./types";
@@ -102,7 +101,7 @@ export function formatDiagnosticsReport(input: DiagnosticsSnapshotInput): string
     `Tabs: total=${tabs.total}, document=${tabs.document}, mermaid=${tabs.mermaid}, image=${tabs.image}, error=${tabs.error}, loading=${tabs.loading}`,
     `Workspace: roots=${input.state.workspaceRoots.length}, expanded-nodes=${input.expandedNodeCount}`,
     `Quick Open: ${input.quickOpenStatus}, unavailable-roots=${unavailable}, truncated-roots=${truncated}`,
-    `UI: appearance=${formatAppearance(input.state.theme)}, resolved=${input.resolvedAppearance}, palette=${formatPalette(input.state.colorTheme)}, tabs=${formatTabPlacement(input.state.tabPlacement)}`,
+    `UI: appearance=${formatAppearance(input.state.theme)}, resolved=${input.resolvedAppearance}, palette=${formatPalette(input.state.colorTheme)}`,
     `Recent error: operation=${recent?.operation ?? "none"}, code=${recent?.code ?? "none"}`,
   ];
   return `${lines.join("\n")}\n`;
@@ -114,10 +113,6 @@ function formatAppearance(theme: ThemeMode): string {
 
 function formatPalette(palette: ColorTheme): string {
   return palette;
-}
-
-function formatTabPlacement(placement: TabPlacement): string {
-  return placement;
 }
 
 function normalizeErrorCode(error: unknown): string {

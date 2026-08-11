@@ -21,6 +21,9 @@ All notable changes to MarkMaid are documented in this file.
 
 ### Changed
 
+- Remove the top tab-strip layout and its setting; open tabs now use the single
+  resizable left rail, with vertical keyboard navigation and Move Up/Down
+  commands
 - Keep Focus Mode toggles DOM-preserving so entering or leaving the reading
   layout does not rerender the active Markdown document
 - Surface Quick Open index, export, workspace listing, preview, and external
