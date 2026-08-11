@@ -511,6 +511,7 @@ describe("tab state", () => {
     expect(DEFAULT_STATE.tabPlacement).toBe("left");
     expect(DEFAULT_STATE.sidebarView).toBe("tabs");
     expect(DEFAULT_STATE.workspaceRoots).toEqual([]);
+    expect(DEFAULT_STATE.focusMode).toBe(false);
     expect(
       fromPersistedSession({
         version: 1,
@@ -633,6 +634,54 @@ describe("tab state", () => {
 
   it("falls back safely for invalid persisted state", () => {
     expect(fromPersistedSession({ version: 99 })).toEqual(DEFAULT_STATE);
+  });
+
+  it("keeps Focus Mode runtime-only across session serialization", () => {
+    const snapshot = toPersistedSession({ ...baseState(), focusMode: true });
+
+    expect(snapshot).not.toHaveProperty("focusMode");
+    expect(fromPersistedSession(snapshot).focusMode).toBe(false);
+  });
+
+  it("persists only a bounded opaque external target ID", () => {
+    const snapshot = toPersistedSession({
+      ...baseState(),
+      externalOpenTargetId: "application:com.microsoft.vscode",
+    });
+
+    expect(snapshot.externalOpenTargetId).toBe(
+      "application:com.microsoft.vscode",
+    );
+    expect(fromPersistedSession(snapshot).externalOpenTargetId).toBe(
+      "application:com.microsoft.vscode",
+    );
+    expect(
+      fromPersistedSession({
+        ...snapshot,
+        externalOpenTargetId: "/Applications/Visual Studio Code.app",
+      }).externalOpenTargetId,
+    ).toBeNull();
+    expect(
+      fromPersistedSession({
+        ...snapshot,
+        externalOpenTargetId: `application:${"a".repeat(200)}`,
+      }).externalOpenTargetId,
+    ).toBeNull();
+    for (const invalidId of [
+      "system:anything",
+      "finder:anything",
+      "application:a",
+      "terminal:com.example/tool",
+      "Application:com.example.Editor",
+      "TERMINAL:com.apple.Terminal",
+    ]) {
+      expect(
+        fromPersistedSession({
+          ...snapshot,
+          externalOpenTargetId: invalidId,
+        }).externalOpenTargetId,
+      ).toBeNull();
+    }
   });
 
   it("keeps ten unique recent documents and can clear them", () => {

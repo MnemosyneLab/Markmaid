@@ -26,6 +26,7 @@ export interface WorkspaceController {
   unregisterRoot(rootId: string): void;
   setExpandedPaths(expandedWorkspacePaths: AppState["expandedWorkspacePaths"]): void;
   cachedChildren(rootId: string, relativePath: string): WorkspaceEntry[] | undefined;
+  childLoadError(rootId: string, relativePath: string): boolean;
   ensureChildren(rootId: string, relativePath: string): Promise<WorkspaceEntry[]>;
   invalidateChildren(rootId: string, relativePaths?: string[]): void;
   cancelChildren(rootId: string, relativePath: string): void;
@@ -64,6 +65,7 @@ export function createWorkspaceController(
     "workspace",
   );
   const childrenCache = new Map<string, WorkspaceEntry[]>();
+  const childLoadErrors = new Set<string>();
   const pendingChildren = new Map<string, Promise<WorkspaceEntry[]>>();
 
   return {
@@ -137,6 +139,10 @@ export function createWorkspaceController(
       return childrenCache.get(workspaceCacheKey(rootId, relativePath));
     },
 
+    childLoadError(rootId, relativePath) {
+      return childLoadErrors.has(workspaceCacheKey(rootId, relativePath));
+    },
+
     ensureChildren(rootId, relativePath) {
       const key = workspaceCacheKey(rootId, relativePath);
       const cached = childrenCache.get(key);
@@ -153,12 +159,15 @@ export function createWorkspaceController(
           if (!tasks.isCurrent(key, token) || !outcome || outcome.status === "cancelled") {
             return [];
           }
+          childLoadErrors.delete(key);
+          hooks.onNotice?.("");
           childrenCache.set(key, outcome.result);
           return outcome.result;
         } catch (error) {
           if (!tasks.isCurrent(key, token)) return [];
           hooks.onTaskError?.("list-workspace-children", error);
           hooks.onNotice?.(deps.errorMessage?.(error) ?? "Workspace folder unavailable.");
+          childLoadErrors.add(key);
           childrenCache.set(key, []);
           return [];
         } finally {
@@ -182,12 +191,16 @@ export function createWorkspaceController(
         for (const key of [...childrenCache.keys()]) {
           if (key.startsWith(prefix)) childrenCache.delete(key);
         }
+        for (const key of [...childLoadErrors]) {
+          if (key.startsWith(prefix)) childLoadErrors.delete(key);
+        }
       } else {
         for (const relativePath of relativePaths) {
           const key = workspaceCacheKey(rootId, relativePath);
           tasks.invalidate(key);
           pendingChildren.delete(key);
           childrenCache.delete(key);
+          childLoadErrors.delete(key);
         }
       }
       hooks.onIndexInvalidated?.();

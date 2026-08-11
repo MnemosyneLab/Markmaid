@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "fixtureVersion": "v0.1.7",
+  "seed": "markmaid-v0.1.7-fixed-seed-1",
+  "outputDirectory": ".perf-fixtures/v0.1.7",
+  "largeMarkdown": {
+    "sizeBytes": 8388608,
+    "mermaidSections": 8,
+    "richSections": 16
+  },
+  "workspace": {
+    "representativeMarkdownFiles": 3072,
+    "hiddenMarkdownFiles": 48,
+    "unsupportedFiles": 128,
+    "maxRepresentativeDepth": 8,
+    "depthCap": 13,
+    "entryCapMarkdownFiles": 10001
+  },
+  "manyTabs": [10, 50, 100, 200],
+  "multiMermaid": [1, 10, 50],
+  "commandCatalogs": [50, 250, 500],
+  "expectedManifestHash": "c5e17371fed937f555509060d283d72b90edbb5f08ce5befc38e7f1b17932e97"
+}

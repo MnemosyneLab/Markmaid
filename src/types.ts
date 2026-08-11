@@ -287,6 +287,9 @@ export interface AppState {
   sidebarWidth: number;
   tableOfContentsWidth: number;
   leftSidebarVisible: boolean;
+  /** Runtime-only presentation state. Focus Mode is intentionally not persisted. */
+  focusMode: boolean;
+  externalOpenTargetId: string | null;
   workspaceRoots: WorkspaceRoot[];
   expandedWorkspacePaths: Record<string, string[]>;
   mermaidLightTheme: MermaidLightTheme;
@@ -324,6 +327,7 @@ export interface PersistedSessionV1 {
   pageWidth?: PageWidth;
   tableOfContentsVisible?: boolean;
   recentDocuments?: string[];
+  externalOpenTargetId?: string;
   // Kept for one-time migration from the earlier light/dark selector.
   mermaidTheme?: "light" | "dark";
 }

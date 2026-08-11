@@ -2,6 +2,40 @@
 
 All notable changes to MarkMaid are documented in this file.
 
+## [0.1.7] - 2026-08-11
+
+### Added
+
+- Keyboard-first Command Palette (`⇧⌘P`) for file, export, appearance, tab,
+  sidebar, Focus Mode, external handoff, Settings, and diagnostics commands,
+  while preserving `⌘P` for Quick Open
+- Runtime-only Focus Mode (`⇧⌘F`) with a reversible minimal titlebar, hidden
+  navigation chrome, deterministic content focus, and no session persistence
+- Actionable empty and failure states with Retry, Reveal, Remove Root, Choose
+  Another, and privacy-safe Copy Details actions
+- Safe macOS external-application discovery and handoff for ready Markdown and
+  Mermaid files, including System Default, Finder, supported terminals, app
+  icons, and one persisted opaque preferred-target ID
+- Deterministic large-document, workspace, tab, Mermaid, and command fixtures,
+  structural performance smoke tests, and explicit frontend/native baselines
+
+### Changed
+
+- Keep Focus Mode toggles DOM-preserving so entering or leaving the reading
+  layout does not rerender the active Markdown document
+- Surface Quick Open index, export, workspace listing, preview, and external
+  handoff recovery through shared typed action models
+- Run the performance fixture smoke suite in the normal quality gate without
+  introducing wall-clock CI thresholds, telemetry, or uploads
+
+### Security
+
+- Resolve external applications from native opaque target IDs at execution
+  time; reject symlinks, unsupported paths, arbitrary executables, shell
+  strings, custom command templates, and stale/uninstalled targets
+- Persist no application paths, bundle paths, icons, inventory, launch errors,
+  Focus Mode state, Command Palette query, or copied issue details
+
 ## [0.1.6] - 2026-08-10
 
 ### Added
@@ -157,6 +191,7 @@ All notable changes to MarkMaid are documented in this file.
 - Manual reload that preserves the previous preview when reloading fails
 - Local release tooling for version sync, ARM builds, and GitHub Releases
 
+[0.1.7]: https://github.com/Weichen-LF/Markmaid/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/Weichen-LF/Markmaid/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/Weichen-LF/Markmaid/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/Weichen-LF/Markmaid/compare/v0.1.3...v0.1.4

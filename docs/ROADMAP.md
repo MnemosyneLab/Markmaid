@@ -34,7 +34,7 @@ release policy until that decision changes.
 | --- | --- | --- |
 | v0.1.5 | Released | Hardened preview opening, navigation, workspace bounds, local assets, and printing |
 | v0.1.6 | Released | Root reorder, safe diagnostics, cooperative cancellation, shell controllers, and accessible navigation |
-| v0.1.7 | Planned | Command Palette, Focus Mode, actionable states, external-app handoff, and performance baselines |
+| v0.1.7 | Implementation complete; QA pending | Command Palette, Focus Mode, actionable states, external-app handoff, and performance baselines |
 | v0.2 candidate | On-demand knowledge discovery | Search document contents and understand relationships without a background watcher |
 | Later | Reading depth and scale | Better long-document performance, export control, and optional local metadata |
 
@@ -90,7 +90,7 @@ into a later version plan.
   timings locally in development builds; define budgets before optimizing.
 - [ ] Add migration tests for every persisted-session schema change.
 
-## v0.1.7 planned — command and reading workflows
+## v0.1.7 in progress — command and reading workflows
 
 The selected scope and implementation contracts are documented in the
 [`v0.1.7 plan`](plans/v0.1.7_plan.md). This release is deliberately narrower
@@ -100,27 +100,27 @@ application, and measure the workloads that will inform future search work.
 
 ### Selected user-facing scope
 
-- [ ] **Command Palette.** Add one searchable command surface for Open, Quick
+- [x] **Command Palette.** Add one searchable command surface for Open, Quick
   Open, export, sidebar actions, appearance, tab commands, Focus Mode, and
   external handoff. Keep `⌘P` focused on files and use `⌘⇧P` for commands.
-- [ ] **Focus Mode.** Temporarily hide workspace/navigation chrome for
+- [x] **Focus Mode.** Temporarily hide workspace/navigation chrome for
   distraction-free reading, without persisting or overwriting the user's normal
   sidebar, outline, or tab preferences.
-- [ ] **Actionable empty/error states.** Standardize Retry, Reveal, Remove Root,
+- [x] **Actionable empty/error states.** Standardize Retry, Reveal, Remove Root,
   Choose Another Application, and privacy-safe Copy Details actions.
-- [ ] **External application selector.** Add a preferred-application split
+- [x] **External application selector.** Add a preferred-application split
   button and chooser for installed Markdown/Mermaid handlers, Finder, and
   explicitly supported terminal destinations. Persist a stable target ID, not
   executable or bundle paths.
 
 ### Selected engineering scope
 
-- [ ] Add deterministic performance fixtures for a large Markdown document, a
+- [x] Add deterministic performance fixtures for a large Markdown document, a
   deep/noisy workspace, thousands of Markdown paths, many tabs, and multiple
   Mermaid diagrams.
-- [ ] Add explicit local benchmark/baseline commands and fast structural CI
+- [x] Add explicit local benchmark/baseline commands and fast structural CI
   smoke checks without production telemetry or automatic upload.
-- [ ] Add compatibility tests for the optional session-v1 external target
+- [x] Add compatibility tests for the optional session-v1 external target
   preference; Focus Mode and palette state remain runtime-only.
 
 ### Deferred from v0.1.7

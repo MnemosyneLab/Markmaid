@@ -88,4 +88,28 @@ describe("workspace controller", () => {
     await expect(first).resolves.toEqual([]);
     expect(controller.cachedChildren("a", "guides")).toBeUndefined();
   });
+
+  it("tracks child load failures until the branch is invalidated or succeeds", async () => {
+    const { runtime } = createFakeRuntime({ ...DEFAULT_STATE, workspaceRoots: roots });
+    let shouldFail = true;
+    const controller = createWorkspaceController(
+      runtime,
+      {},
+      {
+        loadChildren: async () => {
+          if (shouldFail) throw new Error("permission_denied: private path");
+          return { status: "completed", result: [] };
+        },
+      },
+    );
+
+    await expect(controller.ensureChildren("a", "guides")).resolves.toEqual([]);
+    expect(controller.childLoadError("a", "guides")).toBe(true);
+
+    controller.invalidateChildren("a", ["guides"]);
+    expect(controller.childLoadError("a", "guides")).toBe(false);
+    shouldFail = false;
+    await expect(controller.ensureChildren("a", "guides")).resolves.toEqual([]);
+    expect(controller.childLoadError("a", "guides")).toBe(false);
+  });
 });

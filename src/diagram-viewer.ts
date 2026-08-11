@@ -15,6 +15,10 @@ const DEFAULT_ZOOM = 150;
 
 let activeViewer: { close: () => void } | null = null;
 
+export function isMediaViewerOpen(): boolean {
+  return activeViewer !== null;
+}
+
 export function enhanceDiagramViewers(article: HTMLElement): void {
   article
     .querySelectorAll<HTMLButtonElement>(".mermaid-figure .mermaid-expand")
@@ -306,6 +310,7 @@ function openMediaViewer(options: {
   canvas?.addEventListener("pointercancel", endDrag);
 
   const onKeyDown = (event: KeyboardEvent): void => {
+    if (event.defaultPrevented) return;
     if (event.key === "Escape") {
       event.preventDefault();
       close();

@@ -1,5 +1,6 @@
 mod diagnostics;
 mod document;
+mod external_apps;
 mod printing;
 mod tasks;
 mod workspace;
@@ -13,6 +14,7 @@ use diagnostics::get_diagnostics_environment;
 use document::{
     check_document_revisions, export_html, export_svg, highlight_code_chunk, reload_document,
 };
+use external_apps::{ExternalAppsState, list_external_open_targets, open_external_target};
 use printing::{
     finish_print_export, mark_print_export_ready, print_export_html, start_print_export,
 };
@@ -30,6 +32,8 @@ use workspace::{
 const OPEN_FILES_EVENT: &str = "markmaid://open-files";
 const MENU_OPEN_EVENT: &str = "markmaid://menu-open";
 const MENU_QUICK_OPEN_EVENT: &str = "markmaid://menu-quick-open";
+const MENU_COMMAND_PALETTE_EVENT: &str = "markmaid://menu-command-palette";
+const MENU_FOCUS_MODE_EVENT: &str = "markmaid://menu-focus-mode";
 const MENU_EXPORT_EVENT: &str = "markmaid://menu-export";
 const MENU_CLOSE_TAB_EVENT: &str = "markmaid://menu-close-tab";
 const MENU_REOPEN_CLOSED_TAB_EVENT: &str = "markmaid://menu-reopen-closed-tab";
@@ -108,6 +112,12 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         .build(app)?;
     let quick_open = MenuItemBuilder::with_id("quick-open", "Quick Open...")
         .accelerator("CmdOrCtrl+P")
+        .build(app)?;
+    let command_palette = MenuItemBuilder::with_id("command-palette", "Command Palette...")
+        .accelerator("CmdOrCtrl+Shift+P")
+        .build(app)?;
+    let focus_mode = MenuItemBuilder::with_id("focus-mode", "Toggle Focus Mode")
+        .accelerator("CmdOrCtrl+Shift+F")
         .build(app)?;
     let export = MenuItemBuilder::with_id("export", "Export Document...")
         .accelerator("CmdOrCtrl+E")
@@ -198,6 +208,8 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         .select_all()
         .build()?;
     let view_menu = SubmenuBuilder::new(app, "View")
+        .item(&command_palette)
+        .separator()
         .item(&navigate_back)
         .item(&navigate_forward)
         .separator()
@@ -205,6 +217,8 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         .separator()
         .item(&next_tab)
         .item(&previous_tab)
+        .separator()
+        .item(&focus_mode)
         .separator()
         .fullscreen()
         .build()?;
@@ -277,6 +291,8 @@ fn menu_event_for_id(id: &str) -> Option<&'static str> {
     match id {
         "open" => Some(MENU_OPEN_EVENT),
         "quick-open" => Some(MENU_QUICK_OPEN_EVENT),
+        "command-palette" => Some(MENU_COMMAND_PALETTE_EVENT),
+        "focus-mode" => Some(MENU_FOCUS_MODE_EVENT),
         "export" => Some(MENU_EXPORT_EVENT),
         "close-tab" => Some(MENU_CLOSE_TAB_EVENT),
         "reopen-closed-tab" => Some(MENU_REOPEN_CLOSED_TAB_EVENT),
@@ -438,6 +454,7 @@ pub fn run() {
         .manage(ReopenClosedTabAvailability::default())
         .manage(WorkspaceRegistry::default())
         .manage(BackgroundTaskRegistry::default())
+        .manage(ExternalAppsState::default())
         .plugin(tauri_plugin_single_instance::init(
             |app, arguments, current_directory| {
                 let paths = paths_from_arguments(&arguments, &current_directory);
@@ -488,7 +505,9 @@ pub fn run() {
             trash_workspace_item,
             index_workspace_markdown,
             get_diagnostics_environment,
-            cancel_background_task
+            cancel_background_task,
+            list_external_open_targets,
+            open_external_target
         ]);
 
     let app = builder
@@ -511,6 +530,142 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "explicit release-mode performance baseline"]
+    fn records_native_performance_baseline() {
+        use std::{fs, hint::black_box, path::PathBuf, time::Instant};
+
+        let fixture_root = PathBuf::from(
+            std::env::var("MARKMAID_PERF_FIXTURE_ROOT")
+                .expect("MARKMAID_PERF_FIXTURE_ROOT must point to generated fixtures"),
+        );
+        let document_path = fixture_root.join("large-markdown/large.md");
+        let document_path_string = document_path.to_string_lossy().into_owned();
+        let workspace_path = fixture_root.join("workspace/representative");
+        let mermaid_batch: serde_json::Value = serde_json::from_slice(
+            &fs::read(fixture_root.join("mermaid/batch-50.json"))
+                .expect("Mermaid fixture batch should be readable"),
+        )
+        .expect("Mermaid fixture batch should be valid JSON");
+        let mermaid_sources = mermaid_batch
+            .as_array()
+            .expect("Mermaid fixture batch should be an array")
+            .iter()
+            .filter_map(|entry| entry.get("source").and_then(serde_json::Value::as_str))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            mermaid_sources.len(),
+            50,
+            "fixture must contain 50 diagrams"
+        );
+
+        let load_document = || {
+            let registry = tasks::BackgroundTaskRegistry::default();
+            let guard = registry
+                .register("perf-document")
+                .expect("benchmark task should register");
+            document::load_document_data(
+                &document_path_string,
+                document::MermaidTheme::Default,
+                document::ColorTheme::Default,
+                &guard.token(),
+            )
+        };
+        match load_document() {
+            Some(document::DocumentLoadResult::Ready {
+                size_bytes, html, ..
+            }) => {
+                assert_eq!(size_bytes, 8 * 1024 * 1024);
+                assert!(!html.is_empty(), "rendered Markdown HTML must not be empty");
+                assert!(!html.contains("mermaid-error"));
+            }
+            result => panic!("Markdown fixture preflight did not render ready: {result:?}"),
+        }
+
+        let index_workspace = || {
+            let registry = tasks::BackgroundTaskRegistry::default();
+            let guard = registry
+                .register("perf-workspace")
+                .expect("benchmark task should register");
+            workspace::index_workspace_markdown_inner(
+                vec![("fixture-root".to_string(), Some(workspace_path.clone()))],
+                &guard.token(),
+            )
+        };
+        let workspace_preflight = index_workspace().expect("workspace fixture must be indexed");
+        assert_eq!(workspace_preflight.entries.len(), 3072);
+        assert!(workspace_preflight.unavailable_root_ids.is_empty());
+        assert!(workspace_preflight.truncated_root_ids.is_empty());
+
+        for (index, source) in mermaid_sources.iter().enumerate() {
+            let html = document::render_standalone_mermaid(
+                source,
+                &PathBuf::from(format!("fixture-{index}.mmd")),
+                document::MermaidTheme::Default,
+                document::ColorTheme::Default,
+            );
+            assert!(
+                html.contains("<svg"),
+                "Mermaid fixture {index} did not render SVG"
+            );
+            assert!(!html.contains("mermaid-error"));
+        }
+
+        let document = measure_native_operation("render 8 MiB Markdown", || {
+            black_box(load_document());
+        });
+        let workspace = measure_native_operation("index 3,072-file workspace", || {
+            black_box(index_workspace());
+        });
+        let mermaid = measure_native_operation("render 50 Mermaid diagrams", || {
+            for (index, source) in mermaid_sources.iter().enumerate() {
+                black_box(document::render_standalone_mermaid(
+                    source,
+                    &PathBuf::from(format!("fixture-{index}.mmd")),
+                    document::MermaidTheme::Default,
+                    document::ColorTheme::Default,
+                ));
+            }
+        });
+        let report = serde_json::json!({
+            "schemaVersion": 1,
+            "profile": "rust-release",
+            "methodology": {
+                "warmupIterations": 1,
+                "measuredIterations": 9,
+                "cacheState": "warmed process and filesystem caches after strict fixture preflight"
+            },
+            "benchmarks": [document, workspace, mermaid]
+        });
+        println!("MARKMAID_NATIVE_BASELINE={report}");
+
+        fn measure_native_operation(name: &str, mut operation: impl FnMut()) -> serde_json::Value {
+            operation();
+            let mut samples = (0..9)
+                .map(|_| {
+                    let started = Instant::now();
+                    operation();
+                    started.elapsed().as_secs_f64() * 1_000.0
+                })
+                .collect::<Vec<_>>();
+            samples.sort_by(f64::total_cmp);
+            let percentile = |quantile: f64| {
+                let position = (samples.len() - 1) as f64 * quantile;
+                let lower = position.floor() as usize;
+                let upper = position.ceil() as usize;
+                let weight = position - lower as f64;
+                samples[lower] * (1.0 - weight) + samples[upper] * weight
+            };
+            serde_json::json!({
+                "name": name,
+                "unit": "milliseconds",
+                "samples": samples.len(),
+                "median": percentile(0.5),
+                "p95": percentile(0.95)
+            })
+        }
+    }
 
     #[test]
     fn extracts_supported_paths_from_secondary_instance_arguments() {
@@ -569,6 +724,11 @@ mod tests {
             Some(MENU_REOPEN_CLOSED_TAB_EVENT)
         );
         assert_eq!(menu_event_for_id("export"), Some(MENU_EXPORT_EVENT));
+        assert_eq!(
+            menu_event_for_id("command-palette"),
+            Some(MENU_COMMAND_PALETTE_EVENT)
+        );
+        assert_eq!(menu_event_for_id("focus-mode"), Some(MENU_FOCUS_MODE_EVENT));
         assert_eq!(
             menu_event_for_id("navigate-back"),
             Some(MENU_NAVIGATE_BACK_EVENT)

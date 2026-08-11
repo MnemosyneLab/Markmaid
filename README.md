@@ -20,6 +20,11 @@ Features include:
 - Reopen Closed Tab (`⇧⌘T`) for recently closed preview tabs
 - Quick Open (`⌘P`) across open tabs, pinned Markdown files, and recent documents
   (path/name match only; refreshes the pinned-folder index each time it opens)
+- Command Palette (`⇧⌘P`) for app commands without mixing files into command
+  search, plus runtime-only Focus Mode (`⇧⌘F`) for distraction-free reading
+- A native external-application split button for ready Markdown / Mermaid files,
+  with remembered opaque target IDs, Finder, and supported terminal destinations
+- Actionable empty and failure states with local privacy-safe Copy Details
 - Privacy-safe Copy Diagnostics from Settings with environment and bounded state
   counts, but no document contents, filenames, full paths, or automatic upload
 - Multiple reorderable preview tabs plus a singleton Settings tab
@@ -67,6 +72,8 @@ run the same command against that `.app` path instead.
 | --- | --- |
 | `⌘O` | Open Markdown, Mermaid, or image files |
 | `⌘P` | Quick Open (open tabs, pinned Markdown, recent documents) |
+| `⇧⌘P` | Open the Command Palette |
+| `⇧⌘F` | Toggle Focus Mode |
 | `⌘E` | Export the current document (HTML or PDF) |
 | `⇧⌘T` | Reopen the last closed preview tab |
 | `⌘[` / `⌘]` | Back / Forward in the current document |
@@ -85,6 +92,17 @@ open it. In the Files tree, Arrow keys navigate and expand/collapse nodes,
 Home / End move to the boundaries, Enter activates an item, and `Shift+F10`
 opens its context menu. Pinned folders can be reordered with their drag handle
 or the context menu's Move Up / Move Down actions.
+
+In the Command Palette: type to filter app commands; `↑` / `↓`, Home, and End
+move selection; Enter runs the selected command; and Esc closes it. Focus Mode
+hides tabs, sidebars, the outline, ordinary titlebar actions, and the normal
+status bar without changing their saved preferences. Use `⇧⌘F`, Esc after
+closing higher-priority overlays, or the visible Exit Focus Mode button to leave.
+
+The external-application chooser reads the current macOS handlers only when
+needed and keeps discovered apps/icons in memory. It persists only a bounded
+opaque target ID; application paths, installed-app inventory, icons, file
+contents, and launch errors are not stored or added to diagnostics.
 
 Settings includes Copy Diagnostics for support and bug reports. The report is
 generated on demand and copied locally; MarkMaid has no telemetry or automatic
@@ -123,6 +141,15 @@ Run the complete local quality gate:
 pnpm check
 ```
 
+Generate deterministic scale fixtures, run their structural smoke checks, or
+record local frontend/native release baselines (JSON stays ignored locally):
+
+```sh
+pnpm perf:fixtures
+pnpm perf:smoke
+pnpm perf:baseline
+```
+
 Create the macOS ARM application, DMG, app ZIP, and checksums:
 
 ```sh
@@ -139,10 +166,12 @@ Future feature and optimization candidates are tracked in
 ## Structure
 
 - `src/main.ts`: top-level Tauri composition, native listeners, and shell render
-- `src/app/`: preview, workspace, navigation, overlay, export, persistence, and
-  runtime controllers
-- `src/accessibility.ts` / `src/diagnostics.ts`: keyboard/focus utilities and the
-  privacy-safe diagnostic report model
+- `src/app/`: preview, workspace, navigation, overlay, export, persistence,
+  Command Palette, external-app, and runtime controllers
+- `src/accessibility.ts` / `src/diagnostics.ts` / `src/actionable-state.ts`:
+  keyboard/focus utilities and privacy-safe diagnostic/recovery models
+- `src/commands.ts` / `src/focus-mode.ts`: typed app commands and the runtime
+  reading-layout model
 - `src/state.ts`: tab, workspace-root, and persisted-session state model
 - `src/workspace.ts` / `src/status.ts` / `src/ui-logic.ts`: workspace helpers, status bar, Quick Open matching
 - `src/search.ts`: source-backed in-document Find matching
@@ -154,11 +183,14 @@ Future feature and optimization candidates are tracked in
 - `src-tauri/src/workspace.rs`: pinned roots, tree listing, file ops, and Markdown index for Quick Open
 - `src-tauri/src/tasks.rs` / `src-tauri/src/diagnostics.rs`: cooperative native
   task cancellation and read-only environment diagnostics
+- `src-tauri/src/external_apps.rs`: bounded macOS app discovery, icons, and safe
+  opaque-target handoff
 - `src-tauri/src/lib.rs`: menus, plugins, single-instance, and macOS open events
 - `src-tauri/capabilities/`: Tauri permission capabilities
 - `src-tauri/tauri.conf.json`: window, bundle, and build configuration
 - `docs/examples/`: sample Markdown / Mermaid / image files for manual preview
-- `scripts/`: local quality, versioning, release build, and publishing tools
+- `scripts/`: local quality, performance, versioning, release build, and
+  publishing tools
 
 ## License
 

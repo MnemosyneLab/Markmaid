@@ -1,0 +1,7 @@
+[
+  "flowchart LR\n  A[Open] --> B{Ready?}\n  B -->|yes| C[Preview]\n  B -->|no| D[Retry]",
+  "sequenceDiagram\n  participant U as User\n  participant M as MarkMaid\n  U->>M: Open document\n  M-->>U: Render preview",
+  "stateDiagram-v2\n  [*] --> Loading\n  Loading --> Ready\n  Loading --> Error\n  Error --> Loading: Retry",
+  "classDiagram\n  class Preview {\n    +String path\n    +render()\n  }\n  class Workspace\n  Workspace --> Preview",
+  "erDiagram\n  WORKSPACE ||--o{ DOCUMENT : contains\n  DOCUMENT ||--o{ HEADING : includes"
+]

@@ -9,6 +9,7 @@ cd "$REPOSITORY_ROOT"
 
 node scripts/version.mjs --check
 pnpm test
+pnpm perf:smoke
 pnpm build
 cargo test --manifest-path src-tauri/Cargo.toml
 cargo fmt --manifest-path src-tauri/Cargo.toml --check

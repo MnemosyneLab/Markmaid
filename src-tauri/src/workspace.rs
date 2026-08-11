@@ -892,7 +892,7 @@ pub(crate) fn registered_root_paths(registry: &WorkspaceRegistry) -> Vec<PathBuf
         .collect()
 }
 
-fn index_workspace_markdown_inner(
+pub(crate) fn index_workspace_markdown_inner(
     snapshots: Vec<(String, Option<PathBuf>)>,
     token: &CancellationToken,
 ) -> Option<WorkspaceMarkdownIndex> {

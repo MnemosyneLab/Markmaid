@@ -296,4 +296,33 @@ describe("focus keys", () => {
     ).toContain('[role="tablist"][aria-orientation="vertical"]');
     tabList.remove();
   });
+
+  it("restores focus to the content stage", () => {
+    const content = document.createElement("main");
+    content.id = "content-stage";
+    content.tabIndex = -1;
+    const heading = document.createElement("h1");
+    content.append(heading);
+    document.body.append(content);
+
+    expect(focusKeyFromElement(heading)).toEqual({ kind: "content" });
+    expect(focusKeySelector({ kind: "content" })).toBe("#content-stage");
+    content.remove();
+  });
+
+  it("restores stable title actions such as the external-app split button", () => {
+    const button = document.createElement("button");
+    button.dataset.action = "external-open-chooser";
+    document.body.append(button);
+
+    const key = focusKeyFromElement(button);
+    expect(key).toEqual({
+      kind: "title-action",
+      action: "external-open-chooser",
+    });
+    expect(key && focusKeySelector(key)).toBe(
+      '[data-action="external-open-chooser"]',
+    );
+    button.remove();
+  });
 });

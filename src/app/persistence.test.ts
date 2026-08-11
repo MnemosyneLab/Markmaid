@@ -38,6 +38,13 @@ describe("persistence", () => {
     expect(state.theme).toBe("dark");
     expect(state.recentDocuments).toEqual(["/notes/a.md"]);
     expect(state.closedTabsHistory).toEqual([]);
+    expect(state.focusMode).toBe(false);
+  });
+
+  it("does not persist runtime-only Focus Mode state", () => {
+    const snapshot = sessionSnapshot({ ...DEFAULT_STATE, focusMode: true });
+
+    expect(snapshot).not.toHaveProperty("focusMode");
   });
 
   it("debounces session writes and skips work without a store", () => {

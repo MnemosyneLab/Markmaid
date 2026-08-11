@@ -17,7 +17,11 @@ import {
   isReadyDocumentTab,
   registerExportHandler,
 } from "./export";
-import { enhanceDiagramViewers, wrapMarkdownImages } from "./diagram-viewer";
+import {
+  enhanceDiagramViewers,
+  isMediaViewerOpen,
+  wrapMarkdownImages,
+} from "./diagram-viewer";
 import { icon, renderIcons } from "./icons";
 import { enhanceMath } from "./math";
 import {
@@ -119,6 +123,19 @@ import {
   type NoticeKind,
 } from "./app/runtime";
 import { createWorkspaceController } from "./app/workspace-controller";
+import { createCommandPaletteController } from "./app/command-palette-controller";
+import { createExternalAppController } from "./app/external-app-controller";
+import {
+  createCommandCatalog,
+  type CommandAvailability,
+  type CommandId,
+} from "./commands";
+import {
+  externalTargetActionLabel,
+  type ExternalOpenResult,
+  type ExternalOpenTarget,
+} from "./external-apps";
+import { focusModeShellModel, toggleFocusModeState } from "./focus-mode";
 import {
   formatDiagnosticsReport,
   normalizeDiagnosticError,
@@ -126,6 +143,11 @@ import {
   type DiagnosticsEnvironment,
   type QuickOpenDiagnosticsStatus,
 } from "./diagnostics";
+import {
+  buildActionableState,
+  formatActionableIssueDetails,
+  type ActionableStateModel,
+} from "./actionable-state";
 import {
   applyWorkspaceRename,
   applyWorkspaceTrash,
@@ -163,6 +185,8 @@ import type {
 const OPEN_FILES_EVENT = "markmaid://open-files";
 const MENU_OPEN_EVENT = "markmaid://menu-open";
 const MENU_QUICK_OPEN_EVENT = "markmaid://menu-quick-open";
+const MENU_COMMAND_PALETTE_EVENT = "markmaid://menu-command-palette";
+const MENU_FOCUS_MODE_EVENT = "markmaid://menu-focus-mode";
 const MENU_EXPORT_EVENT = "markmaid://menu-export";
 const MENU_CLOSE_TAB_EVENT = "markmaid://menu-close-tab";
 const MENU_REOPEN_CLOSED_TAB_EVENT = "markmaid://menu-reopen-closed-tab";
@@ -321,7 +345,9 @@ function createShellFocusRestoreSession(): FocusRestoreSession {
   return {
     capture() {
       focusKey = focusKeyFromElement(document.activeElement);
-      if (!focusKey && state.activeTabKey) {
+      if (!focusKey && state.focusMode) {
+        focusKey = { kind: "content" };
+      } else if (!focusKey && state.activeTabKey) {
         focusKey = { kind: "tab", tabKey: state.activeTabKey };
       }
     },
@@ -333,6 +359,9 @@ function createShellFocusRestoreSession(): FocusRestoreSession {
         : null;
       (
         target ??
+        (state.focusMode
+          ? root.querySelector<HTMLElement>("#content-stage")
+          : null) ??
         root.querySelector<HTMLElement>('[data-action="settings"]')
       )?.focus();
     },
@@ -532,6 +561,78 @@ const navigation = createNavigationController(runtime, {
     persistence.syncReopenClosedTabAvailability(),
 });
 
+const externalApps = createExternalAppController({
+  getPreferredTargetId: () => runtime.getState().externalOpenTargetId,
+  setPreferredTargetId: (externalOpenTargetId) => {
+    runtime.commit(setPreferences(runtime.getState(), { externalOpenTargetId }));
+    state = runtime.getState();
+    schedulePersist();
+  },
+  listTargets: (path) =>
+    invoke<ExternalOpenTarget[]>("list_external_open_targets", { path }),
+  openTarget: (path, targetId) =>
+    invoke<ExternalOpenResult>("open_external_target", { path, targetId }),
+  render: () => {
+    state = runtime.getState();
+    render();
+  },
+  onError: (code, error) =>
+    recordDiagnosticError(`external-open:${code}`, error ?? code),
+});
+const externalMenuFocusSession = createShellFocusRestoreSession();
+
+interface CommandContext {
+  state: AppState;
+  current: AppTab | null;
+}
+
+const commandCatalog = createCommandCatalog<CommandContext>({
+  availability: commandAvailability,
+  execute: executeCommand,
+});
+const commandPalette = createCommandPaletteController<CommandContext>({
+  catalog: commandCatalog,
+  getContext: () => ({ state: runtime.getState(), current: activeTab(runtime.getState()) }),
+  render: () => {
+    state = runtime.getState();
+    render();
+  },
+  dismissCompetingOverlays: () => {
+    overlay.hideSearchOverlays();
+    if (externalApps.model.visible) closeExternalApplicationPicker();
+    if (exportController.isVisible()) closeExportModal();
+    if (workspaceDialog) closeWorkspaceDialog();
+  },
+  focusInput: focusCommandPaletteInput,
+  trapFocus: (backward) => trapCommandPaletteFocus(backward),
+  isElementPresent: (element) => document.contains(element),
+  contextualCommandId: ({ current }) =>
+    current && current.kind !== "settings" && current.status === "error"
+      ? "file.reload-document"
+      : externalReadyPath(current)
+        ? "external.open-preferred"
+        : null,
+  onExecutionError: (commandId, error) => {
+    recordDiagnosticError(`command:${commandId}`, error);
+    showGlobalNotice("The selected command could not be completed.", {
+      title: "Command failed.",
+      dismissTitle: "Dismiss command error",
+    });
+    render();
+  },
+  focusAfterExecution: () => {
+    if (
+      quickSwitcher.visible ||
+      exportController.isVisible() ||
+      externalApps.model.visible
+    ) {
+      return;
+    }
+    root.querySelector<HTMLElement>("#content-stage")?.focus();
+  },
+  focusSession: createShellFocusRestoreSession(),
+});
+
 const tabContextMenuSession = createFloatingMenuSession();
 const workspaceContextMenuSession = createFloatingMenuSession();
 const colorScheme = window.matchMedia("(prefers-color-scheme: dark)");
@@ -615,6 +716,8 @@ async function registerNativeListeners(): Promise<void> {
     }),
     listen(MENU_OPEN_EVENT, () => void chooseDocuments()),
     listen(MENU_QUICK_OPEN_EVENT, openQuickSwitcher),
+    listen(MENU_COMMAND_PALETTE_EVENT, openCommandPalette),
+    listen(MENU_FOCUS_MODE_EVENT, toggleFocusMode),
     listen(MENU_EXPORT_EVENT, openExportModal),
     listen(MENU_CLOSE_TAB_EVENT, () => closeActiveTab()),
     listen(MENU_REOPEN_CLOSED_TAB_EVENT, () => reopenLastClosedTab()),
@@ -1075,6 +1178,308 @@ function showSettings(): void {
   schedulePersist();
 }
 
+function toggleFocusMode(): void {
+  const previouslyFocused = document.activeElement as HTMLElement | null;
+  captureActiveScroll();
+  runtime.commit(toggleFocusModeState(state));
+  state = runtime.getState();
+  const focusMode = state.focusMode;
+  statusAnnouncement = `Focus Mode ${focusMode ? "on" : "off"}.`;
+  applyFocusModeToShell();
+  const announcer = root.querySelector<HTMLElement>("#status-announcer");
+  if (announcer) announcer.textContent = statusAnnouncement;
+  const canKeepFocus = Boolean(
+    previouslyFocused?.isConnected &&
+      !previouslyFocused.matches("[data-focus-mode-exit]") &&
+      !previouslyFocused.closest("[inert]"),
+  );
+  if (!canKeepFocus) {
+    (
+      (!state.activeTabKey
+        ? root.querySelector<HTMLElement>("#empty-state-heading")
+        : null) ?? root.querySelector<HTMLElement>("#content-stage")
+    )?.focus();
+  }
+}
+
+function applyFocusModeToShell(): void {
+  const frame = root.querySelector<HTMLElement>(".app-frame");
+  if (!frame) return;
+  frame.classList.toggle("is-focus-mode", state.focusMode);
+  const transientStatusVisible = Boolean(
+    root.querySelector(".status-bar.is-alert"),
+  );
+  const shell = focusModeShellModel(state.focusMode, transientStatusVisible);
+  frame.classList.toggle(
+    "has-status-bar",
+    shell.statusBarVisible,
+  );
+  root
+    .querySelectorAll<HTMLElement>(
+      "[data-focus-chrome], .document-outline, .document-outline-resize",
+    )
+    .forEach((element) => {
+      element.inert = shell.chromeHidden;
+      element.setAttribute("aria-hidden", String(shell.chromeHidden));
+    });
+  const exit = root.querySelector<HTMLElement>("[data-action='toggle-focus-mode']");
+  if (exit) {
+    exit.hidden = !shell.exitControlVisible;
+    exit.inert = !shell.exitControlVisible;
+  }
+}
+
+function commandAvailability(
+  id: CommandId,
+  context: CommandContext,
+): CommandAvailability {
+  const { state: commandState, current } = context;
+  const currentIndex = current
+    ? commandState.tabs.findIndex((tab) => tab.key === current.key)
+    : -1;
+  const enabled: CommandAvailability = { state: "enabled" };
+  const disabled = (reason: string): CommandAvailability => ({
+    state: "disabled",
+    reason,
+  });
+  const hidden: CommandAvailability = { state: "hidden" };
+
+  switch (id) {
+    case "file.open-preview-files":
+    case "workspace.add-folder":
+    case "file.quick-open":
+    case "view.toggle-focus-mode":
+    case "appearance.system":
+    case "appearance.light":
+    case "appearance.dark":
+    case "appearance.palette.default":
+    case "appearance.palette.solarized":
+    case "appearance.palette.nord":
+    case "appearance.palette.gruvbox":
+    case "appearance.palette.catppuccin":
+    case "appearance.palette.high-contrast":
+    case "application.settings":
+      return enabled;
+    case "application.copy-diagnostics":
+      return current?.kind === "settings"
+        ? enabled
+        : disabled("Open Settings to copy diagnostics");
+    case "file.export-document":
+      return current?.kind === "document" && current.status === "ready"
+        ? enabled
+        : disabled("Open a ready Markdown document first");
+    case "file.reload-document":
+      return current && current.kind !== "settings"
+        ? enabled
+        : disabled("No preview is active");
+    case "file.reveal-in-finder":
+      return externalOpenPath(current)
+        ? enabled
+        : disabled("No local text preview is active");
+    case "external.open-preferred":
+      return externalReadyPath(current)
+        ? enabled
+        : disabled("Open a Markdown or Mermaid file first");
+    case "external.choose-application":
+      return externalReadyPath(current)
+        ? enabled
+        : disabled("Open a Markdown or Mermaid file first");
+    case "tabs.close":
+      return current ? enabled : disabled("No tab is active");
+    case "tabs.reopen-closed":
+      return commandState.closedTabsHistory.length > 0
+        ? enabled
+        : disabled("No recently closed tab");
+    case "tabs.next":
+    case "tabs.previous":
+      return commandState.tabs.length > 1
+        ? enabled
+        : disabled("Only one tab is open");
+    case "tabs.move-left":
+      return currentIndex > 0 ? enabled : disabled("Tab is already first");
+    case "tabs.move-right":
+      return currentIndex >= 0 && currentIndex < commandState.tabs.length - 1
+        ? enabled
+        : disabled("Tab is already last");
+    case "view.show-sidebar":
+      return commandState.leftSidebarVisible ? hidden : enabled;
+    case "view.hide-sidebar":
+      return commandState.leftSidebarVisible ? enabled : hidden;
+    case "view.show-outline":
+      if (current?.kind !== "document" || current.status !== "ready") {
+        return disabled("Open a ready Markdown document first");
+      }
+      return commandState.tableOfContentsVisible ? hidden : enabled;
+    case "view.hide-outline":
+      if (current?.kind !== "document" || current.status !== "ready") {
+        return disabled("Open a ready Markdown document first");
+      }
+      return commandState.tableOfContentsVisible ? enabled : hidden;
+    case "view.tabs-on-top":
+      return commandState.tabPlacement === "top" ? hidden : enabled;
+    case "view.tabs-on-left":
+      return commandState.tabPlacement === "left" ? hidden : enabled;
+  }
+}
+
+async function executeCommand(
+  id: CommandId,
+  context: CommandContext,
+): Promise<void> {
+  switch (id) {
+    case "file.open-preview-files":
+      await chooseDocuments();
+      return;
+    case "workspace.add-folder":
+      await addWorkspaceRoot();
+      return;
+    case "file.quick-open":
+      openQuickSwitcher();
+      return;
+    case "file.export-document":
+      openExportModal();
+      return;
+    case "file.reload-document":
+      await reloadActiveDocument();
+      return;
+    case "file.reveal-in-finder": {
+      const path = externalOpenPath(context.current);
+      if (path) await revealItemInDir(path);
+      return;
+    }
+    case "external.open-preferred":
+      await openPreferredExternalApplication();
+      return;
+    case "external.choose-application":
+      await openExternalApplicationPicker();
+      return;
+    case "tabs.close":
+      closeActiveTab();
+      return;
+    case "tabs.reopen-closed":
+      reopenLastClosedTab();
+      return;
+    case "tabs.next":
+      selectRelativeTab(1);
+      return;
+    case "tabs.previous":
+      selectRelativeTab(-1);
+      return;
+    case "tabs.move-left":
+      if (context.current) moveTabByOffset(context.current.key, -1);
+      return;
+    case "tabs.move-right":
+      if (context.current) moveTabByOffset(context.current.key, 1);
+      return;
+    case "view.toggle-focus-mode":
+      toggleFocusMode();
+      return;
+    case "view.show-sidebar":
+      setCommandPreferences({ leftSidebarVisible: true });
+      return;
+    case "view.hide-sidebar":
+      setCommandPreferences({ leftSidebarVisible: false });
+      return;
+    case "view.show-outline":
+      setCommandPreferences({ tableOfContentsVisible: true });
+      return;
+    case "view.hide-outline":
+      setCommandPreferences({ tableOfContentsVisible: false });
+      return;
+    case "view.tabs-on-top":
+      setCommandPreferences({ tabPlacement: "top" });
+      return;
+    case "view.tabs-on-left":
+      setCommandPreferences({ tabPlacement: "left" });
+      return;
+    case "appearance.system":
+    case "appearance.light":
+    case "appearance.dark":
+      setCommandPreferences({ theme: id.slice("appearance.".length) as ThemeMode });
+      return;
+    case "appearance.palette.default":
+    case "appearance.palette.solarized":
+    case "appearance.palette.nord":
+    case "appearance.palette.gruvbox":
+    case "appearance.palette.catppuccin":
+    case "appearance.palette.high-contrast":
+      setCommandPreferences({
+        colorTheme: id.slice("appearance.palette.".length) as ColorTheme,
+      });
+      return;
+    case "application.settings":
+      showSettings();
+      return;
+    case "application.copy-diagnostics":
+      await copyDiagnosticsReport();
+  }
+}
+
+function setCommandPreferences(
+  preferences: Parameters<typeof setPreferences>[1],
+): void {
+  captureActiveScroll();
+  runtime.commit(setPreferences(state, preferences));
+  state = runtime.getState();
+  render();
+  schedulePersist();
+}
+
+function externalOpenPath(tab: AppTab | null): string | null {
+  if (!tab || tab.kind === "settings") return null;
+  return previewPath(tab);
+}
+
+function externalReadyPath(tab: AppTab | null): string | null {
+  if (
+    !tab ||
+    tab.kind === "settings" ||
+    tab.kind === "image" ||
+    tab.status !== "ready"
+  ) {
+    return null;
+  }
+  return previewPath(tab);
+}
+
+async function openPreferredExternalApplication(): Promise<void> {
+  const path = externalReadyPath(activeTab(state));
+  if (!path) return;
+  overlay.hideSearchOverlays();
+  if (exportController.isVisible()) closeExportModal();
+  if (!externalApps.model.visible) externalMenuFocusSession.capture();
+  await externalApps.openPreferred(path);
+  if (externalApps.model.visible) focusExternalMenuIfVisible();
+  else externalMenuFocusSession.restore(() => true);
+}
+
+async function openExternalApplicationPicker(): Promise<void> {
+  const path = externalReadyPath(activeTab(state));
+  if (!path) return;
+  overlay.hideSearchOverlays();
+  if (exportController.isVisible()) closeExportModal();
+  if (!externalApps.model.visible) externalMenuFocusSession.capture();
+  await externalApps.openChooser(path);
+  focusExternalMenuIfVisible();
+}
+
+function closeExternalApplicationPicker(restoreFocus = true): void {
+  externalApps.closeChooser();
+  if (restoreFocus) externalMenuFocusSession.restore(() => true);
+  else externalMenuFocusSession.clear();
+}
+
+function focusExternalMenuIfVisible(): void {
+  if (!externalApps.model.visible) return;
+  requestAnimationFrame(() => {
+    root
+      .querySelector<HTMLElement>(
+        "[data-external-target-id]:not([disabled]), [data-external-refresh]:not([disabled])",
+      )
+      ?.focus();
+  });
+}
+
 function selectRelativeTab(direction: 1 | -1): void {
   navigation.selectRelativeTab(direction);
 }
@@ -1221,7 +1626,11 @@ function render(): void {
   dismissWorkspaceContextMenu(false);
   applyTheme();
   const overlayOpen =
-    quickSwitcher.visible || exportController.isVisible() || Boolean(workspaceDialog);
+    commandPalette.isVisible() ||
+    externalApps.model.visible ||
+    quickSwitcher.visible ||
+    exportController.isVisible() ||
+    Boolean(workspaceDialog);
   let focusToRestore: FocusKey | null = null;
   if (pendingFocusKey) {
     focusToRestore = pendingFocusKey;
@@ -1231,6 +1640,17 @@ function render(): void {
   }
   suppressFocusRestore = false;
   const current = activeTab(state);
+  const currentExternalPath = externalReadyPath(current);
+  externalApps.syncActivePath(currentExternalPath);
+  if (
+    currentExternalPath &&
+    state.externalOpenTargetId &&
+    externalApps.model.targets.length === 0 &&
+    !externalApps.model.loading &&
+    !externalApps.model.errorCode
+  ) {
+    queueMicrotask(() => void externalApps.refresh());
+  }
   const topTabs =
     state.tabPlacement === "top" ? renderTabList(state.tabs, "horizontal") : "";
   const title = escapeHtml(windowTitle(current));
@@ -1269,36 +1689,45 @@ function render(): void {
         ? (externalChangeNotices.get(current.key) ?? null)
         : null,
   });
+  const showStatusBar =
+    !state.focusMode || Boolean(status.alert || exportNotice || globalNotice);
+  const focusModeExit = `<button class="secondary-button compact focus-mode-exit ${UI.secondaryButton}" type="button" data-action="toggle-focus-mode" title="Exit Focus Mode (⌘⇧F)" ${state.focusMode ? "" : "hidden inert"}>
+          Exit Focus Mode
+        </button>`;
 
   root.innerHTML = `
     <div
-      class="app-frame placement-${state.tabPlacement} ${status.alert ? "is-status-alert" : ""} ${UI.frame}"
+      class="app-frame placement-${state.tabPlacement} ${state.focusMode ? "is-focus-mode" : ""} ${showStatusBar ? "has-status-bar" : ""} ${status.alert ? "is-status-alert" : ""} ${UI.frame}"
       style="--sidebar-width: ${sidebarWidth}px; --table-of-contents-width: ${tableOfContentsWidth}px"
     >
       <header class="titlebar ${UI.titlebar}" data-tauri-drag-region>
-        <div class="titlebar-leading ${UI.titlebarLeading} gap-1.5">${sidebarToggle}${navButtons}</div>
+        <div class="titlebar-leading ${UI.titlebarLeading} gap-1.5" data-focus-chrome>${sidebarToggle}${navButtons}</div>
         <div class="titlebar-title ${UI.title}" data-tauri-drag-region title="${escapeAttribute(windowTitle(current))}">${title}</div>
         <nav class="titlebar-actions ${UI.titlebarActions}" aria-label="Application actions">
-          <button class="icon-button ${UI.iconButton}" type="button" data-action="open" title="Open preview files (⌘O)">
-            ${icon("folder-open")}
-            <span class="sr-only">Open Markdown, Mermaid, or image files</span>
-          </button>
-          ${outlineToggle}
-          <button class="icon-button ${UI.iconButton}" type="button" data-action="settings" title="Settings" aria-label="Settings">
-            ${icon("settings")}
-            <span class="sr-only">Settings</span>
-          </button>
+          <div class="titlebar-ordinary-actions" data-focus-chrome>
+            <button class="icon-button ${UI.iconButton}" type="button" data-action="open" title="Open preview files (⌘O)">
+                  ${icon("folder-open")}
+                  <span class="sr-only">Open Markdown, Mermaid, or image files</span>
+                </button>
+                ${outlineToggle}
+                ${currentExternalPath ? renderExternalOpenControl() : ""}
+                <button class="icon-button ${UI.iconButton}" type="button" data-action="settings" title="Settings" aria-label="Settings">
+                  ${icon("settings")}
+                  <span class="sr-only">Settings</span>
+                </button>
+          </div>
+          ${focusModeExit}
         </nav>
       </header>
       ${
         state.tabPlacement === "top"
-          ? `<div class="tab-strip" aria-label="Document tabs">${topTabs}</div>`
+          ? `<div class="tab-strip" aria-label="Document tabs" data-focus-chrome>${topTabs}</div>`
           : ""
       }
       <div class="workspace ${UI.workspace}">
         ${
           state.leftSidebarVisible
-            ? `<aside class="sidebar ${UI.sidebar}" aria-label="Workspace sidebar">
+            ? `<aside class="sidebar ${UI.sidebar}" aria-label="Workspace sidebar" data-focus-chrome>
                 ${renderSidebarChrome()}
                 <div class="sidebar-body" id="sidebar-panel" role="tabpanel" aria-labelledby="${state.sidebarView === "files" ? "sidebar-tab-files" : "sidebar-tab-tabs"}">
                   ${
@@ -1312,7 +1741,7 @@ function render(): void {
             : ""
         }
         <div class="sr-only" id="status-announcer" role="status" aria-live="polite" aria-atomic="true">${escapeHtml(statusAnnouncement)}</div>
-        <main class="content-stage ${UI.contentStage}" id="content-stage" role="tabpanel" aria-label="Document preview"></main>
+        <main class="content-stage ${UI.contentStage}" id="content-stage" role="tabpanel" aria-label="Document preview" tabindex="-1"></main>
       </div>
       ${renderStatusBar(status)}
       <div class="drop-overlay ${UI.dropOverlay}" aria-hidden="true">
@@ -1322,6 +1751,8 @@ function render(): void {
         </div>
       </div>
       ${documentSearch.visible ? renderDocumentSearch() : ""}
+      ${externalApps.model.visible ? renderExternalOpenMenu() : ""}
+      ${commandPalette.isVisible() ? renderCommandPalette() : ""}
       ${quickSwitcher.visible ? renderQuickSwitcher() : ""}
       ${workspaceDialog ? renderWorkspaceDialog() : ""}
       ${exportController.isVisible() ? renderExportModal() : ""}
@@ -1335,7 +1766,10 @@ function render(): void {
     root.querySelector<HTMLElement>("#content-stage"),
     current,
   );
+  applyFocusModeToShell();
   bindDocumentSearch();
+  bindExternalOpenMenu();
+  bindCommandPalette();
   bindQuickSwitcher();
   bindExportModal();
   renderIcons(root);
@@ -1343,6 +1777,259 @@ function render(): void {
   if (documentSearch.visible && documentSearch.query) {
     requestAnimationFrame(() => refreshDocumentSearch(false));
   }
+}
+
+function renderExternalOpenControl(): string {
+  const preferred = externalApps.preferredTarget();
+  const savedId = state.externalOpenTargetId;
+  const label = preferred
+    ? externalTargetActionLabel(preferred)
+    : savedId && externalApps.model.targets.length > 0
+      ? "Preferred application unavailable; choose another"
+      : "Choose external application";
+  const iconMarkup = preferred?.iconPngBase64
+    ? `<img class="external-target-icon" src="data:image/png;base64,${escapeAttribute(preferred.iconPngBase64)}" alt="">`
+    : icon(preferred?.kind === "finder" ? "folder-open" : "code-2");
+  return `<div class="external-open-split" role="group" aria-label="Open externally">
+    <button class="external-open-primary" type="button" data-action="external-open-primary" data-external-open-primary title="${escapeAttribute(label)}" aria-label="${escapeAttribute(label)}">${iconMarkup}</button>
+    <button class="external-open-chevron" type="button" data-action="external-open-chooser" data-external-open-chooser title="Choose external application" aria-label="Choose external application">${icon("chevron-down")}</button>
+  </div>`;
+}
+
+function renderExternalOpenMenu(): string {
+  const { loading, targets, errorCode, openingTargetId } = externalApps.model;
+  const preferredId = state.externalOpenTargetId;
+  const ordinary = targets.filter((target) => target.kind !== "terminal");
+  const terminals = targets.filter((target) => target.kind === "terminal");
+  const renderTargets = (items: readonly ExternalOpenTarget[]) =>
+    items
+      .map((target) => {
+        const targetLabel = externalTargetActionLabel(target);
+        const targetIcon = target.iconPngBase64
+          ? `<img class="external-target-icon" src="data:image/png;base64,${escapeAttribute(target.iconPngBase64)}" alt="">`
+          : icon(target.kind === "finder" ? "folder-open" : "code-2");
+        return `<button class="external-target-row" type="button" role="menuitemradio" aria-checked="${target.id === preferredId}" data-external-target-id="${escapeAttribute(target.id)}" ${openingTargetId ? "disabled" : ""}>
+          <span class="external-target-check" aria-hidden="true">${target.id === preferredId ? "✓" : ""}</span>
+          ${targetIcon}
+          <span class="external-target-label">${escapeHtml(targetLabel)}</span>
+        </button>`;
+      })
+      .join("");
+  const errorModel = errorCode
+    ? buildActionableState({
+        kind: "external-open-failed",
+        canReveal:
+          errorCode !== "file_unavailable" && Boolean(externalApps.model.path),
+        code: errorCode,
+      })
+    : null;
+  return `<div class="external-menu-layer" data-external-menu-backdrop>
+    <section class="external-target-menu" role="menu" aria-label="Open with">
+      ${loading ? `<p class="external-menu-status">Finding applications…</p>` : ""}
+      ${errorModel ? `<div class="external-menu-error" role="status"><strong>External open failed.</strong><span>${errorCode === "target_unavailable" ? "The preferred application is unavailable." : "Choose an action to recover."}</span><div class="external-menu-error-actions">${errorModel.actions.map((candidate) => `<button type="button" data-external-error-action="${candidate.id}">${candidate.label}</button>`).join("")}</div></div>` : ""}
+      ${!loading && ordinary.length > 0 ? renderTargets(ordinary) : ""}
+      ${!loading && terminals.length > 0 ? `<div class="external-menu-section-label">Terminals</div>${renderTargets(terminals)}` : ""}
+      ${!loading && targets.length === 0 && !errorModel ? `<p class="external-menu-status">No compatible applications found.</p>` : ""}
+      <button class="external-menu-refresh" type="button" data-external-refresh ${loading ? "disabled" : ""}>Refresh Applications</button>
+    </section>
+  </div>`;
+}
+
+function bindExternalOpenMenu(): void {
+  root
+    .querySelector<HTMLElement>("[data-external-open-primary]")
+    ?.addEventListener("click", () => void openPreferredExternalApplication());
+  root
+    .querySelector<HTMLElement>("[data-external-open-chooser]")
+    ?.addEventListener("click", () => void openExternalApplicationPicker());
+  root
+    .querySelector<HTMLElement>("[data-external-menu-backdrop]")
+    ?.addEventListener("pointerdown", (event) => {
+      if (event.target === event.currentTarget) closeExternalApplicationPicker();
+    });
+  root
+    .querySelector<HTMLElement>(".external-target-menu")
+    ?.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        closeExternalApplicationPicker();
+        return;
+      }
+      if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+      const focusable = collectFocusableElements(
+        event.currentTarget as HTMLElement,
+      );
+      if (focusable.length === 0) return;
+      event.preventDefault();
+      const index = focusable.indexOf(document.activeElement as HTMLElement);
+      const next =
+        event.key === "Home"
+          ? 0
+          : event.key === "End"
+            ? focusable.length - 1
+            : event.key === "ArrowDown"
+              ? (Math.max(index, -1) + 1) % focusable.length
+              : (index <= 0 ? focusable.length : index) - 1;
+      focusable[next]?.focus();
+    });
+  root.querySelectorAll<HTMLElement>("[data-external-target-id]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const targetId = button.dataset.externalTargetId;
+      if (!targetId) return;
+      await externalApps.choose(targetId);
+      if (externalApps.model.visible) focusExternalMenuIfVisible();
+      else externalMenuFocusSession.restore(() => true);
+    });
+  });
+  root
+    .querySelector<HTMLElement>("[data-external-refresh]")
+    ?.addEventListener("click", async () => {
+      await externalApps.refresh();
+      focusExternalMenuIfVisible();
+    });
+  root.querySelectorAll<HTMLElement>("[data-external-error-action]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const path = externalApps.model.path;
+      if (!path) return;
+      switch (button.dataset.externalErrorAction) {
+        case "retry":
+          await externalApps.retry();
+          if (externalApps.model.visible) focusExternalMenuIfVisible();
+          else externalMenuFocusSession.restore(() => true);
+          break;
+        case "choose-another":
+          await externalApps.refresh();
+          focusExternalMenuIfVisible();
+          break;
+        case "reveal":
+          await revealActionablePath(path);
+          break;
+        case "copy-details": {
+          const detailsModel = buildActionableState({
+            kind: "external-open-failed",
+            canReveal:
+              externalApps.model.errorCode !== "file_unavailable" &&
+              Boolean(externalApps.model.path),
+            code: externalApps.model.errorCode ?? "open_failed",
+          });
+          closeExternalApplicationPicker();
+          await copyActionableDetails(detailsModel);
+          break;
+        }
+      }
+    });
+  });
+}
+
+function renderCommandPalette(): string {
+  const results = commandPalette.results();
+  const groups: Array<{
+    section: string;
+    items: Array<(typeof results)[number]>;
+  }> = [];
+  for (const result of results) {
+    const previous = groups.at(-1);
+    if (previous?.section === result.command.section) {
+      previous.items.push(result);
+    } else {
+      groups.push({ section: result.command.section, items: [result] });
+    }
+  }
+  const activeOptionId = commandPalette.model.selectedCommandId
+    ? `command-palette-option-${commandPalette.model.selectedCommandId}`
+    : "";
+  return `
+    <div class="command-palette fixed inset-0 z-50 flex justify-center bg-black/20 px-6 pt-[12vh] backdrop-blur-[2px]" data-command-palette-backdrop>
+      <section class="max-h-[min(580px,74vh)] w-[min(680px,100%)] overflow-hidden rounded-[14px] border border-app-border bg-surface-raised shadow-app" role="dialog" aria-modal="true" aria-label="Command Palette">
+        <label class="sr-only" for="command-palette-input">Search application commands</label>
+        <input id="command-palette-input" class="h-13 w-full border-0 border-b border-app-border bg-transparent px-4 text-[15px] text-app-text outline-none placeholder:text-app-muted" type="search" role="combobox" aria-autocomplete="list" aria-expanded="true" aria-controls="command-palette-results" ${activeOptionId ? `aria-activedescendant="${activeOptionId}"` : ""} data-command-palette-input value="${escapeAttribute(commandPalette.model.query)}" placeholder="Type a command" autocomplete="off" spellcheck="false">
+        <div id="command-palette-results" class="max-h-[calc(min(580px,74vh)-52px)] overflow-y-auto p-2" role="listbox" data-command-palette-results>
+          ${
+            results.length === 0
+              ? `<p class="px-3 py-8 text-center text-sm text-app-muted">No matching commands</p>`
+              : groups
+                  .map(
+                    ({ section, items }) =>
+                      `<div role="group" aria-label="${escapeAttribute(section)}">
+                        <div class="px-3 pt-2 pb-1 text-[10px] font-bold tracking-[0.08em] text-app-muted uppercase" aria-hidden="true">${escapeHtml(section)}</div>
+                        ${items
+                          .map((result) => {
+                            const disabled = result.availability.state === "disabled";
+                            const selected = result.command.id === commandPalette.model.selectedCommandId;
+                            return `<button id="command-palette-option-${result.command.id}" class="command-palette-item ${selected ? "is-active bg-surface-hover" : ""} flex w-full items-center gap-3 rounded-app px-3 py-2.5 text-left text-app-text hover:bg-surface-hover disabled:opacity-45" type="button" role="option" data-command-id="${result.command.id}" ${disabled ? "disabled" : ""} aria-disabled="${disabled}" aria-selected="${selected}">
+                              <span class="min-w-0 flex-1">
+                                <strong class="block truncate text-sm font-semibold">${escapeHtml(result.command.label)}</strong>
+                                ${result.availability.state === "disabled" ? `<span class="mt-0.5 block truncate text-[11px] text-app-muted">${escapeHtml(result.availability.reason)}</span>` : ""}
+                              </span>
+                              ${result.command.shortcutLabel ? `<kbd class="flex-none text-[11px] text-app-muted">${escapeHtml(result.command.shortcutLabel)}</kbd>` : ""}
+                            </button>`;
+                          })
+                          .join("")}
+                      </div>`,
+                  )
+                  .join("")
+          }
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function bindCommandPalette(): void {
+  if (!commandPalette.isVisible()) return;
+  const input = root.querySelector<HTMLInputElement>("[data-command-palette-input]");
+  input?.addEventListener("input", () => {
+    commandPalette.setQuery(input.value);
+    requestAnimationFrame(focusCommandPaletteInput);
+  });
+  root
+    .querySelector<HTMLElement>("[data-command-palette-backdrop]")
+    ?.addEventListener("pointerdown", (event) => {
+      if (event.target === event.currentTarget) commandPalette.close();
+    });
+  root.querySelectorAll<HTMLButtonElement>("[data-command-id]").forEach((button) => {
+    button.addEventListener("pointermove", () => {
+      if (button.disabled) return;
+      commandPalette.select(button.dataset.commandId as CommandId);
+    });
+    button.addEventListener("click", () => {
+      if (button.disabled) return;
+      commandPalette.select(button.dataset.commandId as CommandId);
+      void commandPalette.executeSelected();
+    });
+  });
+}
+
+function focusCommandPaletteInput(): void {
+  const input = root.querySelector<HTMLInputElement>("[data-command-palette-input]");
+  input?.focus();
+  input?.setSelectionRange(input.value.length, input.value.length);
+  const selectedId = commandPalette.model.selectedCommandId;
+  if (!selectedId) return;
+  root
+    .querySelector<HTMLElement>(
+      `#${CSS.escape(`command-palette-option-${selectedId}`)}`,
+    )
+    ?.scrollIntoView({ block: "nearest" });
+}
+
+function trapCommandPaletteFocus(backward: boolean): void {
+  const dialog = root.querySelector<HTMLElement>(
+    '[role="dialog"][aria-label="Command Palette"]',
+  );
+  if (!dialog) return;
+  const focusable = collectFocusableElements(dialog);
+  if (focusable.length === 0) return;
+  const currentIndex = focusable.indexOf(document.activeElement as HTMLElement);
+  const nextIndex = backward
+    ? currentIndex <= 0
+      ? focusable.length - 1
+      : currentIndex - 1
+    : currentIndex < 0 || currentIndex === focusable.length - 1
+      ? 0
+      : currentIndex + 1;
+  focusable[nextIndex]?.focus();
 }
 
 function restoreShellFocus(key: FocusKey | null): void {
@@ -1363,6 +2050,13 @@ function restoreShellFocus(key: FocusKey | null): void {
 
 function renderStatusBar(status: StatusBarModel): string {
   if (exportNotice) {
+    const exportTab = activeTab(state);
+    const canRetry =
+      exportTab?.kind === "document" && exportTab.status === "ready";
+    const model = buildActionableState({
+      kind: "export-failed",
+      canRetry,
+    });
     return `
       <footer class="${UI.statusBar} is-alert status-alert-reload-error" aria-label="Status">
         <div class="status-alert">
@@ -1372,6 +2066,12 @@ function renderStatusBar(status: StatusBarModel): string {
             <span class="status-alert-detail">${escapeHtml(exportNotice)}</span>
           </span>
           <div class="status-alert-actions">
+            ${model.actions
+              .map(
+                (candidate) =>
+                  `<button class="status-alert-button${candidate.primary ? " is-primary" : ""}" type="button" data-export-error-action="${candidate.id}"><span>${candidate.label}</span></button>`,
+              )
+              .join("")}
             <button class="status-alert-button" type="button" data-export-notice-dismiss title="Dismiss export error">${icon("x")}<span>Dismiss</span></button>
           </div>
         </div>
@@ -1475,11 +2175,27 @@ function renderQuickSwitcherStatus(built: ReturnType<typeof quickSwitcherBuild>)
     messages.push("Showing first 200 matches — keep typing to narrow results");
   }
 
+  const actionable = quickSwitcher.indexError
+    ? buildActionableState({ kind: "quick-open-failed" })
+    : built.truncated || Boolean(quickSwitcher.index?.truncatedRootIds.length)
+      ? buildActionableState({ kind: "quick-open-truncated" })
+      : null;
+
   if (messages.length === 0) return "";
   return `
-    <p class="px-3 py-2 text-[11px] leading-4 text-app-muted" data-quick-switcher-status>
-      ${escapeHtml(messages.join(" · "))}
-    </p>
+    <div class="px-3 py-2 text-[11px] leading-4 text-app-muted" data-quick-switcher-status>
+      <p>${escapeHtml(messages.join(" · "))}</p>
+      ${
+        actionable
+          ? `<div class="mt-2 flex gap-2">${actionable.actions
+              .map(
+                (candidate) =>
+                  `<button class="secondary-button compact ${UI.secondaryButton}" type="button" data-quick-action="${candidate.id}">${candidate.label}</button>`,
+              )
+              .join("")}</div>`
+          : ""
+      }
+    </div>
   `;
 }
 
@@ -1544,6 +2260,27 @@ function bindQuickSwitcher(): void {
       if (event.target === event.currentTarget) closeQuickSwitcher();
     });
   bindQuickSwitcherItemClicks();
+  bindQuickSwitcherActions();
+}
+
+function bindQuickSwitcherActions(): void {
+  root.querySelectorAll<HTMLElement>("[data-quick-action]").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (
+        button.dataset.quickAction === "retry-index" ||
+        button.dataset.quickAction === "refresh"
+      ) {
+        invalidateWorkspaceMarkdownIndex();
+        return;
+      }
+      if (button.dataset.quickAction === "copy-details") {
+        const model = quickSwitcher.indexError
+          ? buildActionableState({ kind: "quick-open-failed" })
+          : buildActionableState({ kind: "quick-open-truncated" });
+        void copyActionableDetails(model);
+      }
+    });
+  });
 }
 
 function bindQuickSwitcherItemClicks(): void {
@@ -1574,9 +2311,12 @@ function updateQuickSwitcherResults(): void {
   if (!results) return;
   results.innerHTML = renderQuickSwitcherResults();
   bindQuickSwitcherItemClicks();
+  bindQuickSwitcherActions();
 }
 
 function openExportModal(): void {
+  commandPalette.close();
+  if (externalApps.model.visible) closeExternalApplicationPicker();
   exportController.open();
   state = runtime.getState();
 }
@@ -1670,7 +2410,13 @@ function bindExportModal(): void {
 }
 
 function openQuickSwitcher(): void {
+  commandPalette.close();
+  if (externalApps.model.visible) closeExternalApplicationPicker();
   overlay.openQuickSwitcher();
+}
+
+function openCommandPalette(): void {
+  commandPalette.open();
 }
 
 function closeQuickSwitcher(): void {
@@ -1883,8 +2629,33 @@ function renderWorkspaceChildren(
   if (!children) {
     return `<div class="workspace-children" role="none" style="--depth: ${depth}"><div class="workspace-empty-branch">Loading…</div></div>`;
   }
+  const isRoot = parentRelativePath === "";
+  const loadFailed = workspaceController.childLoadError(
+    rootId,
+    parentRelativePath,
+  );
   if (children.length === 0) {
-    return `<div class="workspace-children" role="none" style="--depth: ${depth}"><div class="workspace-empty-branch">No visible items</div></div>`;
+    const model = loadFailed
+      ? buildActionableState({
+          kind: "workspace-error",
+          code: "list_failed",
+          canReveal: true,
+          isRoot,
+        })
+      : buildActionableState({ kind: "empty-workspace", isRoot });
+    return `<div class="workspace-children" role="none" style="--depth: ${depth}">
+      <div class="workspace-empty-branch workspace-actionable-state">
+        <span>${loadFailed ? "Folder unavailable" : "No visible items"}</span>
+        <div class="workspace-state-actions">
+          ${model.actions
+            .map(
+              (candidate) =>
+                `<button type="button" data-workspace-state-action="${candidate.id}" data-root-id="${escapeAttribute(rootId)}" data-relative-path="${escapeAttribute(parentRelativePath)}">${candidate.label}</button>`,
+            )
+            .join("")}
+        </div>
+      </div>
+    </div>`;
   }
   const expanded = new Set(
     expandedPathsForRoot(state.expandedWorkspacePaths, rootId),
@@ -2039,6 +2810,49 @@ function bindWorkspaceInteractions(): void {
     button.addEventListener("click", () => void addWorkspaceRoot());
   });
 
+  root
+    .querySelectorAll<HTMLElement>("[data-workspace-state-action]")
+    .forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const rootId = button.dataset.rootId ?? "";
+        const relativePath = button.dataset.relativePath ?? "";
+        const canonicalPath = workspaceCanonicalPath(rootId, relativePath);
+        const isRoot = relativePath === "";
+        switch (button.dataset.workspaceStateAction) {
+          case "retry":
+          case "refresh":
+            invalidateWorkspaceCache(rootId, [relativePath]);
+            void ensureWorkspaceChildren(rootId, relativePath).then(() => render());
+            break;
+          case "reveal":
+            if (canonicalPath) void revealActionablePath(canonicalPath);
+            break;
+          case "remove-root":
+            if (canonicalPath) {
+              void runWorkspaceAction(
+                "unregister",
+                rootId,
+                relativePath,
+                "directory",
+                canonicalPath,
+              );
+            }
+            break;
+          case "copy-details":
+            void copyActionableDetails(
+              buildActionableState({
+                kind: "workspace-error",
+                code: "list_failed",
+                canReveal: Boolean(canonicalPath),
+                isRoot,
+              }),
+            );
+            break;
+        }
+      });
+    });
+
   root.querySelectorAll<HTMLElement>("[data-workspace-node]").forEach((node) => {
     node.addEventListener("click", (event) => {
       const target = event.target as HTMLElement;
@@ -2079,6 +2893,17 @@ function bindWorkspaceInteractions(): void {
   });
 
   bindRootReordering();
+}
+
+function workspaceCanonicalPath(
+  rootId: string,
+  relativePath: string,
+): string | null {
+  const rootEntry = state.workspaceRoots.find((candidate) => candidate.id === rootId);
+  if (!rootEntry) return null;
+  return relativePath
+    ? `${rootEntry.canonicalPath.replace(/\/$/, "")}/${relativePath}`
+    : rootEntry.canonicalPath;
 }
 
 let rootDragSession: {
@@ -2293,6 +3118,7 @@ function bindWorkspaceDialog(): void {
   dialog?.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       event.preventDefault();
+      event.stopPropagation();
       closeDialog();
       return;
     }
@@ -2782,6 +3608,9 @@ function bindShellInteractions(): void {
     .querySelector<HTMLElement>('[data-action="settings"]')
     ?.addEventListener("click", showSettings);
   root
+    .querySelector<HTMLElement>('[data-action="toggle-focus-mode"]')
+    ?.addEventListener("click", toggleFocusMode);
+  root
     .querySelector<HTMLElement>('[data-action="navigate-back"]')
     ?.addEventListener("click", () => void navigateActiveDocumentHistory(-1));
   root
@@ -2857,6 +3686,27 @@ function bindShellInteractions(): void {
       exportNotice = null;
       render();
     });
+  root.querySelectorAll<HTMLElement>("[data-export-error-action]").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (button.dataset.exportErrorAction === "retry-export") {
+        exportNotice = null;
+        openExportModal();
+        return;
+      }
+      if (button.dataset.exportErrorAction === "copy-details") {
+        exportNotice = null;
+        void copyActionableDetails(
+          buildActionableState({
+            kind: "export-failed",
+            canRetry: (() => {
+              const tab = activeTab(state);
+              return tab?.kind === "document" && tab.status === "ready";
+            })(),
+          }),
+        );
+      }
+    });
+  });
   root
     .querySelector<HTMLElement>("[data-global-notice-dismiss]")
     ?.addEventListener("click", () => {
@@ -3117,6 +3967,23 @@ function showTabContextMenu(event: MouseEvent, tabKey: string): void {
     addAction("Copy absolute path", () => copyText(path));
     addAction("Reveal in Finder", () => revealItemInDir(path));
   }
+  if (
+    tab.kind !== "settings" &&
+    tab.kind !== "image" &&
+    tab.status === "ready"
+  ) {
+    addSeparator();
+    addAction("Open in Preferred Application", async () => {
+      navigation.selectTab(tab.key);
+      state = runtime.getState();
+      await openPreferredExternalApplication();
+    });
+    addAction("Choose External Application…", async () => {
+      navigation.selectTab(tab.key);
+      state = runtime.getState();
+      await openExternalApplicationPicker();
+    });
+  }
 
   tabContextMenuSession.present(menu, { restoreFocus: invoker });
   const bounds = menu.getBoundingClientRect();
@@ -3152,8 +4019,48 @@ function dismissTabContextMenu(restore = true): void {
 }
 
 function handleDocumentSearchShortcut(event: KeyboardEvent): void {
+  if (event.isComposing) return;
+  if (
+    (event.metaKey || event.ctrlKey) &&
+    event.shiftKey &&
+    event.key.toLowerCase() === "p"
+  ) {
+    event.preventDefault();
+    openCommandPalette();
+    return;
+  }
+  if (commandPalette.isVisible()) {
+    if (
+      (event.metaKey || event.ctrlKey) &&
+      !event.shiftKey &&
+      event.key.toLowerCase() === "p"
+    ) {
+      event.preventDefault();
+      openQuickSwitcher();
+      return;
+    }
+    if (
+      commandPalette.handleKey({
+        key: event.key,
+        shiftKey: event.shiftKey,
+        isComposing: event.isComposing,
+      })
+    ) {
+      event.preventDefault();
+    }
+    return;
+  }
   if (exportController.isVisible() && (event.metaKey || event.ctrlKey)) {
     event.preventDefault();
+    return;
+  }
+  if (
+    (event.metaKey || event.ctrlKey) &&
+    event.shiftKey &&
+    event.key.toLowerCase() === "f"
+  ) {
+    event.preventDefault();
+    toggleFocusMode();
     return;
   }
   if (
@@ -3183,7 +4090,11 @@ function handleDocumentSearchShortcut(event: KeyboardEvent): void {
     reopenLastClosedTab();
     return;
   }
-  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "p") {
+  if (
+    (event.metaKey || event.ctrlKey) &&
+    !event.shiftKey &&
+    event.key.toLowerCase() === "p"
+  ) {
     event.preventDefault();
     openQuickSwitcher();
     return;
@@ -3249,7 +4160,16 @@ function handleDocumentSearchShortcut(event: KeyboardEvent): void {
     }
     return;
   }
-  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+  if (event.key === "Escape" && externalApps.model.visible) {
+    event.preventDefault();
+    closeExternalApplicationPicker();
+    return;
+  }
+  if (
+    (event.metaKey || event.ctrlKey) &&
+    !event.shiftKey &&
+    event.key.toLowerCase() === "f"
+  ) {
     event.preventDefault();
     openDocumentSearch();
     return;
@@ -3257,6 +4177,21 @@ function handleDocumentSearchShortcut(event: KeyboardEvent): void {
   if (event.key === "Escape" && documentSearch.visible) {
     event.preventDefault();
     closeDocumentSearch();
+    return;
+  }
+  if (
+    event.key === "Escape" &&
+    (tabContextMenuSession.current() || workspaceContextMenuSession.current())
+  ) {
+    event.preventDefault();
+    dismissTabContextMenu();
+    dismissWorkspaceContextMenu();
+    return;
+  }
+  if (event.key === "Escape" && isMediaViewerOpen()) return;
+  if (event.key === "Escape" && state.focusMode) {
+    event.preventDefault();
+    toggleFocusMode();
     return;
   }
   if (
@@ -3270,6 +4205,7 @@ function handleDocumentSearchShortcut(event: KeyboardEvent): void {
 }
 
 function openDocumentSearch(): void {
+  if (externalApps.model.visible) closeExternalApplicationPicker();
   overlay.openDocumentSearch();
 }
 
@@ -3649,26 +4585,46 @@ function renderContent(
 }
 
 function renderEmptyState(container: HTMLElement): void {
+  const model = buildActionableState({
+    kind: "empty",
+    hasWorkspaceRoots: state.workspaceRoots.length > 0,
+  });
   container.innerHTML = `
     <section class="empty-state ${UI.centeredState}">
       <div class="empty-copy ${UI.emptyCopy}">
         <span class="empty-mark ${UI.emptyMark}" aria-hidden="true">M</span>
-        <h1 class="${UI.displayHeading}">Preview local documents in a workspace.</h1>
+        <h1 id="empty-state-heading" class="${UI.displayHeading}" tabindex="-1">Preview local documents in a workspace.</h1>
         <p class="${UI.displayCopy}">Pin folders in the sidebar, or open Markdown, Mermaid, and image files directly as tabs.</p>
         <div class="button-row ${UI.buttonRow}">
-          <button class="primary-button ${UI.primaryButton}" type="button" data-empty-add-folder>Add Folder</button>
-          <button class="secondary-button ${UI.secondaryButton}" type="button" data-empty-open>Open Preview Files</button>
+          ${model.actions
+            .map(
+              (candidate) =>
+                `<button class="${candidate.primary ? `primary-button ${UI.primaryButton}` : `secondary-button ${UI.secondaryButton}`}" type="button" data-empty-action="${candidate.id}">${candidate.label}</button>`,
+            )
+            .join("")}
         </div>
         <span class="shortcut-hint ${UI.shortcutHint}">⌘O or drag preview files into this window</span>
       </div>
     </section>
   `;
-  container
-    .querySelector<HTMLElement>("[data-empty-open]")
-    ?.addEventListener("click", () => void chooseDocuments());
-  container
-    .querySelector<HTMLElement>("[data-empty-add-folder]")
-    ?.addEventListener("click", () => void addWorkspaceRoot());
+  container.querySelectorAll<HTMLElement>("[data-empty-action]").forEach((button) => {
+    button.addEventListener("click", () => {
+      switch (button.dataset.emptyAction) {
+        case "add-folder":
+          void addWorkspaceRoot();
+          break;
+        case "open-files":
+          void chooseDocuments();
+          break;
+        case "quick-open":
+          openQuickSwitcher();
+          break;
+        case "command-palette":
+          openCommandPalette();
+          break;
+      }
+    });
+  });
 }
 
 function renderLoading(container: HTMLElement, tab: PreviewTab): void {
@@ -3687,6 +4643,11 @@ function renderLoading(container: HTMLElement, tab: PreviewTab): void {
 
 function renderError(container: HTMLElement, tab: PreviewTab): void {
   if (tab.status !== "error") return;
+  const model = buildActionableState({
+    kind: "preview-error",
+    code: tab.code,
+    canReveal: Boolean(tab.canonicalPath ?? tab.requestedPath),
+  });
   container.innerHTML = `
     <section class="error-state ${UI.centeredState}">
       <div class="error-panel ${UI.errorPanel}">
@@ -3695,18 +4656,77 @@ function renderError(container: HTMLElement, tab: PreviewTab): void {
         <p class="${UI.displayCopy}">${escapeHtml(tab.message)}</p>
         <div class="error-path ${UI.errorPath}">${escapeHtml(tab.canonicalPath ?? tab.requestedPath)}</div>
         <div class="button-row ${UI.buttonRow}">
-          <button class="primary-button ${UI.primaryButton}" type="button" data-error-retry>Try Again</button>
-          <button class="secondary-button ${UI.secondaryButton}" type="button" data-error-open>Open Another</button>
+          ${model.actions
+            .map(
+              (candidate) =>
+                `<button class="${candidate.primary ? `primary-button ${UI.primaryButton}` : `secondary-button ${UI.secondaryButton}`}" type="button" data-error-action="${candidate.id}">${candidate.label}</button>`,
+            )
+            .join("")}
         </div>
       </div>
     </section>
   `;
-  container
-    .querySelector<HTMLElement>("[data-error-retry]")
-    ?.addEventListener("click", () => void reloadActiveDocument());
-  container
-    .querySelector<HTMLElement>("[data-error-open]")
-    ?.addEventListener("click", () => void chooseDocuments());
+  container.querySelectorAll<HTMLElement>("[data-error-action]").forEach((button) => {
+    button.addEventListener("click", () => {
+      switch (button.dataset.errorAction) {
+        case "retry":
+          void reloadActiveDocument();
+          break;
+        case "reveal":
+          void revealActionablePath(tab.canonicalPath ?? tab.requestedPath);
+          break;
+        case "open-another":
+          void chooseDocuments();
+          break;
+        case "copy-details":
+          void copyActionableDetails(model);
+          break;
+      }
+    });
+  });
+}
+
+async function revealActionablePath(path: string): Promise<void> {
+  try {
+    await revealItemInDir(path);
+  } catch (error) {
+    recordDiagnosticError("reveal-actionable-path", error);
+    showGlobalNotice("Could not reveal this item in Finder.", {
+      title: "Reveal failed.",
+      dismissTitle: "Dismiss reveal error",
+    });
+    render();
+  }
+}
+
+async function copyActionableDetails(model: ActionableStateModel): Promise<void> {
+  try {
+    const environment = await invoke<DiagnosticsEnvironment>(
+      "get_diagnostics_environment",
+    );
+    const copied = await copyText(
+      formatActionableIssueDetails(model, environment.appVersion),
+    );
+    showGlobalNotice(
+      copied
+        ? "Privacy-safe issue details copied to the clipboard."
+        : "Could not copy issue details to the clipboard.",
+      {
+        title: copied ? "Details copied." : "Copy failed.",
+        tone: copied ? "success" : "error",
+        dismissTitle: copied
+          ? "Dismiss copied details notice"
+          : "Dismiss copy error",
+      },
+    );
+  } catch (error) {
+    recordDiagnosticError("copy-actionable-details", error);
+    showGlobalNotice("Could not copy issue details to the clipboard.", {
+      title: "Copy failed.",
+      dismissTitle: "Dismiss copy error",
+    });
+  }
+  render();
 }
 
 function renderMermaidPreview(

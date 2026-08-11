@@ -57,6 +57,8 @@ export const DEFAULT_STATE: AppState = {
   sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
   tableOfContentsWidth: DEFAULT_TABLE_OF_CONTENTS_WIDTH,
   leftSidebarVisible: true,
+  focusMode: false,
+  externalOpenTargetId: null,
   workspaceRoots: [],
   expandedWorkspacePaths: {},
   mermaidLightTheme: "default",
@@ -662,6 +664,7 @@ export function setPreferences(
     sidebarWidth?: number;
     tableOfContentsWidth?: number;
     leftSidebarVisible?: boolean;
+    externalOpenTargetId?: string | null;
     workspaceRoots?: WorkspaceRoot[];
     expandedWorkspacePaths?: Record<string, string[]>;
     mermaidLightTheme?: MermaidLightTheme;
@@ -719,7 +722,20 @@ export function toPersistedSession(state: AppState): PersistedSessionV1 {
     pageWidth: state.pageWidth,
     tableOfContentsVisible: state.tableOfContentsVisible,
     recentDocuments: state.recentDocuments,
+    ...(state.externalOpenTargetId
+      ? { externalOpenTargetId: state.externalOpenTargetId }
+      : {}),
   };
+}
+
+export function normalizeExternalOpenTargetId(value: unknown): string | null {
+  if (typeof value !== "string" || value.length > 192) return null;
+  if (value === "system:default" || value === "finder:reveal") return value;
+  const match = /^(?:application|terminal):([A-Za-z0-9.-]+)$/.exec(value);
+  const bundleId = match?.[1];
+  return bundleId && bundleId.length <= 160 && bundleId.includes(".")
+    ? value
+    : null;
 }
 
 export function fromPersistedSession(value: unknown): AppState {
@@ -752,6 +768,10 @@ export function fromPersistedSession(value: unknown): AppState {
       typeof value.leftSidebarVisible === "boolean"
         ? value.leftSidebarVisible
         : DEFAULT_STATE.leftSidebarVisible,
+    focusMode: false,
+    externalOpenTargetId: normalizeExternalOpenTargetId(
+      value.externalOpenTargetId,
+    ),
     workspaceRoots: normalizeWorkspaceRoots(value.workspaceRoots),
     expandedWorkspacePaths: normalizeExpandedPaths(
       value.expandedWorkspacePaths,
