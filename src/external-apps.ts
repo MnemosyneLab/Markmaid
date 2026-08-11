@@ -15,6 +15,7 @@ export interface ExternalOpenTarget {
 }
 
 export type ExternalOpenErrorCode =
+  | "discovery_timeout"
   | "file_unavailable"
   | "target_unavailable"
   | "unsupported_target"

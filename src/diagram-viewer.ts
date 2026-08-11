@@ -19,6 +19,16 @@ export function isMediaViewerOpen(): boolean {
   return activeViewer !== null;
 }
 
+/**
+ * Close the active media viewer, restoring its opener before another overlay
+ * captures focus. Returns whether a viewer was dismissed.
+ */
+export function dismissMediaViewer(): boolean {
+  if (!activeViewer) return false;
+  activeViewer.close();
+  return true;
+}
+
 export function enhanceDiagramViewers(article: HTMLElement): void {
   article
     .querySelectorAll<HTMLButtonElement>(".mermaid-figure .mermaid-expand")

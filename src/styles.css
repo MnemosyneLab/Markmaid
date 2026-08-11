@@ -463,6 +463,25 @@ a:focus-visible {
   min-height: 26px;
   padding-inline: 10px;
   font-size: 12px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.is-focus-mode .titlebar:hover .focus-mode-exit,
+.is-focus-mode .focus-mode-exit:focus {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+@media (max-width: 600px) {
+  .is-focus-mode .titlebar-title {
+    right: 150px;
+    left: 12px;
+    max-width: none;
+    transform: translateY(-50%);
+    text-align: left;
+  }
 }
 
 .is-focus-mode .document-meta {
@@ -1602,6 +1621,10 @@ html.is-resizing-document-outline * {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
+  }
+
+  .is-focus-mode .focus-mode-exit {
+    transition: none;
   }
 }
 

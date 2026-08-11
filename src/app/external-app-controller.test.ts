@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ExternalOpenTarget } from "../external-apps";
 import { createExternalAppController } from "./external-app-controller";
@@ -17,6 +17,20 @@ const targets: ExternalOpenTarget[] = [
     openMode: "file",
   },
 ];
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("external app controller", () => {
   it("opens the chooser when no preference exists", async () => {
@@ -154,5 +168,190 @@ describe("external app controller", () => {
     expect(controller.model.path).toBe("/notes/b.md");
     expect(controller.model.targets).toEqual([]);
     expect(controller.model.visible).toBe(false);
+  });
+
+  it("does not flash loading when discovery completes before 100 ms", async () => {
+    vi.useFakeTimers();
+    const discovery = deferred<ExternalOpenTarget[]>();
+    const controller = createExternalAppController({
+      getPreferredTargetId: () => null,
+      setPreferredTargetId: vi.fn(),
+      listTargets: () => discovery.promise,
+      openTarget: vi.fn(),
+      render: vi.fn(),
+      onError: vi.fn(),
+    });
+
+    const request = controller.openChooser("/notes/a.md");
+    expect(controller.model.loading).toBe(true);
+    expect(controller.model.loadingVisible).toBe(false);
+    await vi.advanceTimersByTimeAsync(99);
+    expect(controller.model.loadingVisible).toBe(false);
+
+    discovery.resolve(targets);
+    await request;
+    expect(controller.model.loading).toBe(false);
+    expect(controller.model.loadingVisible).toBe(false);
+  });
+
+  it("shows loading at 100 ms and times out discovery at 5 seconds", async () => {
+    vi.useFakeTimers();
+    const onError = vi.fn();
+    const controller = createExternalAppController({
+      getPreferredTargetId: () => null,
+      setPreferredTargetId: vi.fn(),
+      listTargets: () => new Promise<ExternalOpenTarget[]>(() => undefined),
+      openTarget: vi.fn(),
+      render: vi.fn(),
+      onError,
+    });
+
+    const request = controller.openChooser("/notes/a.md");
+    await vi.advanceTimersByTimeAsync(100);
+    expect(controller.model.loading).toBe(true);
+    expect(controller.model.loadingVisible).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(4_899);
+    expect(controller.model.errorCode).toBeNull();
+    await vi.advanceTimersByTimeAsync(1);
+    await request;
+    expect(controller.model.loading).toBe(false);
+    expect(controller.model.loadingVisible).toBe(false);
+    expect(controller.model.errorCode).toBe("discovery_timeout");
+    expect(onError).toHaveBeenCalledWith("discovery_timeout");
+  });
+
+  it("retries successfully after discovery times out", async () => {
+    vi.useFakeTimers();
+    const firstDiscovery = deferred<ExternalOpenTarget[]>();
+    const listTargets = vi
+      .fn<() => Promise<ExternalOpenTarget[]>>()
+      .mockReturnValueOnce(firstDiscovery.promise)
+      .mockResolvedValueOnce(targets);
+    const controller = createExternalAppController({
+      getPreferredTargetId: () => null,
+      setPreferredTargetId: vi.fn(),
+      listTargets,
+      openTarget: vi.fn(),
+      render: vi.fn(),
+      onError: vi.fn(),
+    });
+
+    const firstRequest = controller.openChooser("/notes/a.md");
+    await vi.advanceTimersByTimeAsync(5_000);
+    await firstRequest;
+    expect(controller.model.errorCode).toBe("discovery_timeout");
+
+    await controller.retry();
+    expect(controller.model.errorCode).toBeNull();
+    expect(controller.model.targets).toEqual(targets);
+  });
+
+  it("ignores a result that resolves after discovery timed out", async () => {
+    vi.useFakeTimers();
+    const discovery = deferred<ExternalOpenTarget[]>();
+    const onError = vi.fn();
+    const controller = createExternalAppController({
+      getPreferredTargetId: () => null,
+      setPreferredTargetId: vi.fn(),
+      listTargets: () => discovery.promise,
+      openTarget: vi.fn(),
+      render: vi.fn(),
+      onError,
+    });
+
+    const request = controller.openChooser("/notes/a.md");
+    await vi.advanceTimersByTimeAsync(5_000);
+    await request;
+    discovery.resolve(targets);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(controller.model.targets).toEqual([]);
+    expect(controller.model.errorCode).toBe("discovery_timeout");
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it("handles a rejection that arrives after discovery timed out", async () => {
+    vi.useFakeTimers();
+    const discovery = deferred<ExternalOpenTarget[]>();
+    const onError = vi.fn();
+    const controller = createExternalAppController({
+      getPreferredTargetId: () => null,
+      setPreferredTargetId: vi.fn(),
+      listTargets: () => discovery.promise,
+      openTarget: vi.fn(),
+      render: vi.fn(),
+      onError,
+    });
+
+    const request = controller.openChooser("/notes/a.md");
+    await vi.advanceTimersByTimeAsync(5_000);
+    await request;
+    discovery.reject(new Error("late failure"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(controller.model.errorCode).toBe("discovery_timeout");
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores stale discovery after the active path changes", async () => {
+    const firstDiscovery = deferred<ExternalOpenTarget[]>();
+    const secondDiscovery = deferred<ExternalOpenTarget[]>();
+    const listTargets = vi
+      .fn<() => Promise<ExternalOpenTarget[]>>()
+      .mockReturnValueOnce(firstDiscovery.promise)
+      .mockReturnValueOnce(secondDiscovery.promise);
+    const controller = createExternalAppController({
+      getPreferredTargetId: () => null,
+      setPreferredTargetId: vi.fn(),
+      listTargets,
+      openTarget: vi.fn(),
+      render: vi.fn(),
+      onError: vi.fn(),
+    });
+
+    const firstRequest = controller.openChooser("/notes/a.md");
+    const secondRequest = controller.openChooser("/notes/b.md");
+    firstDiscovery.resolve(targets);
+    await firstRequest;
+    expect(controller.model.path).toBe("/notes/b.md");
+    expect(controller.model.targets).toEqual([]);
+    expect(controller.model.loading).toBe(true);
+
+    secondDiscovery.resolve(targets.slice(0, 1));
+    await secondRequest;
+    expect(controller.model.targets).toEqual(targets.slice(0, 1));
+    expect(controller.model.loading).toBe(false);
+  });
+
+  it("lets a repeated discovery request supersede the earlier generation", async () => {
+    const firstDiscovery = deferred<ExternalOpenTarget[]>();
+    const secondDiscovery = deferred<ExternalOpenTarget[]>();
+    const listTargets = vi
+      .fn<() => Promise<ExternalOpenTarget[]>>()
+      .mockReturnValueOnce(firstDiscovery.promise)
+      .mockReturnValueOnce(secondDiscovery.promise);
+    const controller = createExternalAppController({
+      getPreferredTargetId: () => null,
+      setPreferredTargetId: vi.fn(),
+      listTargets,
+      openTarget: vi.fn(),
+      render: vi.fn(),
+      onError: vi.fn(),
+    });
+
+    const firstRequest = controller.openChooser("/notes/a.md");
+    const secondRequest = controller.refresh();
+    firstDiscovery.resolve(targets);
+    await firstRequest;
+    expect(controller.model.targets).toEqual([]);
+    expect(controller.model.loading).toBe(true);
+
+    secondDiscovery.resolve(targets.slice(1));
+    await secondRequest;
+    expect(controller.model.targets).toEqual(targets.slice(1));
+    expect(controller.model.loading).toBe(false);
   });
 });

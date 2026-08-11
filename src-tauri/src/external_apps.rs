@@ -5,6 +5,9 @@ use std::{
     sync::Mutex,
 };
 
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+
 use serde::Serialize;
 use tauri::State;
 
@@ -148,7 +151,7 @@ struct ApplicationCandidate {
     icon_png_base64: Option<String>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TerminalAdapter {
     bundle_id: &'static str,
     display_name: &'static str,
@@ -178,15 +181,15 @@ pub fn list_external_open_targets(
     path: String,
     state: State<'_, ExternalAppsState>,
 ) -> Result<Vec<ExternalOpenTarget>, ExternalAppsError> {
-    let canonical_path = validate_external_document_path(&path)?;
-    platform::list_targets(&canonical_path, &state)
+    let document = validate_external_document_path(&path)?;
+    platform::list_targets(&document.canonical_path, &state)
 }
 
 #[tauri::command]
 pub fn open_external_target(path: String, target_id: String) -> ExternalOpenResult {
     let result = validate_external_document_path(&path)
-        .and_then(|canonical_path| validate_target_id(&target_id).map(|_| canonical_path))
-        .and_then(|canonical_path| platform::open_target(&canonical_path, &target_id));
+        .and_then(|document| validate_target_id(&target_id).map(|_| document))
+        .and_then(|document| platform::open_target(&document, &target_id));
 
     match result {
         Ok(()) => ExternalOpenResult::Opened { target_id },
@@ -198,7 +201,46 @@ pub fn open_external_target(path: String, target_id: String) -> ExternalOpenResu
     }
 }
 
-fn validate_external_document_path(requested_path: &str) -> Result<PathBuf, ExternalAppsError> {
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ValidatedExternalDocument {
+    requested_path: PathBuf,
+    canonical_path: PathBuf,
+    identity: FileIdentity,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FileIdentity {
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(not(unix))]
+    length: u64,
+    #[cfg(not(unix))]
+    modified: Option<std::time::SystemTime>,
+}
+
+fn file_identity(metadata: &fs::Metadata) -> FileIdentity {
+    #[cfg(unix)]
+    {
+        FileIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        FileIdentity {
+            length: metadata.len(),
+            modified: metadata.modified().ok(),
+        }
+    }
+}
+
+fn validate_external_document_path(
+    requested_path: &str,
+) -> Result<ValidatedExternalDocument, ExternalAppsError> {
     let path = Path::new(requested_path);
     if !path.is_absolute() {
         return Err(ExternalAppsError::file_unavailable());
@@ -211,11 +253,50 @@ fn validate_external_document_path(requested_path: &str) -> Result<PathBuf, Exte
 
     let canonical_path =
         fs::canonicalize(path).map_err(|_| ExternalAppsError::file_unavailable())?;
-    if !is_supported_external_document(&canonical_path) {
+    let canonical_metadata =
+        fs::symlink_metadata(&canonical_path).map_err(|_| ExternalAppsError::file_unavailable())?;
+    if canonical_metadata.file_type().is_symlink()
+        || !canonical_metadata.is_file()
+        || file_identity(&metadata) != file_identity(&canonical_metadata)
+        || !is_supported_external_document(&canonical_path)
+    {
         return Err(ExternalAppsError::file_unavailable());
     }
 
-    Ok(canonical_path)
+    Ok(ValidatedExternalDocument {
+        requested_path: path.to_path_buf(),
+        canonical_path,
+        identity: file_identity(&metadata),
+    })
+}
+
+fn revalidate_external_document(
+    document: &ValidatedExternalDocument,
+) -> Result<(), ExternalAppsError> {
+    let requested_metadata = fs::symlink_metadata(&document.requested_path)
+        .map_err(|_| ExternalAppsError::file_unavailable())?;
+    if requested_metadata.file_type().is_symlink() || !requested_metadata.is_file() {
+        return Err(ExternalAppsError::file_unavailable());
+    }
+
+    let canonical_path = fs::canonicalize(&document.requested_path)
+        .map_err(|_| ExternalAppsError::file_unavailable())?;
+    if canonical_path != document.canonical_path || !is_supported_external_document(&canonical_path)
+    {
+        return Err(ExternalAppsError::file_unavailable());
+    }
+
+    let canonical_metadata =
+        fs::symlink_metadata(&canonical_path).map_err(|_| ExternalAppsError::file_unavailable())?;
+    if canonical_metadata.file_type().is_symlink()
+        || !canonical_metadata.is_file()
+        || file_identity(&requested_metadata) != document.identity
+        || file_identity(&canonical_metadata) != document.identity
+    {
+        return Err(ExternalAppsError::file_unavailable());
+    }
+
+    Ok(())
 }
 
 fn is_supported_external_document(path: &Path) -> bool {
@@ -289,6 +370,20 @@ fn normalize_application_candidates(
             .then_with(|| left.bundle_id.cmp(&right.bundle_id))
     });
     normalized
+}
+
+fn capable_terminal_adapters<'a>(
+    installed_bundle_ids: &HashSet<&str>,
+    directory_handler_bundle_ids: &HashSet<&str>,
+    adapters: &'a [TerminalAdapter],
+) -> Vec<&'a TerminalAdapter> {
+    adapters
+        .iter()
+        .filter(|adapter| {
+            installed_bundle_ids.contains(adapter.bundle_id)
+                && directory_handler_bundle_ids.contains(adapter.bundle_id)
+        })
+        .collect()
 }
 
 fn cap_targets(mut targets: Vec<ExternalOpenTarget>) -> Vec<ExternalOpenTarget> {
@@ -370,8 +465,24 @@ mod platform {
                 .map(application_target)
                 .collect::<Vec<_>>();
 
+        let directory = path
+            .parent()
+            .filter(|parent| parent.is_dir())
+            .ok_or_else(ExternalAppsError::file_unavailable)?;
+        let directory_handler_bundle_ids = handler_bundle_ids(&workspace, &file_url(directory));
+        let installed_terminal_bundle_ids = TERMINAL_ADAPTERS
+            .iter()
+            .filter_map(|adapter| {
+                application_url(&workspace, adapter.bundle_id).map(|_| adapter.bundle_id)
+            })
+            .collect::<HashSet<_>>();
+
         let mut terminal_targets = Vec::new();
-        for adapter in TERMINAL_ADAPTERS {
+        for adapter in capable_terminal_adapters(
+            &installed_terminal_bundle_ids,
+            &directory_handler_bundle_ids,
+            TERMINAL_ADAPTERS,
+        ) {
             let Some(application_url) = application_url(&workspace, adapter.bundle_id) else {
                 continue;
             };
@@ -396,18 +507,23 @@ mod platform {
         ))
     }
 
-    pub(super) fn open_target(path: &Path, target_id: &str) -> Result<(), ExternalAppsError> {
+    pub(super) fn open_target(
+        document: &ValidatedExternalDocument,
+        target_id: &str,
+    ) -> Result<(), ExternalAppsError> {
         let workspace = NSWorkspace::sharedWorkspace();
-        let document_url = file_url(path);
+        let document_url = file_url(&document.canonical_path);
 
         match target_id {
             SYSTEM_DEFAULT_ID => {
+                revalidate_external_document(document)?;
                 return workspace
                     .openURL(&document_url)
                     .then_some(())
                     .ok_or_else(ExternalAppsError::open_failed);
             }
             FINDER_ID => {
+                revalidate_external_document(document)?;
                 let urls = NSArray::from_retained_slice(&[document_url]);
                 workspace.activateFileViewerSelectingURLs(&urls);
                 return Ok(());
@@ -434,6 +550,7 @@ mod platform {
             }
             let _application_url = application_url(&workspace, bundle_id)
                 .ok_or_else(ExternalAppsError::target_unavailable)?;
+            revalidate_external_document(document)?;
             return open_urls_with_bundle_id(&workspace, &[document_url], bundle_id);
         }
 
@@ -446,11 +563,17 @@ mod platform {
             }
             let _application_url = application_url(&workspace, bundle_id)
                 .ok_or_else(ExternalAppsError::target_unavailable)?;
-            let directory = path
+            let directory = document
+                .canonical_path
                 .parent()
                 .filter(|parent| parent.is_dir())
                 .ok_or_else(ExternalAppsError::file_unavailable)?;
-            return open_urls_with_bundle_id(&workspace, &[file_url(directory)], bundle_id);
+            let directory_url = file_url(directory);
+            if !handler_bundle_ids(&workspace, &directory_url).contains(bundle_id) {
+                return Err(ExternalAppsError::target_unavailable());
+            }
+            revalidate_external_document(document)?;
+            return open_urls_with_bundle_id(&workspace, &[directory_url], bundle_id);
         }
 
         Err(ExternalAppsError::unsupported_target())
@@ -463,6 +586,22 @@ mod platform {
 
     fn application_url(workspace: &NSWorkspace, bundle_id: &str) -> Option<Retained<NSURL>> {
         workspace.URLForApplicationWithBundleIdentifier(&NSString::from_str(bundle_id))
+    }
+
+    fn handler_bundle_ids(workspace: &NSWorkspace, url: &NSURL) -> HashSet<&'static str> {
+        workspace
+            .URLsForApplicationsToOpenURL(url)
+            .to_vec()
+            .into_iter()
+            .filter_map(|application_url| application_candidate_without_icon(&application_url))
+            .map(|candidate| candidate.bundle_id)
+            .filter_map(|bundle_id| {
+                TERMINAL_ADAPTERS
+                    .iter()
+                    .find(|adapter| adapter.bundle_id == bundle_id)
+                    .map(|adapter| adapter.bundle_id)
+            })
+            .collect()
     }
 
     fn application_candidate(
@@ -579,7 +718,10 @@ mod platform {
         Err(ExternalAppsError::unsupported_target())
     }
 
-    pub(super) fn open_target(_path: &Path, _target_id: &str) -> Result<(), ExternalAppsError> {
+    pub(super) fn open_target(
+        _document: &ValidatedExternalDocument,
+        _target_id: &str,
+    ) -> Result<(), ExternalAppsError> {
         Err(ExternalAppsError::unsupported_target())
     }
 }
@@ -607,7 +749,9 @@ mod tests {
             let path = directory.path().join(name);
             fs::write(&path, "content").unwrap();
             assert_eq!(
-                validate_external_document_path(path.to_str().unwrap()).unwrap(),
+                validate_external_document_path(path.to_str().unwrap())
+                    .unwrap()
+                    .canonical_path,
                 fs::canonicalize(path).unwrap()
             );
         }
@@ -656,6 +800,58 @@ mod tests {
     }
 
     #[test]
+    fn revalidates_an_unchanged_regular_file() {
+        let directory = tempdir().unwrap();
+        let document = directory.path().join("stable.md");
+        fs::write(&document, "content").unwrap();
+
+        let validated = validate_external_document_path(document.to_str().unwrap()).unwrap();
+
+        assert!(revalidate_external_document(&validated).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn revalidation_rejects_a_file_replaced_by_a_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempdir().unwrap();
+        let document = directory.path().join("document.md");
+        let other = directory.path().join("other.md");
+        fs::write(&document, "original").unwrap();
+        fs::write(&other, "other").unwrap();
+        let validated = validate_external_document_path(document.to_str().unwrap()).unwrap();
+
+        fs::remove_file(&document).unwrap();
+        symlink(&other, &document).unwrap();
+
+        assert_eq!(
+            revalidate_external_document(&validated).unwrap_err().code,
+            "file_unavailable"
+        );
+    }
+
+    #[test]
+    fn revalidation_rejects_a_different_regular_file_identity() {
+        let directory = tempdir().unwrap();
+        let document = directory.path().join("document.md");
+        let replacement = directory.path().join("replacement.tmp");
+        fs::write(&document, "original").unwrap();
+        fs::write(&replacement, "replacement").unwrap();
+        let validated = validate_external_document_path(document.to_str().unwrap()).unwrap();
+        let replacement_identity =
+            file_identity(&fs::symlink_metadata(&replacement).expect("replacement metadata"));
+        assert_ne!(replacement_identity, validated.identity);
+
+        fs::rename(&replacement, &document).unwrap();
+
+        assert_eq!(
+            revalidate_external_document(&validated).unwrap_err().code,
+            "file_unavailable"
+        );
+    }
+
+    #[test]
     fn accepts_only_built_in_or_well_formed_opaque_target_ids() {
         for target_id in [
             SYSTEM_DEFAULT_ID,
@@ -699,6 +895,43 @@ mod tests {
                 .map(|application| application.display_name)
                 .collect::<Vec<_>>(),
             vec!["Code", "Zed"]
+        );
+    }
+
+    #[test]
+    fn terminal_adapters_require_both_installation_and_directory_capability() {
+        let installed = HashSet::from([
+            "com.apple.Terminal",
+            "com.googlecode.iterm2",
+            "dev.warp.Warp-Stable",
+        ]);
+        let handlers = HashSet::from([
+            "com.apple.Terminal",
+            "com.mitchellh.ghostty",
+            "dev.warp.Warp-Stable",
+        ]);
+
+        assert_eq!(
+            capable_terminal_adapters(&installed, &handlers, TERMINAL_ADAPTERS)
+                .into_iter()
+                .map(|adapter| adapter.bundle_id)
+                .collect::<Vec<_>>(),
+            vec!["com.apple.Terminal", "dev.warp.Warp-Stable"]
+        );
+    }
+
+    #[test]
+    fn terminal_adapter_disappears_when_execution_capability_is_rechecked() {
+        let installed = HashSet::from(["com.apple.Terminal"]);
+        let discovered_handlers = HashSet::from(["com.apple.Terminal"]);
+        assert_eq!(
+            capable_terminal_adapters(&installed, &discovered_handlers, TERMINAL_ADAPTERS).len(),
+            1
+        );
+
+        let current_handlers = HashSet::new();
+        assert!(
+            capable_terminal_adapters(&installed, &current_handlers, TERMINAL_ADAPTERS).is_empty()
         );
     }
 

@@ -3,9 +3,12 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  acknowledgeQuickSwitcherPartialResults,
   createFloatingMenuSession,
   createFocusRestoreSession,
   createOverlayController,
+  resetQuickSwitcherPartialResults,
+  updateQuickSwitcherQuery,
 } from "./overlay-controller";
 
 describe("overlay controller", () => {
@@ -35,6 +38,7 @@ describe("overlay controller", () => {
 
     expect(overlay.quickSwitcher.visible).toBe(true);
     expect(overlay.quickSwitcher.indexing).toBe(true);
+    expect(overlay.quickSwitcher.partialResultsAcknowledged).toBe(false);
     expect(overlay.documentSearch.visible).toBe(false);
     expect(overlay.documentSearch.matches).toEqual([]);
     expect(render).toHaveBeenCalledOnce();
@@ -184,12 +188,57 @@ describe("overlay controller", () => {
 
     overlay.openQuickSwitcher();
     const requestId = overlay.quickSwitcher.indexRequestId;
+    overlay.quickSwitcher.partialResultsAcknowledged = true;
     overlay.openQuickSwitcher();
 
     expect(onClosed).toHaveBeenCalledOnce();
     expect(overlay.quickSwitcher.indexRequestId).toBe(requestId + 2);
     expect(overlay.quickSwitcher.indexing).toBe(true);
+    expect(overlay.quickSwitcher.partialResultsAcknowledged).toBe(false);
     expect(capture).toHaveBeenCalledOnce();
+  });
+
+  it("acknowledges partial results without clearing rows and resets per query or index", () => {
+    const overlay = createOverlayController({
+      render: () => {},
+      hasWorkspaceRoots: () => false,
+      canOpenDocumentSearch: () => true,
+      onQuickOpenOpened: () => {},
+      onQuickOpenClosed: () => {},
+      clearDocumentSearchHighlights: () => {},
+      focusQuickOpenInput: () => {},
+      focusDocumentSearchInput: () => {},
+      requestAnimationFrame: () => 1,
+    });
+    const index = {
+      entries: [],
+      unavailableRootIds: [],
+      truncatedRootIds: ["large"],
+    };
+    overlay.quickSwitcher.index = index;
+    overlay.quickSwitcher.activeIndex = 3;
+    overlay.quickSwitcher.activeItemId = "workspace:row-3";
+
+    acknowledgeQuickSwitcherPartialResults(overlay.quickSwitcher);
+    expect(overlay.quickSwitcher).toMatchObject({
+      partialResultsAcknowledged: true,
+      activeIndex: 3,
+      activeItemId: "workspace:row-3",
+      index,
+    });
+
+    updateQuickSwitcherQuery(overlay.quickSwitcher, "narrower");
+    expect(overlay.quickSwitcher).toMatchObject({
+      query: "narrower",
+      partialResultsAcknowledged: false,
+      activeIndex: 0,
+      activeItemId: null,
+      index,
+    });
+
+    acknowledgeQuickSwitcherPartialResults(overlay.quickSwitcher);
+    resetQuickSwitcherPartialResults(overlay.quickSwitcher);
+    expect(overlay.quickSwitcher.partialResultsAcknowledged).toBe(false);
   });
 
   it("restores captured focus when the opener is still present", () => {

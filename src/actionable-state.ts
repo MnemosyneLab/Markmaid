@@ -15,6 +15,7 @@ export type ActionableStateActionId =
   | "retry"
   | "retry-index"
   | "retry-export"
+  | "continue-partial-results"
   | "reveal"
   | "remove-root"
   | "copy-details"
@@ -37,7 +38,7 @@ export interface ActionableStateModel {
 
 export type ActionableStateInput =
   | { kind: "empty"; hasWorkspaceRoots: boolean }
-  | { kind: "empty-workspace"; isRoot: boolean }
+  | { kind: "empty-workspace"; isRoot: boolean; canReveal: boolean }
   | {
       kind: "workspace-error";
       code: string;
@@ -86,7 +87,7 @@ export function buildActionableState(
         recoverable: true,
         actions: [
           action("refresh", "Refresh", true),
-          action("reveal", "Reveal"),
+          ...(input.canReveal ? [action("reveal", "Reveal")] : []),
           ...(input.isRoot ? [action("remove-root", "Remove Root")] : []),
         ],
       };
@@ -134,7 +135,12 @@ export function buildActionableState(
         code: "index_truncated",
         recoverable: true,
         actions: [
-          action("refresh", "Refresh", true),
+          action(
+            "continue-partial-results",
+            "Continue with Partial Results",
+            true,
+          ),
+          action("refresh", "Refresh"),
           action("copy-details", "Copy Details"),
         ],
       };

@@ -18,6 +18,7 @@ import {
   registerExportHandler,
 } from "./export";
 import {
+  dismissMediaViewer,
   enhanceDiagramViewers,
   isMediaViewerOpen,
   wrapMarkdownImages,
@@ -108,9 +109,12 @@ import {
 import { createExportController } from "./app/export-controller";
 import { createNavigationController } from "./app/navigation-controller";
 import {
+  acknowledgeQuickSwitcherPartialResults,
   createFloatingMenuSession,
   createOverlayController,
+  resetQuickSwitcherPartialResults,
   type FocusRestoreSession,
+  updateQuickSwitcherQuery,
 } from "./app/overlay-controller";
 import {
   createPersistence,
@@ -125,6 +129,10 @@ import {
 import { createWorkspaceController } from "./app/workspace-controller";
 import { createCommandPaletteController } from "./app/command-palette-controller";
 import { createExternalAppController } from "./app/external-app-controller";
+import {
+  createRevealTargetController,
+  type RevealTargetProbeResult,
+} from "./app/reveal-target-controller";
 import {
   createCommandCatalog,
   type CommandAvailability,
@@ -156,6 +164,7 @@ import {
   toggleExpandedPath,
   workspaceErrorMessage,
 } from "./workspace";
+import { planWorkspaceRootRemoval } from "./workspace-removal";
 import "./styles.css";
 import type {
   AppState,
@@ -411,13 +420,23 @@ const workspaceController = createWorkspaceController(runtime, {
     }),
   errorMessage: workspaceInvokeError,
 });
+const revealTargets = createRevealTargetController({
+  probe: (path) =>
+    invoke<RevealTargetProbeResult>("probe_reveal_target", { path }),
+  onChange: () => render(),
+});
 let stateStore: Store | null = null;
 const pendingAnchors = new Map<string, string>();
 let appliedAppearance: MermaidAppearance | null = null;
 let selectedWorkspaceNode: { rootId: string; relativePath: string } | null =
   null;
 let workspaceDialog: {
-  kind: "create-markdown" | "create-folder" | "rename" | "confirm-trash";
+  kind:
+    | "create-markdown"
+    | "create-folder"
+    | "rename"
+    | "confirm-trash"
+    | "confirm-unregister-root";
   rootId: string;
   relativePath: string;
   title: string;
@@ -598,6 +617,7 @@ const commandPalette = createCommandPaletteController<CommandContext>({
     render();
   },
   dismissCompetingOverlays: () => {
+    dismissMediaViewer();
     overlay.hideSearchOverlays();
     if (externalApps.model.visible) closeExternalApplicationPicker();
     if (exportController.isVisible()) closeExportModal();
@@ -1797,7 +1817,8 @@ function renderExternalOpenControl(): string {
 }
 
 function renderExternalOpenMenu(): string {
-  const { loading, targets, errorCode, openingTargetId } = externalApps.model;
+  const { loading, loadingVisible, targets, errorCode, openingTargetId } =
+    externalApps.model;
   const preferredId = state.externalOpenTargetId;
   const ordinary = targets.filter((target) => target.kind !== "terminal");
   const terminals = targets.filter((target) => target.kind === "terminal");
@@ -1819,13 +1840,15 @@ function renderExternalOpenMenu(): string {
     ? buildActionableState({
         kind: "external-open-failed",
         canReveal:
-          errorCode !== "file_unavailable" && Boolean(externalApps.model.path),
+          errorCode !== "file_unavailable" &&
+          errorCode !== "discovery_timeout" &&
+          Boolean(externalApps.model.path),
         code: errorCode,
       })
     : null;
   return `<div class="external-menu-layer" data-external-menu-backdrop>
     <section class="external-target-menu" role="menu" aria-label="Open with">
-      ${loading ? `<p class="external-menu-status">Finding applications…</p>` : ""}
+      ${loadingVisible ? `<p class="external-menu-status">Finding applications…</p>` : ""}
       ${errorModel ? `<div class="external-menu-error" role="status"><strong>External open failed.</strong><span>${errorCode === "target_unavailable" ? "The preferred application is unavailable." : "Choose an action to recover."}</span><div class="external-menu-error-actions">${errorModel.actions.map((candidate) => `<button type="button" data-external-error-action="${candidate.id}">${candidate.label}</button>`).join("")}</div></div>` : ""}
       ${!loading && ordinary.length > 0 ? renderTargets(ordinary) : ""}
       ${!loading && terminals.length > 0 ? `<div class="external-menu-section-label">Terminals</div>${renderTargets(terminals)}` : ""}
@@ -2157,11 +2180,16 @@ function renderQuickSwitcherStatus(built: ReturnType<typeof quickSwitcherBuild>)
   } else if (quickSwitcher.indexError) {
     messages.push(quickSwitcher.indexError);
   } else {
-    messages.push(...workspaceIndexNotices(quickSwitcher.index));
+    messages.push(
+      ...workspaceIndexNotices(quickSwitcher.index, {
+        includeTruncation: !quickSwitcher.partialResultsAcknowledged,
+      }),
+    );
   }
   if (
     messages.length === 0 &&
     !quickSwitcher.indexing &&
+    !quickSwitcher.partialResultsAcknowledged &&
     state.workspaceRoots.length > 0 &&
     !quickSwitcher.query.trim()
   ) {
@@ -2171,13 +2199,14 @@ function renderQuickSwitcherStatus(built: ReturnType<typeof quickSwitcherBuild>)
   if (!quickSwitcher.indexing && built.items.length === 0 && quickSwitcher.query.trim()) {
     messages.push("No matching documents");
   }
-  if (built.truncated) {
+  if (built.truncated && !quickSwitcher.partialResultsAcknowledged) {
     messages.push("Showing first 200 matches — keep typing to narrow results");
   }
 
   const actionable = quickSwitcher.indexError
     ? buildActionableState({ kind: "quick-open-failed" })
-    : built.truncated || Boolean(quickSwitcher.index?.truncatedRootIds.length)
+    : !quickSwitcher.partialResultsAcknowledged &&
+        (built.truncated || Boolean(quickSwitcher.index?.truncatedRootIds.length))
       ? buildActionableState({ kind: "quick-open-truncated" })
       : null;
 
@@ -2249,9 +2278,7 @@ function bindQuickSwitcher(): void {
   if (!quickSwitcher.visible) return;
   const input = root.querySelector<HTMLInputElement>("[data-quick-switcher-input]");
   input?.addEventListener("input", () => {
-    quickSwitcher.query = input.value;
-    quickSwitcher.activeIndex = 0;
-    quickSwitcher.activeItemId = null;
+    updateQuickSwitcherQuery(quickSwitcher, input.value);
     updateQuickSwitcherResults();
   });
   root
@@ -2271,6 +2298,14 @@ function bindQuickSwitcherActions(): void {
         button.dataset.quickAction === "refresh"
       ) {
         invalidateWorkspaceMarkdownIndex();
+        return;
+      }
+      if (button.dataset.quickAction === "continue-partial-results") {
+        acknowledgeQuickSwitcherPartialResults(quickSwitcher);
+        updateQuickSwitcherResults();
+        root
+          .querySelector<HTMLInputElement>("[data-quick-switcher-input]")
+          ?.focus();
         return;
       }
       if (button.dataset.quickAction === "copy-details") {
@@ -2428,6 +2463,7 @@ function invalidateWorkspaceMarkdownIndex(): void {
   quickSwitcher.indexRequestId += 1;
   quickSwitcher.index = null;
   quickSwitcher.indexError = null;
+  resetQuickSwitcherPartialResults(quickSwitcher);
   workspaceController.cancelIndex();
   if (!quickSwitcher.visible) {
     quickSwitcher.indexing = false;
@@ -2635,14 +2671,26 @@ function renderWorkspaceChildren(
     parentRelativePath,
   );
   if (children.length === 0) {
+    const revealPath = workspaceCanonicalPath(rootId, parentRelativePath);
+    if (revealPath && !revealTargets.result(revealPath)) {
+      void revealTargets.ensure(revealPath);
+    }
     const model = loadFailed
       ? buildActionableState({
           kind: "workspace-error",
           code: "list_failed",
-          canReveal: true,
+          canReveal: Boolean(
+            revealPath && revealTargets.isAvailable(revealPath),
+          ),
           isRoot,
         })
-      : buildActionableState({ kind: "empty-workspace", isRoot });
+      : buildActionableState({
+          kind: "empty-workspace",
+          isRoot,
+          canReveal: Boolean(
+            revealPath && revealTargets.isAvailable(revealPath),
+          ),
+        });
     return `<div class="workspace-children" role="none" style="--depth: ${depth}">
       <div class="workspace-empty-branch workspace-actionable-state">
         <span>${loadFailed ? "Folder unavailable" : "No visible items"}</span>
@@ -2709,7 +2757,10 @@ function renderWorkspaceChildren(
 
 function renderWorkspaceDialog(): string {
   if (!workspaceDialog) return "";
-  if (workspaceDialog.kind === "confirm-trash") {
+  if (
+    workspaceDialog.kind === "confirm-trash" ||
+    workspaceDialog.kind === "confirm-unregister-root"
+  ) {
     return `
       <div class="workspace-dialog-backdrop" data-dialog-backdrop>
         <section class="workspace-dialog" role="dialog" aria-modal="true" aria-label="${escapeAttribute(workspaceDialog.title)}">
@@ -2822,6 +2873,7 @@ function bindWorkspaceInteractions(): void {
         switch (button.dataset.workspaceStateAction) {
           case "retry":
           case "refresh":
+            if (canonicalPath) revealTargets.invalidate(canonicalPath);
             invalidateWorkspaceCache(rootId, [relativePath]);
             void ensureWorkspaceChildren(rootId, relativePath).then(() => render());
             break;
@@ -3391,28 +3443,27 @@ async function runWorkspaceAction(
       render();
       break;
     case "unregister": {
-      const roots = state.workspaceRoots;
-      const index = roots.findIndex((item) => item.id === rootId);
-      const neighbor =
-        index >= 0
-          ? roots[index + 1] ?? roots[index - 1] ?? null
-          : null;
-      await invoke("unregister_workspace_root", { rootId });
-      invalidateWorkspaceCache(rootId);
-      workspaceController.unregisterRoot(rootId);
-      if (selectedWorkspaceNode?.rootId === rootId) {
-        selectedWorkspaceNode = neighbor
-          ? { rootId: neighbor.id, relativePath: "" }
-          : null;
-        workspaceTreeFocus = selectedWorkspaceNode;
-        if (neighbor) {
-          pendingFocusKey = {
+      const removal = planWorkspaceRootRemoval(state.workspaceRoots, rootId);
+      if (!removal) break;
+      root
+        .querySelector<HTMLElement>(
+          focusKeySelector({
             kind: "workspace-node",
-            rootId: neighbor.id,
+            rootId,
             relativePath: "",
-          };
-        }
-      }
+          }),
+        )
+        ?.focus();
+      openWorkspaceDialog({
+        kind: "confirm-unregister-root",
+        rootId,
+        relativePath: "",
+        title: "Remove from Workspace?",
+        label: "",
+        initialValue: "",
+        confirmLabel: "Remove Root",
+        message: `“${removal.root.displayName}” will be removed from MarkMaid. Files will remain on disk, and open tabs will stay open.`,
+      });
       break;
     }
     case "move-up":
@@ -3429,6 +3480,38 @@ async function runWorkspaceAction(
 async function confirmWorkspaceDialog(): Promise<void> {
   if (!workspaceDialog) return;
   const dialog = workspaceDialog;
+  if (dialog.kind === "confirm-unregister-root") {
+    const removal = planWorkspaceRootRemoval(state.workspaceRoots, dialog.rootId);
+    if (!removal) {
+      closeWorkspaceDialog();
+      return;
+    }
+    try {
+      await invoke("unregister_workspace_root", { rootId: dialog.rootId });
+      invalidateWorkspaceCache(dialog.rootId);
+      workspaceDialog = null;
+      workspaceNotice = null;
+      workspaceDialogFocusSession.clear();
+      selectedWorkspaceNode = removal.neighbor
+        ? { rootId: removal.neighbor.id, relativePath: "" }
+        : null;
+      workspaceTreeFocus = selectedWorkspaceNode;
+      pendingFocusKey = removal.neighbor
+        ? {
+            kind: "workspace-node",
+            rootId: removal.neighbor.id,
+            relativePath: "",
+          }
+        : { kind: "title-action", action: "add-workspace-root" };
+      workspaceController.unregisterRoot(dialog.rootId);
+      render();
+    } catch (error) {
+      recordDiagnosticError("unregister-workspace-root", error);
+      workspaceNotice = workspaceInvokeError(error);
+      closeWorkspaceDialog();
+    }
+    return;
+  }
   if (dialog.kind === "confirm-trash") {
     try {
       const mutation = await invoke<WorkspaceMutation>("trash_workspace_item", {
@@ -4643,10 +4726,14 @@ function renderLoading(container: HTMLElement, tab: PreviewTab): void {
 
 function renderError(container: HTMLElement, tab: PreviewTab): void {
   if (tab.status !== "error") return;
+  const revealPath = tab.canonicalPath ?? tab.requestedPath;
+  if (revealPath && !revealTargets.result(revealPath)) {
+    void revealTargets.ensure(revealPath);
+  }
   const model = buildActionableState({
     kind: "preview-error",
     code: tab.code,
-    canReveal: Boolean(tab.canonicalPath ?? tab.requestedPath),
+    canReveal: Boolean(revealPath && revealTargets.isAvailable(revealPath)),
   });
   container.innerHTML = `
     <section class="error-state ${UI.centeredState}">
@@ -4670,6 +4757,7 @@ function renderError(container: HTMLElement, tab: PreviewTab): void {
     button.addEventListener("click", () => {
       switch (button.dataset.errorAction) {
         case "retry":
+          revealTargets.invalidate(revealPath);
           void reloadActiveDocument();
           break;
         case "reveal":
@@ -4687,6 +4775,15 @@ function renderError(container: HTMLElement, tab: PreviewTab): void {
 }
 
 async function revealActionablePath(path: string): Promise<void> {
+  const probe = await revealTargets.revalidate(path);
+  if (probe.status !== "available") {
+    showGlobalNotice("This item is no longer available in Finder.", {
+      title: "Reveal unavailable.",
+      dismissTitle: "Dismiss reveal notice",
+    });
+    render();
+    return;
+  }
   try {
     await revealItemInDir(path);
   } catch (error) {

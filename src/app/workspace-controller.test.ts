@@ -43,10 +43,13 @@ describe("workspace controller", () => {
   });
 
   it("unregisters a root without touching other expansion maps", () => {
+    const tabs = [{ kind: "settings" as const, key: "settings" as const }];
     const { runtime } = createFakeRuntime({
       ...DEFAULT_STATE,
       workspaceRoots: roots,
       expandedWorkspacePaths: { a: ["guides"], b: ["daily"] },
+      tabs,
+      activeTabKey: "settings",
     });
     const controller = createWorkspaceController(runtime);
     controller.unregisterRoot("a");
@@ -55,6 +58,8 @@ describe("workspace controller", () => {
       "c",
     ]);
     expect(runtime.getState().expandedWorkspacePaths).toEqual({ b: ["daily"] });
+    expect(runtime.getState().tabs).toEqual(tabs);
+    expect(runtime.getState().activeTabKey).toBe("settings");
   });
 
   it("owns shared child loads, caching, and native cancellation", async () => {

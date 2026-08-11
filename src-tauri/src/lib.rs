@@ -2,6 +2,7 @@ mod diagnostics;
 mod document;
 mod external_apps;
 mod printing;
+mod reveal;
 mod tasks;
 mod workspace;
 
@@ -18,6 +19,7 @@ use external_apps::{ExternalAppsState, list_external_open_targets, open_external
 use printing::{
     finish_print_export, mark_print_export_ready, print_export_html, start_print_export,
 };
+use reveal::probe_reveal_target;
 use tasks::{BackgroundTaskRegistry, cancel_background_task};
 use tauri::{
     AppHandle, Emitter, Manager, RunEvent, State,
@@ -507,7 +509,8 @@ pub fn run() {
             get_diagnostics_environment,
             cancel_background_task,
             list_external_open_targets,
-            open_external_target
+            open_external_target,
+            probe_reveal_target
         ]);
 
     let app = builder

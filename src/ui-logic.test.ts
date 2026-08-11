@@ -87,6 +87,16 @@ describe("quick switcher", () => {
       "Some pinned folders were unavailable",
       "Some pinned folders are capped — use a narrower query to reveal more matches",
     ]);
+    expect(
+      workspaceIndexNotices(
+        {
+          entries: [],
+          unavailableRootIds: ["missing"],
+          truncatedRootIds: ["large"],
+        },
+        { includeTruncation: false },
+      ),
+    ).toEqual(["Some pinned folders were unavailable"]);
   });
 
   const tabs: AppTab[] = [

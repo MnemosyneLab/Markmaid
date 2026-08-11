@@ -24,6 +24,29 @@ export interface QuickSwitcherModel {
   indexing: boolean;
   index: WorkspaceMarkdownIndex | null;
   indexError: string | null;
+  partialResultsAcknowledged: boolean;
+}
+
+export function acknowledgeQuickSwitcherPartialResults(
+  model: QuickSwitcherModel,
+): void {
+  model.partialResultsAcknowledged = true;
+}
+
+export function resetQuickSwitcherPartialResults(
+  model: QuickSwitcherModel,
+): void {
+  model.partialResultsAcknowledged = false;
+}
+
+export function updateQuickSwitcherQuery(
+  model: QuickSwitcherModel,
+  query: string,
+): void {
+  model.query = query;
+  model.activeIndex = 0;
+  model.activeItemId = null;
+  resetQuickSwitcherPartialResults(model);
 }
 
 export interface OverlayController<TMatch = unknown> {
@@ -94,6 +117,7 @@ export function createOverlayController<TMatch = unknown>(
     indexing: false,
     index: null,
     indexError: null,
+    partialResultsAcknowledged: false,
   };
 
   function dismissQuickSwitcher(): void {
@@ -150,6 +174,7 @@ export function createOverlayController<TMatch = unknown>(
       quickSwitcher.activeItemId = null;
       quickSwitcher.index = null;
       quickSwitcher.indexError = null;
+      resetQuickSwitcherPartialResults(quickSwitcher);
       quickSwitcher.indexing = deps.hasWorkspaceRoots();
       const requestId = ++quickSwitcher.indexRequestId;
       if (!replacingOverlay) focusSession.capture();

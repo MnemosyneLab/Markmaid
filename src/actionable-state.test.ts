@@ -23,12 +23,20 @@ describe("actionable states", () => {
   });
 
   it("only offers Remove Root for an empty workspace root", () => {
-    expect(ids({ kind: "empty-workspace", isRoot: true })).toContain(
+    expect(
+      ids({ kind: "empty-workspace", isRoot: true, canReveal: true }),
+    ).toContain(
       "remove-root",
     );
-    expect(ids({ kind: "empty-workspace", isRoot: false })).not.toContain(
-      "remove-root",
-    );
+    expect(
+      ids({ kind: "empty-workspace", isRoot: false, canReveal: true }),
+    ).not.toContain("remove-root");
+  });
+
+  it("hides workspace reveal until the target has been probed", () => {
+    expect(
+      ids({ kind: "empty-workspace", isRoot: true, canReveal: false }),
+    ).toEqual(["refresh", "remove-root"]);
   });
 
   it("covers common workspace, preview, quick-open, export, and external failures", () => {
@@ -48,6 +56,7 @@ describe("actionable states", () => {
       "copy-details",
     ]);
     expect(ids({ kind: "quick-open-truncated" })).toEqual([
+      "continue-partial-results",
       "refresh",
       "copy-details",
     ]);

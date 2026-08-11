@@ -97,10 +97,15 @@ In the Command Palette: type to filter app commands; `↑` / `↓`, Home, and En
 move selection; Enter runs the selected command; and Esc closes it. Focus Mode
 hides tabs, sidebars, the outline, ordinary titlebar actions, and the normal
 status bar without changing their saved preferences. Use `⇧⌘F`, Esc after
-closing higher-priority overlays, or the visible Exit Focus Mode button to leave.
+closing higher-priority overlays, or the contextual Exit Focus Mode button to
+leave. The Exit control appears when keyboard-focused or when the pointer enters
+the titlebar.
 
 The external-application chooser reads the current macOS handlers only when
-needed and keeps discovered apps/icons in memory. It persists only a bounded
+needed, delays its loading message to avoid flashing, and exposes Retry after a
+bounded timeout. Supported terminal destinations must also be registered by
+Launch Services for the containing directory. The chooser keeps discovered
+apps/icons in memory and persists only a bounded
 opaque target ID; application paths, installed-app inventory, icons, file
 contents, and launch errors are not stored or added to diagnostics.
 

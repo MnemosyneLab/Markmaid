@@ -79,6 +79,9 @@ describe("command palette controller", () => {
 
     expect(harness.dismissCompetingOverlays).toHaveBeenCalledOnce();
     expect(harness.capture).toHaveBeenCalledOnce();
+    expect(
+      harness.dismissCompetingOverlays.mock.invocationCallOrder[0] ?? 0,
+    ).toBeLessThan(harness.capture.mock.invocationCallOrder[0] ?? 0);
     expect(harness.controller.model).toMatchObject({
       visible: true,
       query: "",

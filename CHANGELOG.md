@@ -25,6 +25,12 @@ All notable changes to MarkMaid are documented in this file.
   layout does not rerender the active Markdown document
 - Surface Quick Open index, export, workspace listing, preview, and external
   handoff recovery through shared typed action models
+- Confirm workspace-root removal, capability-check Reveal actions, acknowledge
+  partial Quick Open results per query/index generation, and dismiss media
+  viewers before Command Palette focus capture
+- Delay external discovery feedback until 100 ms and expose recoverable timeout
+  state after 5 seconds; reveal Focus Mode Exit only on titlebar pointer or
+  keyboard focus
 - Run the performance fixture smoke suite in the normal quality gate without
   introducing wall-clock CI thresholds, telemetry, or uploads
 
@@ -33,6 +39,9 @@ All notable changes to MarkMaid are documented in this file.
 - Resolve external applications from native opaque target IDs at execution
   time; reject symlinks, unsupported paths, arbitrary executables, shell
   strings, custom command templates, and stale/uninstalled targets
+- Revalidate canonical path and filesystem identity immediately before external
+  handoff, and expose allowlisted terminals only when Launch Services reports
+  them as containing-directory handlers
 - Persist no application paths, bundle paths, icons, inventory, launch errors,
   Focus Mode state, Command Palette query, or copied issue details
 

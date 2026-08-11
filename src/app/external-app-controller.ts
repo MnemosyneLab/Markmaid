@@ -7,7 +7,10 @@ import type {
 export interface ExternalAppModel {
   visible: boolean;
   path: string | null;
+  /** Whether application discovery is still in flight. */
   loading: boolean;
+  /** Delayed loading presentation, kept separate to avoid flashing fast requests. */
+  loadingVisible: boolean;
   openingTargetId: string | null;
   failedTargetId: string | null;
   targets: readonly ExternalOpenTarget[];
@@ -33,16 +36,37 @@ export interface ExternalAppControllerDeps {
   openTarget: (path: string, targetId: string) => Promise<ExternalOpenResult>;
   render: () => void;
   onError: (code: ExternalOpenErrorCode, error?: unknown) => void;
+  setTimer?: (
+    callback: () => void,
+    delayMs: number,
+  ) => ReturnType<typeof setTimeout>;
+  clearTimer?: (timer: ReturnType<typeof setTimeout>) => void;
+  loadingDelayMs?: number;
+  discoveryDeadlineMs?: number;
 }
+
+const DEFAULT_LOADING_DELAY_MS = 100;
+const DEFAULT_DISCOVERY_DEADLINE_MS = 5_000;
+
+type DiscoveryOutcome =
+  | { status: "loaded"; targets: ExternalOpenTarget[] }
+  | { status: "failed"; error: unknown }
+  | { status: "timeout" };
 
 export function createExternalAppController(
   deps: ExternalAppControllerDeps,
 ): ExternalAppController {
   let generation = 0;
+  const setTimer = deps.setTimer ?? globalThis.setTimeout;
+  const clearTimer = deps.clearTimer ?? globalThis.clearTimeout;
+  const loadingDelayMs = deps.loadingDelayMs ?? DEFAULT_LOADING_DELAY_MS;
+  const discoveryDeadlineMs =
+    deps.discoveryDeadlineMs ?? DEFAULT_DISCOVERY_DEADLINE_MS;
   const model: ExternalAppModel = {
     visible: false,
     path: null,
     loading: false,
+    loadingVisible: false,
     openingTargetId: null,
     failedTargetId: null,
     targets: [],
@@ -54,6 +78,7 @@ export function createExternalAppController(
     model.visible = false;
     model.path = path;
     model.loading = false;
+    model.loadingVisible = false;
     model.openingTargetId = null;
     model.failedTargetId = null;
     model.targets = [];
@@ -64,24 +89,63 @@ export function createExternalAppController(
     const token = ++generation;
     model.path = path;
     model.loading = true;
+    model.loadingVisible = false;
     model.errorCode = null;
     deps.render();
-    try {
-      const targets = await deps.listTargets(path);
-      if (token !== generation || model.path !== path) return false;
-      model.targets = targets;
-      model.loading = false;
+
+    const loadingTimer = setTimer(() => {
+      if (token !== generation || model.path !== path || !model.loading) return;
+      model.loadingVisible = true;
+      deps.render();
+    }, loadingDelayMs);
+
+    let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
+    const outcome = await new Promise<DiscoveryOutcome>((resolve) => {
+      let settled = false;
+      const finish = (result: DiscoveryOutcome) => {
+        if (settled) return;
+        settled = true;
+        resolve(result);
+      };
+      deadlineTimer = setTimer(
+        () => finish({ status: "timeout" }),
+        discoveryDeadlineMs,
+      );
+      void Promise.resolve()
+        .then(() => deps.listTargets(path))
+        .then(
+          (targets) => finish({ status: "loaded", targets }),
+          (error: unknown) => finish({ status: "failed", error }),
+        );
+    });
+
+    clearTimer(loadingTimer);
+    if (deadlineTimer !== null) clearTimer(deadlineTimer);
+    if (token !== generation || model.path !== path) return false;
+    model.loading = false;
+    model.loadingVisible = false;
+    model.targets = [];
+
+    if (outcome.status === "loaded") {
+      model.targets = outcome.targets;
       deps.render();
       return true;
-    } catch (error) {
-      if (token !== generation || model.path !== path) return false;
-      model.targets = [];
-      model.loading = false;
-      model.errorCode = "file_unavailable";
-      deps.onError("file_unavailable", error);
+    }
+
+    if (outcome.status === "timeout") {
+      // Invalidate this request before reporting the timeout so any late result
+      // or rejection remains observationally inert.
+      generation += 1;
+      model.errorCode = "discovery_timeout";
+      deps.onError("discovery_timeout");
       deps.render();
       return false;
     }
+
+    model.errorCode = "file_unavailable";
+    deps.onError("file_unavailable", outcome.error);
+    deps.render();
+    return false;
   }
 
   async function openTarget(path: string, targetId: string): Promise<boolean> {
@@ -156,7 +220,8 @@ export function createExternalAppController(
 
       if (
         previousError === "target_unavailable" ||
-        previousError === "file_unavailable"
+        previousError === "file_unavailable" ||
+        previousError === "discovery_timeout"
       ) {
         model.targets = [];
         if (!(await load(path))) {

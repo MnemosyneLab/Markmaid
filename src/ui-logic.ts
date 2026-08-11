@@ -31,13 +31,19 @@ export interface QuickSwitcherBuildResult {
   truncated: boolean;
 }
 
-export function workspaceIndexNotices(index: WorkspaceMarkdownIndex | null): string[] {
+export function workspaceIndexNotices(
+  index: WorkspaceMarkdownIndex | null,
+  options: { includeTruncation?: boolean } = {},
+): string[] {
   if (!index) return [];
   const notices: string[] = [];
   if (index.unavailableRootIds.length > 0) {
     notices.push("Some pinned folders were unavailable");
   }
-  if (index.truncatedRootIds.length > 0) {
+  if (
+    options.includeTruncation !== false &&
+    index.truncatedRootIds.length > 0
+  ) {
     notices.push(
       "Some pinned folders are capped — use a narrower query to reveal more matches",
     );
