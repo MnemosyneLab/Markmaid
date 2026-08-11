@@ -1,8 +1,9 @@
 # MarkMaid Roadmap
 
-Last reviewed: 2026-08-10
+Last reviewed: 2026-08-11
 
-This document tracks candidate work after the v0.1.6 implementation milestone.
+This document tracks candidate work after the published v0.1.6 release and the
+selected scope for v0.1.7.
 It is a prioritization tool,
 not a promise that every item will ship. An item moves into a version plan only
 after its user value, product behavior, safety boundary, and acceptance tests
@@ -32,7 +33,8 @@ release policy until that decision changes.
 | Horizon | Theme | Outcome |
 | --- | --- | --- |
 | v0.1.5 | Released | Hardened preview opening, navigation, workspace bounds, local assets, and printing |
-| v0.1.6 release preparation | Workspace polish and diagnostics | Root reorder, safe diagnostics, cooperative cancellation, shell controllers, and accessible navigation are implemented; release QA remains |
+| v0.1.6 | Released | Root reorder, safe diagnostics, cooperative cancellation, shell controllers, and accessible navigation |
+| v0.1.7 | Planned | Command Palette, Focus Mode, actionable states, external-app handoff, and performance baselines |
 | v0.2 candidate | On-demand knowledge discovery | Search document contents and understand relationships without a background watcher |
 | Later | Reading depth and scale | Better long-document performance, export control, and optional local metadata |
 
@@ -43,31 +45,24 @@ v0.1.5 has been published. Its
 release-preparation record. Post-release regressions still take priority over
 every item below.
 
-## v0.1.6 release preparation — workspace polish and diagnostics
+## v0.1.6 release — workspace polish and diagnostics
 
-The selected implementation scope is documented in the
-[`v0.1.6 plan`](plans/v0.1.6_plan.md). The five promoted items are implemented;
-the mutable [`release checklist`](releases/v0.1.6-checklist.md) tracks manual QA,
-artifacts, and publication without treating them as already complete.
+v0.1.6 has been published. Its selected implementation scope is documented in
+the [`v0.1.6 plan`](plans/v0.1.6_plan.md), and its completed
+[`release checklist`](releases/v0.1.6-checklist.md) remains the historical
+signoff record.
 
-The remaining unchecked items stay deferred. Do not pull them into v0.1.6 during
-release preparation.
+The remaining unchecked items stay deferred unless they are explicitly promoted
+into a later version plan.
 
-### User-facing candidates
+### Remaining user-facing candidates
 
 - [x] **Pinned-folder reorder.** Support keyboard-accessible and pointer-based
   reordering while preserving stable root identity and session restoration.
 - [ ] **Workspace switcher.** Save named sets of pinned folders and switch
   between them without losing the current set accidentally.
-- [ ] **Command palette.** Add one searchable command surface for Open, Quick
-  Open, export, sidebar actions, appearance, and tab commands. Keep `⌘P` focused
-  on files; use a separate shortcut for commands.
 - [ ] **Favorites.** Let users pin frequently read documents independently of
   recents, stored as app metadata without modifying Markdown files.
-- [ ] **Focus mode.** Temporarily hide sidebar, title controls, and status chrome
-  for distraction-free reading, with an obvious reversible shortcut.
-- [ ] **Open in External Editor.** Delegate explicitly to a user-selected app;
-  MarkMaid itself remains read-only.
 
 ### Reliability and usability candidates
 
@@ -84,8 +79,6 @@ release preparation.
 - [ ] **Native interaction smoke harness.** Automate launch, open forwarding,
   session restore, and print-window cleanup where macOS test APIs allow it;
   retain a short manual print-sheet checklist for OS-owned UI.
-- [ ] **Actionable empty/error states.** Standardize Retry, Reveal, Remove Root,
-  and Copy Details actions without exposing broader filesystem access.
 
 ### Engineering checklist
 
@@ -93,11 +86,51 @@ release preparation.
   overlays, export, and persistence controllers with pure state transitions.
 - [ ] Establish a typed frontend/Rust command contract so renamed fields and
   tagged-result variants fail during generation or compilation.
-- [ ] Add performance fixtures for a large Markdown document, a deep workspace,
-  thousands of Markdown paths, many tabs, and multiple Mermaid diagrams.
 - [ ] Record launch, first-preview, Quick Open, render, theme-refresh, and export
   timings locally in development builds; define budgets before optimizing.
 - [ ] Add migration tests for every persisted-session schema change.
+
+## v0.1.7 planned — command and reading workflows
+
+The selected scope and implementation contracts are documented in the
+[`v0.1.7 plan`](plans/v0.1.7_plan.md). This release is deliberately narrower
+than v0.2 discovery: it improves how users invoke existing actions, enter a
+reading-focused layout, recover from failures, hand a document to another macOS
+application, and measure the workloads that will inform future search work.
+
+### Selected user-facing scope
+
+- [ ] **Command Palette.** Add one searchable command surface for Open, Quick
+  Open, export, sidebar actions, appearance, tab commands, Focus Mode, and
+  external handoff. Keep `⌘P` focused on files and use `⌘⇧P` for commands.
+- [ ] **Focus Mode.** Temporarily hide workspace/navigation chrome for
+  distraction-free reading, without persisting or overwriting the user's normal
+  sidebar, outline, or tab preferences.
+- [ ] **Actionable empty/error states.** Standardize Retry, Reveal, Remove Root,
+  Choose Another Application, and privacy-safe Copy Details actions.
+- [ ] **External application selector.** Add a preferred-application split
+  button and chooser for installed Markdown/Mermaid handlers, Finder, and
+  explicitly supported terminal destinations. Persist a stable target ID, not
+  executable or bundle paths.
+
+### Selected engineering scope
+
+- [ ] Add deterministic performance fixtures for a large Markdown document, a
+  deep/noisy workspace, thousands of Markdown paths, many tabs, and multiple
+  Mermaid diagrams.
+- [ ] Add explicit local benchmark/baseline commands and fast structural CI
+  smoke checks without production telemetry or automatic upload.
+- [ ] Add compatibility tests for the optional session-v1 external target
+  preference; Focus Mode and palette state remain runtime-only.
+
+### Deferred from v0.1.7
+
+- Favorites and Workspace Switcher.
+- Full-text search, excerpts, backlinks, broken-link reporting, and cached
+  indexes.
+- Arbitrary external commands, user-authored launch templates, and automatic
+  refresh after external edits.
+- Performance optimization that is not backed by the new reproducible baseline.
 
 ## v0.2 candidate — on-demand knowledge discovery
 
