@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title description">
+  <title id="title">MarkMaid small application icon</title>
+  <desc id="description">A simplified layered reading window whose pages form an M.</desc>
+  <defs>
+    <linearGradient id="background" x1="190" y1="74" x2="834" y2="950" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#343C49"/>
+      <stop offset="0.52" stop-color="#20242A"/>
+      <stop offset="1" stop-color="#151A21"/>
+    </linearGradient>
+    <linearGradient id="blue" x1="194" y1="320" x2="468" y2="802" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#3B8DE0"/>
+      <stop offset="1" stop-color="#1766B4"/>
+    </linearGradient>
+    <linearGradient id="cyan" x1="222" y1="304" x2="480" y2="804" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#48D6E5"/>
+      <stop offset="1" stop-color="#169EB9"/>
+    </linearGradient>
+    <linearGradient id="paper" x1="270" y1="274" x2="424" y2="798" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#DDE6F0"/>
+    </linearGradient>
+    <filter id="shadow" x="100" y="220" width="824" height="660" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="18" stdDeviation="16" flood-color="#050A10" flood-opacity="0.5"/>
+    </filter>
+    <path id="back-left" d="M188 364C188 338 208 324 234 328L438 358C462 362 476 380 476 404V772C476 798 456 812 432 804L214 744C198 740 188 726 188 708V364Z"/>
+    <path id="middle-left" d="M218 334C218 308 238 294 262 302L450 352C470 358 482 374 482 396V778C482 802 462 816 440 806L240 738C226 734 218 720 218 704V334Z"/>
+    <path id="front-left" d="M258 274C246 268 232 270 222 278C212 286 206 298 206 312V702C206 724 218 740 238 748L386 800C402 806 416 794 416 776V526C416 512 426 506 438 516L488 558V438C488 424 480 412 468 404L258 274Z"/>
+  </defs>
+
+  <rect x="52" y="52" width="920" height="920" rx="224" fill="url(#background)"/>
+  <rect x="60" y="60" width="904" height="904" rx="216" fill="none" stroke="#536073" stroke-opacity="0.62" stroke-width="16"/>
+
+  <g filter="url(#shadow)">
+    <path d="M188 364C188 338 208 324 234 328L438 358C462 362 476 380 476 404V772C476 798 456 812 432 804L214 744C198 740 188 726 188 708V364Z" fill="url(#blue)"/>
+    <path d="M188 364C188 338 208 324 234 328L438 358C462 362 476 380 476 404V772C476 798 456 812 432 804L214 744C198 740 188 726 188 708V364Z" fill="url(#blue)" transform="translate(1024 0) scale(-1 1)"/>
+    <path d="M218 334C218 308 238 294 262 302L450 352C470 358 482 374 482 396V778C482 802 462 816 440 806L240 738C226 734 218 720 218 704V334Z" fill="url(#cyan)"/>
+    <path d="M218 334C218 308 238 294 262 302L450 352C470 358 482 374 482 396V778C482 802 462 816 440 806L240 738C226 734 218 720 218 704V334Z" fill="url(#cyan)" transform="translate(1024 0) scale(-1 1)"/>
+    <path d="M258 274C246 268 232 270 222 278C212 286 206 298 206 312V702C206 724 218 740 238 748L386 800C402 806 416 794 416 776V526C416 512 426 506 438 516L488 558V438C488 424 480 412 468 404L258 274Z" fill="url(#paper)" stroke="#F4F8FA" stroke-width="10" stroke-linejoin="round"/>
+    <path d="M258 274C246 268 232 270 222 278C212 286 206 298 206 312V702C206 724 218 740 238 748L386 800C402 806 416 794 416 776V526C416 512 426 506 438 516L488 558V438C488 424 480 412 468 404L258 274Z" fill="url(#paper)" stroke="#F4F8FA" stroke-width="10" stroke-linejoin="round" transform="translate(1024 0) scale(-1 1)"/>
+  </g>
+</svg>

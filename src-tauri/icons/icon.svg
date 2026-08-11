@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title description">
+  <title id="title">MarkMaid application icon</title>
+  <desc id="description">A layered reading window whose pages form an M, with document and flowchart details.</desc>
+  <defs>
+    <linearGradient id="background" x1="196" y1="92" x2="828" y2="948" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#343C49"/>
+      <stop offset="0.52" stop-color="#20242A"/>
+      <stop offset="1" stop-color="#151A21"/>
+    </linearGradient>
+    <linearGradient id="background-edge" x1="512" y1="52" x2="512" y2="972" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#647084" stop-opacity="0.72"/>
+      <stop offset="0.22" stop-color="#3A4351" stop-opacity="0.38"/>
+      <stop offset="0.78" stop-color="#11161C" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#090D12" stop-opacity="0.72"/>
+    </linearGradient>
+    <linearGradient id="blue-page" x1="188" y1="322" x2="474" y2="798" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#3B8DE0"/>
+      <stop offset="0.58" stop-color="#2878C8"/>
+      <stop offset="1" stop-color="#1766B4"/>
+    </linearGradient>
+    <linearGradient id="cyan-page" x1="214" y1="304" x2="480" y2="784" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#48D6E5"/>
+      <stop offset="0.48" stop-color="#2CBED2"/>
+      <stop offset="1" stop-color="#169EB9"/>
+    </linearGradient>
+    <linearGradient id="front-page" x1="292" y1="284" x2="448" y2="786" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="0.55" stop-color="#F4F8FA"/>
+      <stop offset="1" stop-color="#DDE6F0"/>
+    </linearGradient>
+    <linearGradient id="front-edge" x1="310" y1="272" x2="426" y2="802" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="0.62" stop-color="#D7E1EC"/>
+      <stop offset="1" stop-color="#AEBFD2"/>
+    </linearGradient>
+    <linearGradient id="focus-line" x1="270" y1="0" x2="410" y2="0" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2878C8"/>
+      <stop offset="1" stop-color="#2CBED2"/>
+    </linearGradient>
+    <filter id="base-shadow" x="0" y="0" width="1024" height="1024" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="24" stdDeviation="24" flood-color="#03070C" flood-opacity="0.42"/>
+    </filter>
+    <filter id="page-shadow" x="140" y="228" width="744" height="628" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="18" stdDeviation="15" flood-color="#050A10" flood-opacity="0.46"/>
+    </filter>
+    <filter id="detail-shadow" x="-30%" y="-30%" width="160%" height="160%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#FFFFFF" flood-opacity="0.65"/>
+    </filter>
+    <path id="blue-left" d="M190 368C190 344 208 328 232 330L436 358C460 362 474 378 474 402V768C474 794 456 808 432 802L216 746C200 742 190 728 190 710V368Z"/>
+    <path id="cyan-left" d="M218 334C218 310 238 296 260 302L450 352C468 358 480 374 480 394V776C480 798 462 812 440 804L240 738C226 732 218 720 218 704V334Z"/>
+    <path id="front-left" d="M258 274C246 268 232 270 222 278C212 286 206 298 206 312V702C206 724 218 740 238 748L386 800C402 806 416 794 416 776V526C416 512 426 506 438 516L488 558V438C488 424 480 412 468 404L258 274Z"/>
+    <clipPath id="clip-left">
+      <path d="M258 274C246 268 232 270 222 278C212 286 206 298 206 312V702C206 724 218 740 238 748L386 800C402 806 416 794 416 776V526C416 512 426 506 438 516L488 558V438C488 424 480 412 468 404L258 274Z"/>
+    </clipPath>
+  </defs>
+
+  <g filter="url(#base-shadow)">
+    <rect x="52" y="52" width="920" height="920" rx="224" fill="url(#background)"/>
+    <rect x="58" y="58" width="908" height="908" rx="218" fill="none" stroke="url(#background-edge)" stroke-width="12"/>
+    <path d="M178 136C260 84 764 84 846 136" fill="none" stroke="#FFFFFF" stroke-opacity="0.1" stroke-width="8" stroke-linecap="round"/>
+  </g>
+
+  <g filter="url(#page-shadow)">
+    <path d="M190 368C190 344 208 328 232 330L436 358C460 362 474 378 474 402V768C474 794 456 808 432 802L216 746C200 742 190 728 190 710V368Z" fill="url(#blue-page)"/>
+    <path d="M190 368C190 344 208 328 232 330L436 358C460 362 474 378 474 402V768C474 794 456 808 432 802L216 746C200 742 190 728 190 710V368Z" fill="url(#blue-page)" transform="translate(1024 0) scale(-1 1)"/>
+    <path d="M218 334C218 310 238 296 260 302L450 352C468 358 480 374 480 394V776C480 798 462 812 440 804L240 738C226 732 218 720 218 704V334Z" fill="url(#cyan-page)"/>
+    <path d="M218 334C218 310 238 296 260 302L450 352C468 358 480 374 480 394V776C480 798 462 812 440 804L240 738C226 732 218 720 218 704V334Z" fill="url(#cyan-page)" transform="translate(1024 0) scale(-1 1)"/>
+
+    <path d="M258 274C246 268 232 270 222 278C212 286 206 298 206 312V702C206 724 218 740 238 748L386 800C402 806 416 794 416 776V526C416 512 426 506 438 516L488 558V438C488 424 480 412 468 404L258 274Z" fill="url(#front-page)" stroke="url(#front-edge)" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M258 274C246 268 232 270 222 278C212 286 206 298 206 312V702C206 724 218 740 238 748L386 800C402 806 416 794 416 776V526C416 512 426 506 438 516L488 558V438C488 424 480 412 468 404L258 274Z" fill="url(#front-page)" stroke="url(#front-edge)" stroke-width="7" stroke-linejoin="round" transform="translate(1024 0) scale(-1 1)"/>
+  </g>
+
+  <g clip-path="url(#clip-left)" opacity="0.68">
+    <circle cx="264" cy="392" r="8" fill="#8A9BB0"/>
+    <circle cx="292" cy="392" r="8" fill="#8A9BB0"/>
+    <circle cx="320" cy="392" r="8" fill="#8A9BB0"/>
+    <rect x="260" y="438" width="148" height="14" rx="7" fill="url(#focus-line)"/>
+    <rect x="260" y="478" width="168" height="11" rx="5.5" fill="#8193A9"/>
+    <rect x="260" y="508" width="146" height="11" rx="5.5" fill="#94A4B7"/>
+    <rect x="260" y="538" width="116" height="11" rx="5.5" fill="#A5B3C3"/>
+    <circle cx="267" cy="590" r="7" fill="#8193A9"/>
+    <rect x="288" y="584" width="112" height="12" rx="6" fill="#8C9DB1"/>
+    <circle cx="267" cy="620" r="7" fill="#8193A9"/>
+    <rect x="288" y="614" width="88" height="12" rx="6" fill="#9AABBC"/>
+    <rect x="250" y="666" width="166" height="74" rx="16" fill="#BFCBDA" fill-opacity="0.42"/>
+    <rect x="270" y="686" width="114" height="10" rx="5" fill="#8EA0B4"/>
+    <rect x="270" y="710" width="84" height="10" rx="5" fill="#A0AFC0"/>
+  </g>
+
+  <g transform="translate(512 0)" opacity="0.72" filter="url(#detail-shadow)" stroke-linecap="round" stroke-linejoin="round">
+    <g transform="translate(80 0)">
+      <path d="M94 458V494M94 550V584M94 584H34V620M94 584H154V620M94 676V708" fill="none" stroke="#607A9B" stroke-width="9"/>
+      <rect x="46" y="418" width="96" height="42" rx="11" fill="#75A4E7" stroke="#2878C8" stroke-width="7"/>
+      <path d="M94 494L132 532L94 570L56 532L94 494Z" fill="#9FC5EB" stroke="#4B8ED2" stroke-width="7"/>
+      <rect x="0" y="618" width="72" height="44" rx="10" fill="#8DA8E7" stroke="#4F73CE" stroke-width="7"/>
+      <rect x="116" y="618" width="76" height="44" rx="10" fill="#8DA8E7" stroke="#4F73CE" stroke-width="7"/>
+      <rect x="48" y="706" width="94" height="44" rx="10" fill="#7CC8D1" stroke="#2CA6B7" stroke-width="7"/>
+    </g>
+  </g>
+
+  <path d="M512 410V786" stroke="#F4F8FA" stroke-opacity="0.22" stroke-width="5" stroke-linecap="round"/>
+</svg>

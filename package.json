@@ -19,6 +19,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "check": "./scripts/check.sh",
+    "icons:generate": "./scripts/generate-icons.sh",
     "test": "vitest run",
     "test:watch": "vitest",
     "preview": "vite preview",
