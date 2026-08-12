@@ -1,9 +1,10 @@
 # MarkMaid Roadmap
 
-Last reviewed: 2026-08-11
+Last reviewed: 2026-08-12
 
-This document tracks candidate work after the published v0.1.6 release and the
-selected scope for v0.1.7.
+This document tracks candidate work after the published v0.1.7 release and the
+selected scopes for v0.1.8 (engineering foundation) and v0.1.9 (reading
+continuity and localization).
 It is a prioritization tool,
 not a promise that every item will ship. An item moves into a version plan only
 after its user value, product behavior, safety boundary, and acceptance tests
@@ -34,9 +35,11 @@ release policy until that decision changes.
 | --- | --- | --- |
 | v0.1.5 | Released | Hardened preview opening, navigation, workspace bounds, local assets, and printing |
 | v0.1.6 | Released | Root reorder, safe diagnostics, cooperative cancellation, shell controllers, and accessible navigation |
-| v0.1.7 | Implementation complete; QA pending | Command Palette, Focus Mode, actionable states, external-app handoff, and performance baselines |
+| v0.1.7 | Released | Command Palette, Focus Mode, actionable states, external-app handoff, and performance baselines |
+| v0.1.8 | Planned — engineering foundation | Typed frontend↔Rust IPC, session migration tests, continued `main.ts` shell split |
+| v0.1.9 | Planned — continuity and localization | Favorites, sidecar bookmarks/highlights/notes, bounded reading history, Chinese UI |
 | v0.2 candidate | On-demand knowledge discovery | Search document contents and understand relationships without a background watcher |
-| Later | Reading depth and scale | Better long-document performance, export control, and optional local metadata |
+| Later | Reading depth and scale | Better long-document performance, export control, and remaining local metadata |
 
 ## v0.1.5 release
 
@@ -61,8 +64,9 @@ into a later version plan.
   reordering while preserving stable root identity and session restoration.
 - [ ] **Workspace switcher.** Save named sets of pinned folders and switch
   between them without losing the current set accidentally.
-- [ ] **Favorites.** Let users pin frequently read documents independently of
-  recents, stored as app metadata without modifying Markdown files.
+- [~] **Favorites.** Promoted to
+  [`v0.1.9`](plans/v0.1.9_plan.md) (with Quick Open and Command Palette
+  integration).
 
 ### Reliability and usability candidates
 
@@ -84,19 +88,21 @@ into a later version plan.
 
 - [x] Split the large frontend shell into preview loading, navigation, workspace,
   overlays, export, and persistence controllers with pure state transitions.
-- [ ] Establish a typed frontend/Rust command contract so renamed fields and
-  tagged-result variants fail during generation or compilation.
+- [~] **Typed frontend/Rust command contract.** Promoted to
+  [`v0.1.8`](plans/v0.1.8_plan.md).
 - [ ] Record launch, first-preview, Quick Open, render, theme-refresh, and export
   timings locally in development builds; define budgets before optimizing.
-- [ ] Add migration tests for every persisted-session schema change.
+- [~] **Session migration tests.** Promoted to
+  [`v0.1.8`](plans/v0.1.8_plan.md).
 
-## v0.1.7 in progress — command and reading workflows
+## v0.1.7 release — command and reading workflows
 
-The selected scope and implementation contracts are documented in the
-[`v0.1.7 plan`](plans/v0.1.7_plan.md). This release is deliberately narrower
-than v0.2 discovery: it improves how users invoke existing actions, enter a
-reading-focused layout, recover from failures, hand a document to another macOS
-application, and measure the workloads that will inform future search work.
+v0.1.7 has been published. The selected scope and implementation contracts are
+documented in the [`v0.1.7 plan`](plans/v0.1.7_plan.md). This release was
+deliberately narrower than v0.2 discovery: it improved how users invoke
+existing actions, enter a reading-focused layout, recover from failures, hand a
+document to another macOS application, and measure the workloads that will
+inform future search work.
 
 ### Selected user-facing scope
 
@@ -125,12 +131,63 @@ application, and measure the workloads that will inform future search work.
 
 ### Deferred from v0.1.7
 
-- Favorites and Workspace Switcher.
+- Favorites (now selected for [`v0.1.9`](plans/v0.1.9_plan.md)) and Workspace
+  Switcher (still later).
 - Full-text search, excerpts, backlinks, broken-link reporting, and cached
   indexes.
 - Arbitrary external commands, user-authored launch templates, and automatic
   refresh after external edits.
 - Performance optimization that is not backed by the new reproducible baseline.
+
+## v0.1.8 planned — engineering foundation
+
+Selected scope is documented in the [`v0.1.8 plan`](plans/v0.1.8_plan.md). This
+release hardens IPC typing, session migration, and shell structure before
+v0.1.9 adds persisted reading metadata.
+
+### Selected engineering scope
+
+- [ ] **Typed frontend ↔ Rust command contract.** Generated or otherwise checked
+  bindings so renamed fields and tagged-result variants fail during generation
+  or compilation.
+- [ ] **Session migration tests.** Explicit `migrateSession` pipeline over the
+  Store's parsed value, with fixtures for invalid values, unknown versions,
+  legacy `version: 1`, optional defaults, and round-trips; malformed Store-file
+  handling remains a separate bootstrap boundary.
+- [ ] **Continued `main.ts` decomposition.** Extract Quick Open UI, Command
+  Palette HTML, workspace tree chrome, and Find UI so the root stays a
+  composition root.
+
+### Explicitly deferred from v0.1.8
+
+- Favorites, bookmarks/highlights/notes, persisted visit history, and UI
+  localization (all selected for v0.1.9).
+- Workspace Switcher, full-text search, and notarization.
+
+## v0.1.9 planned — reading continuity and localization
+
+Selected scope is documented in the [`v0.1.9 plan`](plans/v0.1.9_plan.md). This
+release depends on v0.1.8 foundations and keeps the read-only boundary:
+annotations never write into Markdown source files.
+
+### Selected user-facing scope
+
+- [ ] **Favorites.** Pin documents independently of Recents as app metadata.
+- [ ] **Favorites in Quick Open and Command Palette.** Discover and toggle
+  favorites without a second file-search surface.
+- [ ] **Bookmarks / highlights / notes.** Sidecar metadata with Command Palette
+  actions; stale highlights degrade without rewriting source files.
+- [ ] **Bounded persisted reading history.** Persist the existing 50-entry visit
+  history and 20-entry closed-tab history across restarts.
+- [ ] **Chinese / localized UI.** String catalogs, Settings `uiLocale`
+  preference (`system` / `en` / `zh-Hans`), and English fallback tests.
+
+### Explicitly deferred from v0.1.9
+
+- Workspace Switcher.
+- Full-text search, backlinks, broken-link reports, and wikilinks (v0.2).
+- Writing annotations into Markdown or workspace sidecar files beside sources.
+- Additional locales beyond English and Simplified Chinese.
 
 ## v0.2 candidate — on-demand knowledge discovery
 
@@ -171,16 +228,17 @@ justify a version plan.
 
 ### Reading and organization
 
-- [ ] Persist optional reading positions and global navigation history across
-  sessions with bounded retention and missing-file cleanup.
-- [ ] Add local bookmarks, highlights, and notes as separate app metadata; never
-  inject them into source Markdown without a future explicit editing decision.
+- [~] **Persisted reading history.** Promoted to
+  [`v0.1.9`](plans/v0.1.9_plan.md).
+- [~] **Bookmarks / highlights / notes.** Promoted to
+  [`v0.1.9`](plans/v0.1.9_plan.md) as app sidecar metadata only.
 - [ ] Add a presentation mode for headings, Mermaid diagrams, and images with
   keyboard navigation and no document mutation.
 - [ ] Offer compare-with-disk when a Markdown file changes, followed by the
   existing explicit Reload / Ignore decision.
-- [ ] Add optional Chinese/localized UI after strings are extracted from the
-  rendering code and localization has fallback tests.
+- [~] **Chinese / localized UI.** Promoted to
+  [`v0.1.9`](plans/v0.1.9_plan.md); string extraction is prepared during
+  [`v0.1.8`](plans/v0.1.8_plan.md) shell work where practical.
 
 ### Export
 
