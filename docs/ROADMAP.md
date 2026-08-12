@@ -150,9 +150,10 @@ v0.1.9 adds persisted reading metadata.
 - [ ] **Typed frontend ↔ Rust command contract.** Generated or otherwise checked
   bindings so renamed fields and tagged-result variants fail during generation
   or compilation.
-- [ ] **Session migration tests.** Explicit `migrateSession` pipeline with
-  fixtures for invalid JSON, unknown versions, legacy `version: 1`, optional
-  defaults, and round-trips.
+- [ ] **Session migration tests.** Explicit `migrateSession` pipeline over the
+  Store's parsed value, with fixtures for invalid values, unknown versions,
+  legacy `version: 1`, optional defaults, and round-trips; malformed Store-file
+  handling remains a separate bootstrap boundary.
 - [ ] **Continued `main.ts` decomposition.** Extract Quick Open UI, Command
   Palette HTML, workspace tree chrome, and Find UI so the root stays a
   composition root.
@@ -176,8 +177,8 @@ annotations never write into Markdown source files.
   favorites without a second file-search surface.
 - [ ] **Bookmarks / highlights / notes.** Sidecar metadata with Command Palette
   actions; stale highlights degrade without rewriting source files.
-- [ ] **Bounded persisted reading history.** Persist visit history (and bounded
-  closed-tab history as specified in the plan) across restarts.
+- [ ] **Bounded persisted reading history.** Persist the existing 50-entry visit
+  history and 20-entry closed-tab history across restarts.
 - [ ] **Chinese / localized UI.** String catalogs, Settings `uiLocale`
   preference (`system` / `en` / `zh-Hans`), and English fallback tests.
 
