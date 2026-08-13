@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 
 import {
@@ -8,6 +7,8 @@ import {
 } from "./accessibility";
 import { enhanceCodeBlock } from "./code-block";
 import { icon, renderIcons } from "./icons";
+import { commands } from "./generated/tauri-bindings";
+import { unwrapCommandResult } from "./ipc";
 
 type MermaidAppearance = "light" | "dark";
 const ZOOM_LEVELS = [50, 75, 100, 125, 150, 175, 200, 250, 300] as const;
@@ -386,8 +387,10 @@ async function exportDiagram(svg: SVGElement): Promise<void> {
     : `${selectedPath}.svg`;
   const exportedSvg = svg.cloneNode(true) as SVGElement;
   exportedSvg.removeAttribute("style");
-  await invoke("export_svg", {
-    path,
-    svg: new XMLSerializer().serializeToString(exportedSvg),
-  });
+  unwrapCommandResult(
+    await commands.exportSvg(
+      path,
+      new XMLSerializer().serializeToString(exportedSvg),
+    ),
+  );
 }

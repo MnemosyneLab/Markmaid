@@ -8,6 +8,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use specta::Type;
 use tauri::{AppHandle, Manager, State};
 
 use crate::document::{
@@ -32,7 +33,7 @@ const MAX_IMAGE_PREVIEW_BYTES: u64 = 100 * 1024 * 1024;
 #[derive(Default)]
 pub struct WorkspaceRegistry(Mutex<HashMap<String, PathBuf>>);
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceRoot {
     pub id: String,
@@ -40,7 +41,7 @@ pub struct WorkspaceRoot {
     pub display_name: String,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Type, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum WorkspaceEntryKind {
     Directory,
@@ -49,7 +50,7 @@ pub enum WorkspaceEntryKind {
     Image,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceEntry {
     pub root_id: String,
@@ -65,7 +66,7 @@ pub struct WorkspaceEntry {
     pub has_visible_children: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceMutation {
     pub old_path: String,
@@ -74,14 +75,14 @@ pub struct WorkspaceMutation {
     pub removed_path_prefix: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Type, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum WorkspaceItemKind {
     Markdown,
     Directory,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MermaidPreview {
     pub status: String,
@@ -98,7 +99,7 @@ pub struct MermaidPreview {
     pub message: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ImagePreview {
     pub status: String,
@@ -114,14 +115,14 @@ pub struct ImagePreview {
     pub message: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Type, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviewTaskRequest {
     pub task_id: String,
     pub path: String,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum PreviewTaskOutcome {
     #[serde(rename_all = "camelCase")]
@@ -133,18 +134,16 @@ pub enum PreviewTaskOutcome {
     Cancelled { task_id: String },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PreviewLoadResult {
-    Document {
-        result: DocumentLoadResult,
-    },
-    Mermaid {
-        result: MermaidPreview,
-    },
-    Image {
-        result: ImagePreview,
-    },
+    #[serde(rename_all = "camelCase")]
+    Document { result: DocumentLoadResult },
+    #[serde(rename_all = "camelCase")]
+    Mermaid { result: MermaidPreview },
+    #[serde(rename_all = "camelCase")]
+    Image { result: ImagePreview },
+    #[serde(rename_all = "camelCase")]
     Unsupported {
         requested_path: String,
         display_name: String,
@@ -153,7 +152,7 @@ pub enum PreviewLoadResult {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceMarkdownEntry {
     pub root_id: String,
@@ -162,7 +161,7 @@ pub struct WorkspaceMarkdownEntry {
     pub name: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceMarkdownIndex {
     pub entries: Vec<WorkspaceMarkdownEntry>,
@@ -202,6 +201,7 @@ fn is_cancelled_scan(error: &WorkspaceError) -> bool {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn register_workspace_root(
     registry: State<'_, WorkspaceRegistry>,
     path: String,
@@ -210,6 +210,7 @@ pub fn register_workspace_root(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn unregister_workspace_root(
     registry: State<'_, WorkspaceRegistry>,
     root_id: String,
@@ -220,6 +221,7 @@ pub fn unregister_workspace_root(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn list_workspace_children(
     registry: State<'_, WorkspaceRegistry>,
     task_registry: State<'_, BackgroundTaskRegistry>,
@@ -244,6 +246,7 @@ pub async fn list_workspace_children(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn load_preview_paths(
     app: AppHandle,
     registry: State<'_, WorkspaceRegistry>,
@@ -338,6 +341,7 @@ fn load_preview_paths_inner(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn create_workspace_item(
     registry: State<'_, WorkspaceRegistry>,
     root_id: String,
@@ -350,6 +354,7 @@ pub fn create_workspace_item(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn rename_workspace_item(
     registry: State<'_, WorkspaceRegistry>,
     root_id: String,
@@ -361,6 +366,7 @@ pub fn rename_workspace_item(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn trash_workspace_item(
     registry: State<'_, WorkspaceRegistry>,
     root_id: String,
@@ -371,6 +377,7 @@ pub fn trash_workspace_item(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn index_workspace_markdown(
     registry: State<'_, WorkspaceRegistry>,
     task_registry: State<'_, BackgroundTaskRegistry>,

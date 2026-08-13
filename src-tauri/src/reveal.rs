@@ -1,15 +1,16 @@
 use std::{fs, io, path::Path};
 
 use serde::Serialize;
+use specta::Type;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum RevealProbeStatus {
     Available,
     Unavailable,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum RevealProbeCode {
     Available,
@@ -18,7 +19,7 @@ pub enum RevealProbeCode {
     UnsupportedType,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct RevealProbeResult {
     pub status: RevealProbeStatus,
@@ -42,6 +43,7 @@ impl RevealProbeResult {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn probe_reveal_target(path: String) -> RevealProbeResult {
     probe_reveal_target_path(Path::new(&path))
 }

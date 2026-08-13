@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { DEFAULT_STATE, toPersistedSession } from "../state";
+import { DEFAULT_STATE } from "../state";
 import {
   SESSION_KEY,
   SESSION_PERSIST_DELAY_MS,
+  SESSION_STORE_FAILURE_NOTICE,
   createPersistence,
+  loadSessionForBootstrap,
   loadSessionFromStore,
   sessionSnapshot,
   type SessionStore,
@@ -28,17 +30,81 @@ function memoryStore(
 describe("persistence", () => {
   it("loads a normalized session from the store", async () => {
     const store = memoryStore({
-      [SESSION_KEY]: toPersistedSession({
-        ...DEFAULT_STATE,
+      [SESSION_KEY]: {
+        version: 1,
+        tabs: [],
+        activeTabKey: null,
         theme: "dark",
         recentDocuments: ["/notes/a.md"],
-      }),
+      },
     });
     const state = await loadSessionFromStore(store);
     expect(state.theme).toBe("dark");
     expect(state.recentDocuments).toEqual(["/notes/a.md"]);
     expect(state.closedTabsHistory).toEqual([]);
     expect(state.focusMode).toBe(false);
+  });
+
+  it("propagates store load failures to the bootstrap boundary", async () => {
+    const error = new Error("store unavailable");
+    const store: SessionStore = {
+      async get() {
+        throw error;
+      },
+      async set() {},
+    };
+
+    await expect(loadSessionFromStore(store)).rejects.toBe(error);
+  });
+
+  it.each(["open", "load"] as const)(
+    "reports %s failures without exposing a store or enabling persistence",
+    async (phase) => {
+      const disablePersistence = vi.fn();
+      const openStore = vi.fn(async () => {
+        if (phase === "open") throw new Error("/private/markmaid-state.json");
+        return {
+          async get() {
+            throw new Error("unreadable store");
+          },
+          async set() {},
+        } satisfies SessionStore;
+      });
+
+      const result = await loadSessionForBootstrap(openStore, {
+        disablePersistence,
+      });
+
+      expect(result).toMatchObject({
+        status: "unavailable",
+        phase,
+        state: DEFAULT_STATE,
+        store: null,
+        persistenceEnabled: false,
+        notice: SESSION_STORE_FAILURE_NOTICE,
+      });
+      if (result.status !== "unavailable") {
+        throw new Error("expected an unavailable bootstrap result");
+      }
+      expect(disablePersistence).toHaveBeenCalledOnce();
+      expect(result.notice).not.toContain("private");
+    },
+  );
+
+  it("keeps persistence enabled when Store loading succeeds with an invalid value", async () => {
+    const store = memoryStore({ [SESSION_KEY]: { version: 2 } });
+    const disablePersistence = vi.fn();
+    const result = await loadSessionForBootstrap(async () => store, {
+      disablePersistence,
+    });
+
+    expect(result).toMatchObject({
+      status: "ready",
+      state: DEFAULT_STATE,
+      store,
+      persistenceEnabled: true,
+    });
+    expect(disablePersistence).not.toHaveBeenCalled();
   });
 
   it("does not persist runtime-only Focus Mode state", () => {
@@ -84,6 +150,37 @@ describe("persistence", () => {
     expect((store as ReturnType<typeof memoryStore>).data[SESSION_KEY]).toEqual(
       sessionSnapshot(state),
     );
+  });
+
+  it("cancels pending writes and becomes a no-op after persistence is disabled", async () => {
+    const timers: Array<{ id: number; fn: () => void }> = [];
+    let nextId = 1;
+    const store = memoryStore();
+    const set = vi.spyOn(store, "set");
+    const persistence = createPersistence({
+      getStore: () => store,
+      getState: () => DEFAULT_STATE,
+      syncRecentDocuments: async () => {},
+      syncReopenClosedTabAvailability: async () => {},
+      schedule: (fn) => {
+        const id = nextId++;
+        timers.push({ id, fn });
+        return id;
+      },
+      clearSchedule: (id) => {
+        const index = timers.findIndex((timer) => timer.id === id);
+        if (index >= 0) timers.splice(index, 1);
+      },
+    });
+
+    persistence.schedulePersist();
+    expect(timers).toHaveLength(1);
+    persistence.disablePersistence();
+    expect(timers).toHaveLength(0);
+
+    persistence.schedulePersist();
+    await persistence.persistNow();
+    expect(set).not.toHaveBeenCalled();
   });
 
   it("syncs recent documents and reopen availability from state", async () => {

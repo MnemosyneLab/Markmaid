@@ -1,6 +1,6 @@
 [package]
 name = "markmaid"
-version = "0.1.7"
+version = "0.1.8"
 description = "A native macOS Markdown reader"
 authors = ["Walt Wang"]
 license = "MIT"
@@ -22,6 +22,9 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }
+tauri-specta = { version = "=2.0.0-rc.21", features = ["derive", "typescript"] }
+specta = { version = "=2.0.0-rc.22", features = ["derive", "function"] }
+specta-typescript = "=0.0.9"
 comrak = { version = "0.54", default-features = false, features = ["syntect-onig"] }
 merman = { version = "=0.7.0", features = ["render"] }
 tauri-plugin-opener = "2"

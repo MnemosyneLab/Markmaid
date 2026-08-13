@@ -9,6 +9,7 @@ use std::{
 use std::os::unix::fs::MetadataExt;
 
 use serde::Serialize;
+use specta::Type;
 use tauri::State;
 
 const SYSTEM_DEFAULT_ID: &str = "system:default";
@@ -23,7 +24,7 @@ const MAX_ICON_CACHE_ENTRIES: usize = 32;
 const MARKDOWN_EXTENSIONS: &[&str] = &["md", "markdown", "mdown", "mkd"];
 const MERMAID_EXTENSIONS: &[&str] = &["mmd"];
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum ExternalOpenTargetKind {
     SystemDefault,
@@ -32,7 +33,7 @@ pub enum ExternalOpenTargetKind {
     Terminal,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum ExternalOpenMode {
     File,
@@ -40,7 +41,7 @@ pub enum ExternalOpenMode {
     ContainingDirectory,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ExternalOpenTarget {
     pub id: String,
@@ -51,7 +52,7 @@ pub struct ExternalOpenTarget {
     pub icon_png_base64: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Type)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum ExternalOpenResult {
     #[serde(rename_all = "camelCase")]
@@ -64,7 +65,7 @@ pub enum ExternalOpenResult {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ExternalAppsError {
     pub code: String,
@@ -177,6 +178,7 @@ const TERMINAL_ADAPTERS: &[TerminalAdapter] = &[
 ];
 
 #[tauri::command]
+#[specta::specta]
 pub fn list_external_open_targets(
     path: String,
     state: State<'_, ExternalAppsState>,
@@ -186,6 +188,7 @@ pub fn list_external_open_targets(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn open_external_target(path: String, target_id: String) -> ExternalOpenResult {
     let result = validate_external_document_path(&path)
         .and_then(|document| validate_target_id(&target_id).map(|_| document))

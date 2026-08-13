@@ -1,8 +1,9 @@
-import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import katexCss from "katex/dist/katex.min.css?inline";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { commands } from "./generated/tauri-bindings";
 import { enhanceMath } from "./math";
+import { unwrapCommandResult } from "./ipc";
 import type {
   AppTab,
   ExportConfig,
@@ -202,7 +203,7 @@ async function renderedExportHtml(tab: ReadyDocumentTab): Promise<string> {
 }
 
 export async function printExportHtml(html: string): Promise<void> {
-  await invoke("print_export_html", { html });
+  unwrapCommandResult(await commands.printExportHtml(html));
 }
 
 export async function exportDocument(
@@ -227,7 +228,7 @@ export async function exportDocument(
   const path = selectedPath.toLowerCase().endsWith(".html")
     ? selectedPath
     : `${selectedPath}.html`;
-  await invoke("export_html", { path, html });
+  unwrapCommandResult(await commands.exportHtml(path, html));
 }
 
 function escapeHtml(value: string): string {

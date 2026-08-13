@@ -8,6 +8,7 @@ use std::{
 };
 
 use serde::Serialize;
+use specta::Type;
 use tauri::State;
 
 /// In-memory, process-local registry mapping opaque task IDs to a shared
@@ -125,7 +126,7 @@ impl BackgroundTaskRegistry {
 
 /// A tagged outcome so that a cooperative cancellation is never rendered as
 /// a user-facing error: `cancelled` carries no payload.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum TaskOutcome<T> {
     Completed { result: T },
@@ -133,6 +134,7 @@ pub enum TaskOutcome<T> {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn cancel_background_task(registry: State<'_, BackgroundTaskRegistry>, task_id: String) {
     registry.cancel(&task_id);
 }

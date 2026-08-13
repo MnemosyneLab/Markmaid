@@ -36,7 +36,7 @@ release policy until that decision changes.
 | v0.1.5 | Released | Hardened preview opening, navigation, workspace bounds, local assets, and printing |
 | v0.1.6 | Released | Root reorder, safe diagnostics, cooperative cancellation, shell controllers, and accessible navigation |
 | v0.1.7 | Released | Command Palette, Focus Mode, actionable states, external-app handoff, and performance baselines |
-| v0.1.8 | Planned — engineering foundation | Typed frontend↔Rust IPC, session migration tests, continued `main.ts` shell split |
+| v0.1.8 | Complete — engineering foundation | Typed frontend↔Rust IPC, session migration tests, continued `main.ts` shell split |
 | v0.1.9 | Planned — continuity and localization | Favorites, sidecar bookmarks/highlights/notes, bounded reading history, Chinese UI |
 | v0.2 candidate | On-demand knowledge discovery | Search document contents and understand relationships without a background watcher |
 | Later | Reading depth and scale | Better long-document performance, export control, and remaining local metadata |
@@ -139,24 +139,26 @@ inform future search work.
   refresh after external edits.
 - Performance optimization that is not backed by the new reproducible baseline.
 
-## v0.1.8 planned — engineering foundation
+## v0.1.8 implementation complete — engineering foundation
 
-Selected scope is documented in the [`v0.1.8 plan`](plans/v0.1.8_plan.md). This
-release hardens IPC typing, session migration, and shell structure before
-v0.1.9 adds persisted reading metadata.
+Selected scope is documented in the [`v0.1.8 plan`](plans/v0.1.8_plan.md). The
+engineering work is complete and is ready for the local artifact/signoff steps
+in the [`v0.1.8 release notes`](releases/v0.1.8.md). This release hardens IPC
+typing, session migration, and shell structure before v0.1.9 adds persisted
+reading metadata; it adds no new reading workflow.
 
 ### Selected engineering scope
 
-- [ ] **Typed frontend ↔ Rust command contract.** Generated or otherwise checked
-  bindings so renamed fields and tagged-result variants fail during generation
-  or compilation.
-- [ ] **Session migration tests.** Explicit `migrateSession` pipeline over the
-  Store's parsed value, with fixtures for invalid values, unknown versions,
-  legacy `version: 1`, optional defaults, and round-trips; malformed Store-file
-  handling remains a separate bootstrap boundary.
-- [ ] **Continued `main.ts` decomposition.** Extract Quick Open UI, Command
-  Palette HTML, workspace tree chrome, and Find UI so the root stays a
-  composition root.
+- [x] **Typed frontend ↔ Rust command contract.** Generated bindings cover the
+  single 25-command registry and all 26 frontend call sites, `ipc:check`
+  detects drift, and raw `invoke` is confined to the generated output.
+- [x] **Session migration tests.** The explicit `migrateSession` pipeline covers
+  invalid values, unknown versions, legacy `version: 1`, optional defaults,
+  corrupt tabs, and round-trips; malformed Store-file handling remains a
+  separate bootstrap boundary.
+- [x] **Continued `main.ts` decomposition.** Quick Open, Command Palette,
+  workspace tree, Find, Settings/status, export/sidebar, external-open, and tab
+  interaction views are extracted; the composition root is 3,998 lines.
 
 ### Explicitly deferred from v0.1.8
 

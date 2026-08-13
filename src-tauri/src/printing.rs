@@ -114,6 +114,7 @@ fn finish_print_job(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn print_export_html(app: AppHandle, html: String) -> Result<(), String> {
     let label = format!(
         "{PRINT_WINDOW_PREFIX}{}",
@@ -189,6 +190,7 @@ pub fn print_export_html(app: AppHandle, html: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn mark_print_export_ready(window: WebviewWindow) -> Result<(), String> {
     if !is_print_window(&window) {
         return Err("The print handshake is only available to export windows.".to_string());
@@ -203,6 +205,7 @@ pub fn mark_print_export_ready(window: WebviewWindow) -> Result<(), String> {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn start_print_export(window: WebviewWindow) -> Result<(), String> {
     if !is_print_window(&window) {
         return Err("The native print command is only available to export windows.".to_string());
@@ -227,6 +230,7 @@ pub fn start_print_export(window: WebviewWindow) -> Result<(), String> {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn finish_print_export(
     app: AppHandle,
     window: WebviewWindow,

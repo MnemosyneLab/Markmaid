@@ -1,7 +1,7 @@
 {
   "name": "markmaid",
   "private": true,
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "A focused, read-only Markdown reader for macOS",
   "author": "Walt Wang",
   "license": "MIT",
@@ -19,6 +19,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "check": "./scripts/check.sh",
+    "ipc:generate": "cargo run --manifest-path src-tauri/Cargo.toml --bin export-bindings --",
+    "ipc:check": "cargo run --quiet --manifest-path src-tauri/Cargo.toml --bin export-bindings -- --check",
     "icons:generate": "./scripts/generate-icons.sh",
     "test": "vitest run",
     "test:watch": "vitest",

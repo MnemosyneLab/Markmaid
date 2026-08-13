@@ -1,6 +1,7 @@
 mod diagnostics;
 mod document;
 mod external_apps;
+pub mod ipc;
 mod printing;
 mod reveal;
 mod tasks;
@@ -11,25 +12,14 @@ use std::{
     sync::Mutex,
 };
 
-use diagnostics::get_diagnostics_environment;
-use document::{
-    check_document_revisions, export_html, export_svg, highlight_code_chunk, reload_document,
-};
-use external_apps::{ExternalAppsState, list_external_open_targets, open_external_target};
-use printing::{
-    finish_print_export, mark_print_export_ready, print_export_html, start_print_export,
-};
-use reveal::probe_reveal_target;
-use tasks::{BackgroundTaskRegistry, cancel_background_task};
+use external_apps::ExternalAppsState;
+use ipc::command_builder;
+use tasks::BackgroundTaskRegistry;
 use tauri::{
-    AppHandle, Emitter, Manager, RunEvent, State,
+    AppHandle, Emitter, Manager, RunEvent,
     menu::{AboutMetadata, Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder},
 };
-use workspace::{
-    WorkspaceRegistry, create_workspace_item, index_workspace_markdown, list_workspace_children,
-    load_preview_paths, register_workspace_root, rename_workspace_item, trash_workspace_item,
-    unregister_workspace_root,
-};
+use workspace::WorkspaceRegistry;
 
 const OPEN_FILES_EVENT: &str = "markmaid://open-files";
 const MENU_OPEN_EVENT: &str = "markmaid://menu-open";
@@ -71,38 +61,6 @@ fn about_metadata(icon: Option<tauri::image::Image<'static>>) -> AboutMetadata<'
         icon,
         ..Default::default()
     }
-}
-
-#[tauri::command]
-fn take_pending_open_paths(state: tauri::State<'_, PendingOpenPaths>) -> Vec<String> {
-    std::mem::take(&mut *state.0.lock().expect("pending paths lock poisoned"))
-}
-
-#[tauri::command]
-fn sync_recent_documents(
-    app: AppHandle,
-    state: State<'_, RecentDocuments>,
-    paths: Vec<String>,
-) -> Result<(), String> {
-    *state.0.lock().expect("recent documents lock poisoned") = normalize_recent_documents(paths);
-    let menu = build_menu(&app).map_err(|error| error.to_string())?;
-    app.set_menu(menu).map_err(|error| error.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-fn sync_reopen_closed_tab_availability(
-    app: AppHandle,
-    state: State<'_, ReopenClosedTabAvailability>,
-    available: bool,
-) -> Result<(), String> {
-    *state
-        .0
-        .lock()
-        .expect("reopen closed tab availability lock poisoned") = available;
-    let menu = build_menu(&app).map_err(|error| error.to_string())?;
-    app.set_menu(menu).map_err(|error| error.to_string())?;
-    Ok(())
 }
 
 fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
@@ -450,6 +408,7 @@ fn paths_from_arguments(arguments: &[String], current_directory: &str) -> Vec<St
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let command_builder = command_builder();
     let builder = tauri::Builder::default()
         .manage(PendingOpenPaths::default())
         .manage(RecentDocuments::default())
@@ -485,33 +444,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
-            reload_document,
-            load_preview_paths,
-            check_document_revisions,
-            export_html,
-            export_svg,
-            print_export_html,
-            mark_print_export_ready,
-            start_print_export,
-            finish_print_export,
-            highlight_code_chunk,
-            take_pending_open_paths,
-            sync_recent_documents,
-            sync_reopen_closed_tab_availability,
-            register_workspace_root,
-            unregister_workspace_root,
-            list_workspace_children,
-            create_workspace_item,
-            rename_workspace_item,
-            trash_workspace_item,
-            index_workspace_markdown,
-            get_diagnostics_environment,
-            cancel_background_task,
-            list_external_open_targets,
-            open_external_target,
-            probe_reveal_target
-        ]);
+        .invoke_handler(command_builder.invoke_handler());
 
     let app = builder
         .build(tauri::generate_context!())

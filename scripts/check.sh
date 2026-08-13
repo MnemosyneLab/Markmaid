@@ -8,6 +8,7 @@ REPOSITORY_ROOT="$(cd -- "$SCRIPT_DIRECTORY/.." && pwd)"
 cd "$REPOSITORY_ROOT"
 
 node scripts/version.mjs --check
+pnpm ipc:check
 pnpm test
 pnpm perf:smoke
 pnpm build

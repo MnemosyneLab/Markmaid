@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
-
+import { commands } from "./generated/tauri-bindings";
+import { unwrapCommandResult } from "./ipc";
 import { icon, renderIcons } from "./icons";
 
 export interface CodeBlockEnhancement {
@@ -219,7 +219,7 @@ async function invokeHighlightedChunk(
   language: string,
   source: string,
 ): Promise<string> {
-  return invoke<string>("highlight_code_chunk", { language, source });
+  return unwrapCommandResult(await commands.highlightCodeChunk(language, source));
 }
 
 function escapeHtml(value: string): string {

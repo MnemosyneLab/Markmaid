@@ -1,6 +1,7 @@
 use serde::Serialize;
+use specta::Type;
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DiagnosticsEnvironment {
     pub app_name: String,
@@ -12,6 +13,7 @@ pub struct DiagnosticsEnvironment {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn get_diagnostics_environment() -> DiagnosticsEnvironment {
     DiagnosticsEnvironment {
         app_name: "MarkMaid".to_string(),

@@ -18,6 +18,7 @@ use comrak::{
 use merman::{MermaidConfig, render::HeadlessRenderer};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use specta::Type;
 use tauri::{AppHandle, Manager, State};
 use url::Url;
 
@@ -42,7 +43,7 @@ static SYNTAX_HIGHLIGHTER: LazyLock<SyntectAdapter> = LazyLock::new(|| {
         .build()
 });
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Type, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum MermaidTheme {
     #[default]
@@ -59,7 +60,7 @@ pub enum MermaidTheme {
     ReduxDarkColor,
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Type, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum ColorTheme {
     #[default]
@@ -373,7 +374,7 @@ impl MermaidTheme {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ImageAsset {
     pub token: String,
@@ -381,7 +382,7 @@ pub struct ImageAsset {
     pub path: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq, Eq)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum DocumentLoadResult {
     #[serde(rename_all = "camelCase")]
@@ -546,6 +547,7 @@ impl CodefenceRendererAdapter for LongCodeRenderer<'_> {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn reload_document(
     app: AppHandle,
     registry: State<'_, WorkspaceRegistry>,
@@ -577,7 +579,7 @@ pub async fn reload_document(
     .map_err(|error| format!("Could not reload preview document: {error}"))
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Type, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentRevisionProbe {
     path: String,
@@ -585,7 +587,7 @@ pub struct DocumentRevisionProbe {
     size_bytes: u64,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum DocumentRevisionResult {
     #[serde(rename_all = "camelCase")]
@@ -605,6 +607,7 @@ pub enum DocumentRevisionResult {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn check_document_revisions(
     documents: Vec<DocumentRevisionProbe>,
 ) -> Vec<DocumentRevisionResult> {
@@ -657,6 +660,7 @@ fn check_document_revision(probe: DocumentRevisionProbe) -> DocumentRevisionResu
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn highlight_code_chunk(language: String, source: String) -> Result<String, String> {
     let normalized = language.to_ascii_lowercase();
     let language = normalize_code_language(&normalized);
@@ -668,6 +672,7 @@ pub fn highlight_code_chunk(language: String, source: String) -> Result<String, 
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn export_svg(path: String, svg: String) -> Result<(), String> {
     let path = PathBuf::from(path);
     if !path
@@ -683,6 +688,7 @@ pub fn export_svg(path: String, svg: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn export_html(path: String, html: String) -> Result<(), String> {
     let path = PathBuf::from(path);
     if !path

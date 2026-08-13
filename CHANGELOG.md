@@ -2,6 +2,27 @@
 
 All notable changes to MarkMaid are documented in this file.
 
+## [0.1.8] - 2026-08-12
+
+### Added
+
+- Generated, committed TypeScript bindings for the complete 25-command Rust
+  registry and all 26 frontend call sites, with a deterministic `ipc:check`
+  drift gate
+- A pure version-1 session migration harness with fixture coverage for invalid
+  values, soft defaults, legacy fields, corrupt tabs, and round trips
+- Tested Quick Open, Command Palette, workspace, Find, Settings, status,
+  export, sidebar, external-open, and tab interaction view modules
+
+### Changed
+
+- Route frontend native calls through the generated IPC contract while keeping
+  raw `invoke` confined to generated output
+- Keep Store-open failures at the bootstrap boundary: launch with defaults,
+  show one privacy-safe notice, and disable persistence for that process
+- Reduce `src/main.ts` to a composition root of 4,000 lines or fewer without
+  changing the session-v1 schema or adding a user-facing reading workflow
+
 ## [0.1.7] - 2026-08-11
 
 ### Added
@@ -203,6 +224,7 @@ All notable changes to MarkMaid are documented in this file.
 - Manual reload that preserves the previous preview when reloading fails
 - Local release tooling for version sync, ARM builds, and GitHub Releases
 
+[0.1.8]: https://github.com/Weichen-LF/Markmaid/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/Weichen-LF/Markmaid/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/Weichen-LF/Markmaid/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/Weichen-LF/Markmaid/compare/v0.1.4...v0.1.5

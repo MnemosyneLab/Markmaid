@@ -1,4 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
+import { commands } from "./generated/tauri-bindings";
+import { unwrapCommandResult } from "./ipc";
 
 declare global {
   interface Window {
@@ -23,7 +24,7 @@ async function finishPrint(error: string | null = null): Promise<void> {
   if (interactionTimer !== null) window.clearTimeout(interactionTimer);
   interactionTimer = null;
   try {
-    await invoke("finish_print_export", { error });
+    unwrapCommandResult(await commands.finishPrintExport(error));
   } catch {
     window.close();
   }
@@ -70,7 +71,7 @@ async function beginPrint(): Promise<void> {
       },
       { once: true },
     );
-    await invoke("start_print_export");
+    unwrapCommandResult(await commands.startPrintExport());
   } catch (error) {
     await finishPrint(errorMessage(error));
   }
@@ -96,6 +97,7 @@ window.__MARKMAID_LOAD_PRINT_DOCUMENT__ = (html: string): void => {
   }
 };
 
-void invoke("mark_print_export_ready").catch((error) =>
-  finishPrint(errorMessage(error)),
-);
+void commands
+  .markPrintExportReady()
+  .then(unwrapCommandResult)
+  .catch((error) => finishPrint(errorMessage(error)));

@@ -146,6 +146,16 @@ Run the complete local quality gate:
 pnpm check
 ```
 
+Verify or regenerate the typed Rust command catalog when native IPC changes:
+
+```sh
+pnpm ipc:check
+pnpm ipc:generate
+```
+
+`ipc:generate` is only needed after a Rust command or DTO change; commit the
+resulting `src/generated/tauri-bindings.ts` file.
+
 Generate deterministic scale fixtures, run their structural smoke checks, or
 record local frontend/native release baselines (JSON stays ignored locally):
 
@@ -172,12 +182,16 @@ Future feature and optimization candidates are tracked in
 
 - `src/main.ts`: top-level Tauri composition, native listeners, and shell render
 - `src/app/`: preview, workspace, navigation, overlay, export, persistence,
-  Command Palette, external-app, and runtime controllers
+  typed view modules, Command Palette, external-app, and runtime controllers
+- `src/generated/tauri-bindings.ts`: generated frontend bindings for the Rust
+  command registry; `src/ipc.ts` contains the shared result-unwrapping helper
 - `src/accessibility.ts` / `src/diagnostics.ts` / `src/actionable-state.ts`:
   keyboard/focus utilities and privacy-safe diagnostic/recovery models
 - `src/commands.ts` / `src/focus-mode.ts`: typed app commands and the runtime
   reading-layout model
 - `src/state.ts`: tab, workspace-root, and persisted-session state model
+- `src/session/migrate.ts`: pure session-v1 validation, migration, and
+  serialization boundary
 - `src/workspace.ts` / `src/status.ts` / `src/ui-logic.ts`: workspace helpers, status bar, Quick Open matching
 - `src/search.ts`: source-backed in-document Find matching
 - `src/math.ts`: offline KaTeX math enhancement for Markdown preview

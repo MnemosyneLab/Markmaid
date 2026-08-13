@@ -56,6 +56,23 @@ without an upstream, or commit that has not been pushed to that upstream.
 git push origin main
 ```
 
+Before building, verify the generated frontend ↔ Rust command contract:
+
+```sh
+pnpm ipc:check
+```
+
+When a Rust command, argument, result, or serialized DTO changes, regenerate
+the committed catalog and then rerun the check:
+
+```sh
+pnpm ipc:generate
+pnpm ipc:check
+```
+
+The generated file is `src/generated/tauri-bindings.ts`; do not edit it by
+hand. A raw `invoke(...)` call is expected only inside that generated file.
+
 ## 2. Build and verify local artifacts
 
 ```sh
