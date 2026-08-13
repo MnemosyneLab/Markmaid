@@ -1,10 +1,9 @@
 # MarkMaid Roadmap
 
-Last reviewed: 2026-08-12
+Last reviewed: 2026-08-13
 
-This document tracks candidate work after the published v0.1.7 release and the
-selected scopes for v0.1.8 (engineering foundation) and v0.1.9 (reading
-continuity and localization).
+This document tracks candidate work after the published v0.1.8 release and the
+selected scope for v0.1.9 (reading continuity and localization).
 It is a prioritization tool,
 not a promise that every item will ship. An item moves into a version plan only
 after its user value, product behavior, safety boundary, and acceptance tests
@@ -36,7 +35,7 @@ release policy until that decision changes.
 | v0.1.5 | Released | Hardened preview opening, navigation, workspace bounds, local assets, and printing |
 | v0.1.6 | Released | Root reorder, safe diagnostics, cooperative cancellation, shell controllers, and accessible navigation |
 | v0.1.7 | Released | Command Palette, Focus Mode, actionable states, external-app handoff, and performance baselines |
-| v0.1.8 | Complete — engineering foundation | Typed frontend↔Rust IPC, session migration tests, continued `main.ts` shell split |
+| v0.1.8 | Released — engineering foundation | Typed frontend↔Rust IPC, session migration tests, continued `main.ts` shell split |
 | v0.1.9 | Planned — continuity and localization | Favorites, sidecar bookmarks/highlights/notes, bounded reading history, Chinese UI |
 | v0.2 candidate | On-demand knowledge discovery | Search document contents and understand relationships without a background watcher |
 | Later | Reading depth and scale | Better long-document performance, export control, and remaining local metadata |
@@ -139,13 +138,14 @@ inform future search work.
   refresh after external edits.
 - Performance optimization that is not backed by the new reproducible baseline.
 
-## v0.1.8 implementation complete — engineering foundation
+## v0.1.8 release — engineering foundation
 
-Selected scope is documented in the [`v0.1.8 plan`](plans/v0.1.8_plan.md). The
-engineering work is complete and is ready for the local artifact/signoff steps
-in the [`v0.1.8 release notes`](releases/v0.1.8.md). This release hardens IPC
-typing, session migration, and shell structure before v0.1.9 adds persisted
-reading metadata; it adds no new reading workflow.
+v0.1.8 has been published. Selected scope is documented in the
+[`v0.1.8 plan`](plans/v0.1.8_plan.md), and its completed
+[`release checklist`](releases/v0.1.8-checklist.md) remains the historical
+signoff record. This release hardens IPC typing, session migration, and shell
+structure before v0.1.9 adds persisted reading metadata; it adds no new reading
+workflow.
 
 ### Selected engineering scope
 
