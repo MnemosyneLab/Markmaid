@@ -5,6 +5,8 @@ import {
   SESSION_KEY,
   SESSION_PERSIST_DELAY_MS,
   SESSION_STORE_FAILURE_NOTICE,
+  SESSION_STORE_WRITE_FAILURE_NOTICE,
+  SESSION_STORE_WRITE_FAILURE_NOTICE_OPTIONS,
   createPersistence,
   loadSessionForBootstrap,
   loadSessionFromStore,
@@ -181,6 +183,56 @@ describe("persistence", () => {
     persistence.schedulePersist();
     await persistence.persistNow();
     expect(set).not.toHaveBeenCalled();
+  });
+
+  it("reports a write failure once, cancels pending work, and disables later writes", async () => {
+    const timers: Array<{ id: number; fn: () => void }> = [];
+    let nextId = 1;
+    const set = vi.fn(async () => {
+      throw new Error("/private/session-store-write-failed");
+    });
+    const onPersistenceUnavailable = vi.fn();
+    const persistence = createPersistence({
+      getStore: () => ({
+        async get() {
+          return undefined;
+        },
+        set,
+      }),
+      getState: () => DEFAULT_STATE,
+      syncRecentDocuments: async () => {},
+      syncReopenClosedTabAvailability: async () => {},
+      onPersistenceUnavailable,
+      schedule: (fn) => {
+        const id = nextId++;
+        timers.push({ id, fn });
+        return id;
+      },
+      clearSchedule: (id) => {
+        const index = timers.findIndex((timer) => timer.id === id);
+        if (index >= 0) timers.splice(index, 1);
+      },
+    });
+
+    persistence.schedulePersist();
+    expect(timers).toHaveLength(1);
+
+    await persistence.persistNow();
+
+    expect(timers).toHaveLength(0);
+    expect(set).toHaveBeenCalledOnce();
+    expect(onPersistenceUnavailable).toHaveBeenCalledOnce();
+    expect(onPersistenceUnavailable).toHaveBeenCalledWith(
+      SESSION_STORE_WRITE_FAILURE_NOTICE,
+      SESSION_STORE_WRITE_FAILURE_NOTICE_OPTIONS,
+    );
+    expect(SESSION_STORE_WRITE_FAILURE_NOTICE).not.toContain("private");
+
+    persistence.schedulePersist();
+    await persistence.persistNow();
+    expect(timers).toHaveLength(0);
+    expect(set).toHaveBeenCalledOnce();
+    expect(onPersistenceUnavailable).toHaveBeenCalledOnce();
   });
 
   it("syncs recent documents and reopen availability from state", async () => {

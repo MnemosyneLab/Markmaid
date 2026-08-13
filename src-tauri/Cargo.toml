@@ -10,6 +10,18 @@ edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+# Keep this helper out of src/bin and behind a feature so `tauri build` does
+# not treat it as the app binary. Tauri's bundler scans src/bin on disk and
+# otherwise ships export-bindings as Contents/MacOS instead of markmaid.
+[[bin]]
+name = "export-bindings"
+path = "bin/export-bindings.rs"
+required-features = ["export-bindings"]
+
+[features]
+default = []
+export-bindings = []
+
 [lib]
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.

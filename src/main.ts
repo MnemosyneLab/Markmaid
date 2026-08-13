@@ -514,6 +514,7 @@ let documentFindView: DocumentFindView | null = null;
 const persistence = createPersistence({
   getStore: () => stateStore,
   getState: () => runtime.getState(),
+  onPersistenceUnavailable: (notice, options) => { showGlobalNotice(notice, options); render(); },
   syncRecentDocuments: async (paths) => {
     unwrapCommandResult(await commands.syncRecentDocuments(paths));
   },

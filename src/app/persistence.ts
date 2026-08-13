@@ -37,6 +37,10 @@ export interface PersistenceDeps {
   getState: () => AppState;
   syncRecentDocuments: SyncRecentDocuments;
   syncReopenClosedTabAvailability: SyncReopenClosedTabAvailability;
+  onPersistenceUnavailable?: (
+    notice: string,
+    options: { title: string; dismissTitle: string },
+  ) => void;
   schedule?: (fn: () => void, ms: number) => number;
   clearSchedule?: (id: number) => void;
   delayMs?: number;
@@ -44,6 +48,12 @@ export interface PersistenceDeps {
 
 export const SESSION_STORE_FAILURE_NOTICE =
   "Session storage could not be read; persistence is disabled for this launch.";
+export const SESSION_STORE_WRITE_FAILURE_NOTICE =
+  "Session changes could not be saved; persistence is disabled for this launch.";
+export const SESSION_STORE_WRITE_FAILURE_NOTICE_OPTIONS = {
+  title: "Session changes not saved.",
+  dismissTitle: "Dismiss session persistence notice",
+} as const;
 
 export type SessionBootstrapResult<T extends SessionStore = SessionStore> =
   | {
@@ -101,11 +111,31 @@ export function createPersistence(deps: PersistenceDeps): PersistenceScheduler {
     deps.clearSchedule ?? ((id) => window.clearTimeout(id));
   const delayMs = deps.delayMs ?? SESSION_PERSIST_DELAY_MS;
 
+  function disablePersistence(): void {
+    persistenceEnabled = false;
+    if (persistTimer === null) return;
+    clearSchedule(persistTimer);
+    persistTimer = null;
+  }
+
+  function handlePersistenceFailure(): void {
+    if (!persistenceEnabled) return;
+    disablePersistence();
+    deps.onPersistenceUnavailable?.(
+      SESSION_STORE_WRITE_FAILURE_NOTICE,
+      SESSION_STORE_WRITE_FAILURE_NOTICE_OPTIONS,
+    );
+  }
+
   async function persistNow(): Promise<void> {
     if (!persistenceEnabled) return;
     const store = deps.getStore();
     if (!store) return;
-    await store.set(SESSION_KEY, toPersistedSession(deps.getState()));
+    try {
+      await store.set(SESSION_KEY, toPersistedSession(deps.getState()));
+    } catch {
+      handlePersistenceFailure();
+    }
   }
 
   return {
@@ -126,10 +156,7 @@ export function createPersistence(deps: PersistenceDeps): PersistenceScheduler {
     },
 
     disablePersistence() {
-      persistenceEnabled = false;
-      if (persistTimer === null) return;
-      clearSchedule(persistTimer);
-      persistTimer = null;
+      disablePersistence();
     },
 
     persistNow,
