@@ -9,10 +9,17 @@ export default defineConfig(async () => ({
 
   plugins: [tailwindcss()],
   build: {
+    chunkSizeWarningLimit: 500,
     rollupOptions: {
       input: {
         main: "index.html",
         print: "print.html",
+      },
+      output: {
+        manualChunks(id) {
+          if (id.includes("/node_modules/katex/")) return "katex";
+          return undefined;
+        },
       },
     },
   },

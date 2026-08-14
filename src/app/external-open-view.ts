@@ -5,6 +5,7 @@ import {
   type ExternalOpenTarget,
 } from "../external-apps";
 import { icon, type IconName } from "../icons";
+import { message, type Translator } from "../i18n";
 import type { ExternalAppModel } from "./external-app-controller";
 
 export interface ExternalOpenViewDeps {
@@ -14,6 +15,7 @@ export interface ExternalOpenViewDeps {
   preferredTargetId: string | null;
   escapeHtml: (value: string) => string;
   escapeAttribute: (value: string) => string;
+  translator?: Translator;
   icon?: (name: IconName) => string;
   onOpenPrimary: () => void | Promise<void>;
   onOpenChooser: () => void | Promise<void>;
@@ -33,38 +35,49 @@ const renderIcon = (deps: Pick<ExternalOpenViewDeps, "icon">, name: IconName): s
 export function renderExternalOpenControl(
   deps: Pick<
     ExternalOpenViewDeps,
-    "preferredTarget" | "preferredTargetId" | "escapeAttribute" | "icon"
+    | "preferredTarget"
+    | "preferredTargetId"
+    | "escapeAttribute"
+    | "icon"
+    | "translator"
   >,
 ): string {
   const preferred = deps.preferredTarget;
+  const t = (key: Parameters<typeof message>[0]) => message(key, deps.translator);
   const label = preferred
-    ? externalTargetActionLabel(preferred)
+    ? externalTargetActionLabel(preferred, deps.translator)
     : deps.preferredTargetId
-      ? "Preferred application unavailable; choose another"
-      : "Choose external application";
+      ? t("external.preferredUnavailable")
+      : t("external.chooseApplication");
   const iconMarkup = preferred?.iconPngBase64
     ? `<img class="external-target-icon" src="data:image/png;base64,${deps.escapeAttribute(preferred.iconPngBase64)}" alt="">`
     : renderIcon(deps, preferred?.kind === "finder" ? "folder-open" : "code-2");
-  return `<div class="external-open-split" role="group" aria-label="Open externally">
+  return `<div class="external-open-split" role="group" aria-label="${deps.escapeAttribute(t("external.openExternally"))}">
     <button class="external-open-primary" type="button" data-action="external-open-primary" data-external-open-primary title="${deps.escapeAttribute(label)}" aria-label="${deps.escapeAttribute(label)}">${iconMarkup}</button>
-    <button class="external-open-chevron" type="button" data-action="external-open-chooser" data-external-open-chooser title="Choose external application" aria-label="Choose external application">${renderIcon(deps, "chevron-down")}</button>
+    <button class="external-open-chevron" type="button" data-action="external-open-chooser" data-external-open-chooser title="${deps.escapeAttribute(t("external.chooseApplication"))}" aria-label="${deps.escapeAttribute(t("external.chooseApplication"))}">${renderIcon(deps, "chevron-down")}</button>
   </div>`;
 }
 
 export function renderExternalOpenMenu(
   deps: Pick<
     ExternalOpenViewDeps,
-    "model" | "preferredTargetId" | "escapeHtml" | "escapeAttribute" | "icon"
+    | "model"
+    | "preferredTargetId"
+    | "escapeHtml"
+    | "escapeAttribute"
+    | "icon"
+    | "translator"
   >,
 ): string {
   const { loading, loadingVisible, targets, errorCode, openingTargetId } =
     deps.model;
+  const t = (key: Parameters<typeof message>[0]) => message(key, deps.translator);
   const ordinary = targets.filter((target) => target.kind !== "terminal");
   const terminals = targets.filter((target) => target.kind === "terminal");
   const renderTargets = (items: readonly ExternalOpenTarget[]) =>
     items
       .map((target) => {
-        const targetLabel = externalTargetActionLabel(target);
+        const targetLabel = externalTargetActionLabel(target, deps.translator);
         const targetIcon = target.iconPngBase64
           ? `<img class="external-target-icon" src="data:image/png;base64,${deps.escapeAttribute(target.iconPngBase64)}" alt="">`
           : renderIcon(deps, target.kind === "finder" ? "folder-open" : "code-2");
@@ -83,16 +96,16 @@ export function renderExternalOpenMenu(
           errorCode !== "discovery_timeout" &&
           Boolean(deps.model.path),
         code: errorCode,
-      })
+      }, deps.translator)
     : null;
   return `<div class="external-menu-layer" data-external-menu-backdrop>
-    <section class="external-target-menu" role="menu" aria-label="Open with">
-      ${loadingVisible ? `<p class="external-menu-status">Finding applications…</p>` : ""}
-      ${errorModel ? `<div class="external-menu-error" role="status"><strong>External open failed.</strong><span>${errorCode === "target_unavailable" ? "The preferred application is unavailable." : "Choose an action to recover."}</span><div class="external-menu-error-actions">${errorModel.actions.map((candidate) => `<button type="button" data-external-error-action="${candidate.id}">${candidate.label}</button>`).join("")}</div></div>` : ""}
+    <section class="external-target-menu" role="menu" aria-label="${deps.escapeAttribute(t("external.openWith"))}">
+      ${loadingVisible ? `<p class="external-menu-status">${t("external.findingApplications")}</p>` : ""}
+      ${errorModel ? `<div class="external-menu-error" role="status"><strong>${t("external.openFailed")}</strong><span>${errorCode === "target_unavailable" ? t("external.preferredUnavailableSentence") : t("external.recover")}</span><div class="external-menu-error-actions">${errorModel.actions.map((candidate) => `<button type="button" data-external-error-action="${candidate.id}">${candidate.label}</button>`).join("")}</div></div>` : ""}
       ${!loading && ordinary.length > 0 ? renderTargets(ordinary) : ""}
-      ${!loading && terminals.length > 0 ? `<div class="external-menu-section-label">Terminals</div>${renderTargets(terminals)}` : ""}
-      ${!loading && targets.length === 0 && !errorModel ? `<p class="external-menu-status">No compatible applications found.</p>` : ""}
-      <button class="external-menu-refresh" type="button" data-external-refresh ${loading ? "disabled" : ""}>Refresh Applications</button>
+      ${!loading && terminals.length > 0 ? `<div class="external-menu-section-label">${t("external.terminals")}</div>${renderTargets(terminals)}` : ""}
+      ${!loading && targets.length === 0 && !errorModel ? `<p class="external-menu-status">${t("external.noCompatible")}</p>` : ""}
+      <button class="external-menu-refresh" type="button" data-external-refresh ${loading ? "disabled" : ""}>${t("external.refreshApplications")}</button>
     </section>
   </div>`;
 }
@@ -172,7 +185,7 @@ export function bindExternalOpenMenu(deps: ExternalOpenViewDeps): void {
             canReveal:
               model.errorCode !== "file_unavailable" && Boolean(model.path),
             code: model.errorCode ?? "open_failed",
-          });
+          }, deps.translator);
           deps.onClose();
           await deps.onCopyDetails(detailsModel);
           break;

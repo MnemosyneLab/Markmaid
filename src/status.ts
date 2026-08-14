@@ -6,6 +6,7 @@ import type {
   MermaidTab,
   ThemeMode,
 } from "./types";
+import { message, type MessageKey, type Translator } from "./i18n";
 
 export type StatusAppearance = "light" | "dark";
 
@@ -24,13 +25,13 @@ export interface StatusBarModel {
   alert: StatusBarAlert | null;
 }
 
-const COLOR_THEME_LABELS: Record<ColorTheme, string> = {
-  default: "Default",
-  solarized: "Solarized",
-  nord: "Nord",
-  gruvbox: "Gruvbox",
-  catppuccin: "Catppuccin",
-  "high-contrast": "High Contrast",
+const COLOR_THEME_MESSAGE_KEYS: Record<ColorTheme, MessageKey> = {
+  default: "status.theme.default",
+  solarized: "status.theme.solarized",
+  nord: "status.theme.nord",
+  gruvbox: "status.theme.gruvbox",
+  catppuccin: "status.theme.catppuccin",
+  "high-contrast": "status.theme.highContrast",
 };
 
 export function resolveAppearance(
@@ -44,10 +45,13 @@ export function resolveAppearance(
 export function formatThemeLabel(
   colorTheme: ColorTheme,
   appearance: StatusAppearance,
+  translator?: Translator,
 ): string {
-  const palette =
-    colorTheme === "default" ? "System" : COLOR_THEME_LABELS[colorTheme];
-  const mode = appearance === "dark" ? "Dark" : "Light";
+  const palette = message(COLOR_THEME_MESSAGE_KEYS[colorTheme], translator);
+  const mode = message(
+    appearance === "dark" ? "status.appearance.dark" : "status.appearance.light",
+    translator,
+  );
   return `${palette} · ${mode}`;
 }
 
@@ -97,21 +101,28 @@ export function formatFileSize(bytes: number): string {
   return `${trimTrailingZero(rounded)} ${units[unitIndex]}`;
 }
 
-export function formatModifiedAt(modifiedAtMs: number, now = new Date()): string {
-  if (!Number.isFinite(modifiedAtMs) || modifiedAtMs <= 0) return "Unknown";
+export function formatModifiedAt(
+  modifiedAtMs: number,
+  now = new Date(),
+  translator?: Translator,
+): string {
+  if (!Number.isFinite(modifiedAtMs) || modifiedAtMs <= 0) {
+    return message("status.unknown", translator);
+  }
   const date = new Date(modifiedAtMs);
-  const datePart = new Intl.DateTimeFormat(undefined, {
+  const locale = translator?.locale === "zh-Hans" ? "zh-CN" : undefined;
+  const datePart = new Intl.DateTimeFormat(locale, {
     day: "numeric",
     month: "short",
     year: "numeric",
   }).format(date);
-  const timePart = new Intl.DateTimeFormat(undefined, {
+  const timePart = new Intl.DateTimeFormat(locale, {
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
   }).format(date);
   void now;
-  return `Modified ${datePart}, ${timePart}`;
+  return message("status.modified", translator, { date: datePart, time: timePart });
 }
 
 export function buildStatusBar(
@@ -120,6 +131,7 @@ export function buildStatusBar(
     colorTheme: ColorTheme;
     theme: ThemeMode;
     systemDark: boolean;
+    translator?: Translator;
     loadingLabel?: string;
     externalChange?: {
       kind: "changed" | "unavailable";
@@ -128,11 +140,15 @@ export function buildStatusBar(
   },
 ): StatusBarModel {
   const appearance = resolveAppearance(options.theme, options.systemDark);
-  const themeLabel = formatThemeLabel(options.colorTheme, appearance);
+  const themeLabel = formatThemeLabel(
+    options.colorTheme,
+    appearance,
+    options.translator,
+  );
 
   if (!tab) {
     return {
-      left: "No preview open",
+      left: message("status.noPreview", options.translator),
       right: themeLabel,
       alert: null,
     };
@@ -140,7 +156,7 @@ export function buildStatusBar(
 
   if (tab.kind === "settings") {
     return {
-      left: "Settings",
+      left: message("status.settings", options.translator),
       right: themeLabel,
       alert: null,
     };
@@ -148,7 +164,9 @@ export function buildStatusBar(
 
   if (tab.status === "loading") {
     return {
-      left: `${tab.displayName} · Loading preview…`,
+      left: message("status.loadingPreview", options.translator, {
+        name: tab.displayName,
+      }),
       right: themeLabel,
       alert: null,
     };
@@ -156,45 +174,56 @@ export function buildStatusBar(
 
   if (tab.status === "error") {
     return {
-      left: `Error · ${tab.code}`,
+      left: message("status.error", options.translator, { code: tab.code }),
       right: themeLabel,
       alert: null,
     };
   }
 
   if (tab.kind === "document") {
-    return markdownStatus(tab, themeLabel, options.externalChange ?? null);
+    return markdownStatus(
+      tab,
+      themeLabel,
+      options.externalChange ?? null,
+      options.translator,
+    );
   }
   if (tab.kind === "mermaid") {
-    return mermaidStatus(tab, themeLabel);
+    return mermaidStatus(tab, themeLabel, options.translator);
   }
-  return imageStatus(tab, themeLabel);
+  return imageStatus(tab, themeLabel, options.translator);
 }
 
 function markdownStatus(
   tab: DocumentTab & { status: "ready" },
   themeLabel: string,
   externalChange: { kind: "changed" | "unavailable"; message: string } | null,
+  translator?: Translator,
 ): StatusBarModel {
   const lines = countLines(tab.source);
   const words = countWords(tab.source);
   const characters = countUnicodeCharacters(tab.source);
   return {
-    left: `Markdown Preview · ${formatCount(lines)} lines · ${formatCount(words)} words · ${formatCount(characters)} characters`,
-    right: `${formatFileSize(tab.sizeBytes)} · ${formatModifiedAt(tab.modifiedAtMs)} · ${themeLabel}`,
-    alert: documentAlert(tab, externalChange),
+    left: message("status.markdownPreview", translator, {
+      lines: formatCount(lines, translator),
+      words: formatCount(words, translator),
+      characters: formatCount(characters, translator),
+    }),
+    right: `${formatFileSize(tab.sizeBytes)} · ${formatModifiedAt(tab.modifiedAtMs, new Date(), translator)} · ${themeLabel}`,
+    alert: documentAlert(tab, externalChange, translator),
   };
 }
 
 function documentAlert(
   tab: DocumentTab & { status: "ready" },
   externalChange: { kind: "changed" | "unavailable"; message: string } | null,
+  translator?: Translator,
 ): StatusBarAlert | null {
   if (tab.reloadError) {
     return {
       kind: "reload-error",
-      title: "Reload failed.",
-      detail: `${tab.reloadError} The previous preview is still shown.`,
+      title: message("status.reloadFailed", translator),
+      detail: `${tab.reloadError} ${message("status.previousPreview", translator)}`,
       actions: ["reload"],
     };
   }
@@ -202,46 +231,58 @@ function documentAlert(
   if (externalChange.kind === "changed") {
     return {
       kind: "changed",
-      title: "File changed on disk.",
+      title: message("status.fileChanged", translator),
       detail: stripLeadingSentence(externalChange.message),
       actions: ["reload", "ignore"],
     };
   }
   return {
     kind: "unavailable",
-    title: "File unavailable.",
+    title: message("status.fileUnavailable", translator),
     detail: stripLeadingSentence(externalChange.message),
     actions: ["reload", "ignore"],
   };
 }
 
 function stripLeadingSentence(message: string): string {
-  return message.replace(/^[^.]+\.\s*/, "");
+  return message.replace(/^[^.。]+[.。]\s*/u, "");
 }
 
-function mermaidStatus(tab: MermaidTab & { status: "ready" }, themeLabel: string): StatusBarModel {
+function mermaidStatus(
+  tab: MermaidTab & { status: "ready" },
+  themeLabel: string,
+  translator?: Translator,
+): StatusBarModel {
   const lines = countLines(tab.source);
   const characters = countUnicodeCharacters(tab.source);
   return {
-    left: `Mermaid Preview · ${formatCount(lines)} lines · ${formatCount(characters)} characters`,
-    right: `${formatFileSize(tab.sizeBytes)} · ${formatModifiedAt(tab.modifiedAtMs)} · ${themeLabel}`,
+    left: message("status.mermaidPreview", translator, {
+      lines: formatCount(lines, translator),
+      characters: formatCount(characters, translator),
+    }),
+    right: `${formatFileSize(tab.sizeBytes)} · ${formatModifiedAt(tab.modifiedAtMs, new Date(), translator)} · ${themeLabel}`,
     alert: null,
   };
 }
 
-function imageStatus(tab: ImageTab & { status: "ready" }, themeLabel: string): StatusBarModel {
+function imageStatus(
+  tab: ImageTab & { status: "ready" },
+  themeLabel: string,
+  translator?: Translator,
+): StatusBarModel {
   const dimensions = tab.dimensions
     ? ` · ${tab.dimensions.width}×${tab.dimensions.height}`
     : "";
   return {
-    left: `Image Preview${dimensions}`,
-    right: `${formatFileSize(tab.sizeBytes)} · ${formatModifiedAt(tab.modifiedAtMs)} · ${themeLabel}`,
+    left: message("status.imagePreview", translator, { dimensions }),
+    right: `${formatFileSize(tab.sizeBytes)} · ${formatModifiedAt(tab.modifiedAtMs, new Date(), translator)} · ${themeLabel}`,
     alert: null,
   };
 }
 
-function formatCount(value: number): string {
-  return new Intl.NumberFormat(undefined).format(value);
+function formatCount(value: number, translator?: Translator): string {
+  const locale = translator?.locale === "zh-Hans" ? "zh-CN" : undefined;
+  return new Intl.NumberFormat(locale).format(value);
 }
 
 function trimTrailingZero(value: string): string {

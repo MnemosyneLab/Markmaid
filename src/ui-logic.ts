@@ -7,6 +7,7 @@ import type {
   WorkspaceRoot,
 } from "./types";
 import { previewPath } from "./state";
+import type { MessageKey } from "./i18n";
 
 export const QUICK_SWITCHER_WORKSPACE_LIMIT = 200;
 
@@ -27,6 +28,8 @@ export interface QuickSwitcherBuildOptions {
   workspaceLimit?: number;
   favorites?: Array<{ path: string; kind: "document" | "mermaid" }>;
   scope?: QuickSwitcherScope;
+  settingsLabel?: string;
+  settingsDetail?: string;
 }
 
 export interface QuickSwitcherBuildResult {
@@ -37,19 +40,27 @@ export interface QuickSwitcherBuildResult {
 
 export function workspaceIndexNotices(
   index: WorkspaceMarkdownIndex | null,
-  options: { includeTruncation?: boolean } = {},
+  options: {
+    includeTruncation?: boolean;
+    translate?: (key: MessageKey) => string;
+  } = {},
 ): string[] {
   if (!index) return [];
   const notices: string[] = [];
+  const translate = options.translate;
   if (index.unavailableRootIds.length > 0) {
-    notices.push("Some pinned folders were unavailable");
+    notices.push(
+      translate?.("quickOpen.unavailableRoots") ??
+        "Some pinned folders were unavailable",
+    );
   }
   if (
     options.includeTruncation !== false &&
     index.truncatedRootIds.length > 0
   ) {
     notices.push(
-      "Some pinned folders are capped — use a narrower query to reveal more matches",
+      translate?.("quickOpen.truncatedNotice") ??
+        "Some pinned folders are capped — use a narrower query to reveal more matches",
     );
   }
   return notices;
@@ -124,8 +135,8 @@ export function buildQuickSwitcherItems(
       tabItems.push({
         id: "tab:settings",
         kind: "tab",
-        label: "Settings",
-        detail: "Open tab",
+        label: options.settingsLabel ?? "Settings",
+        detail: options.settingsDetail ?? "Open tab",
         tabKey: tab.key,
       });
       continue;
@@ -314,6 +325,7 @@ export interface NavigationControlState {
 
 export function computeNavigationControlState(
   state: AppState,
+  translate?: (key: MessageKey) => string,
 ): NavigationControlState {
   const tab = state.tabs.find((candidate) => candidate.key === state.activeTabKey) ?? null;
   const isDocument = tab?.kind === "document" && tab.status === "ready";
@@ -326,10 +338,10 @@ export function computeNavigationControlState(
     isDocument,
     canGoBack,
     canGoForward,
-    backTitle: "Back (⌘[)",
-    forwardTitle: "Forward (⌘])",
-    backAriaLabel: "Back",
-    forwardAriaLabel: "Forward",
+    backTitle: `${translate?.("navigation.back") ?? "Back"} (⌘[)`,
+    forwardTitle: `${translate?.("navigation.forward") ?? "Forward"} (⌘])`,
+    backAriaLabel: translate?.("navigation.back") ?? "Back",
+    forwardAriaLabel: translate?.("navigation.forward") ?? "Forward",
   };
 }
 

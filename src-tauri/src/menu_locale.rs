@@ -40,6 +40,8 @@ pub struct MenuLabels {
     pub clear_menu: &'static str,
     pub file: &'static str,
     pub view: &'static str,
+    pub edit: &'static str,
+    pub window: &'static str,
 }
 
 pub fn labels(locale: NativeUiLocale) -> MenuLabels {
@@ -63,6 +65,8 @@ pub fn labels(locale: NativeUiLocale) -> MenuLabels {
             clear_menu: "Clear Menu",
             file: "File",
             view: "View",
+            edit: "Edit",
+            window: "Window",
         },
         NativeUiLocale::ZhHans => MenuLabels {
             settings: "设置...",
@@ -83,6 +87,8 @@ pub fn labels(locale: NativeUiLocale) -> MenuLabels {
             clear_menu: "清除菜单",
             file: "文件",
             view: "显示",
+            edit: "编辑",
+            window: "窗口",
         },
     }
 }
@@ -109,5 +115,7 @@ mod tests {
         assert_eq!(english.settings, "Settings...");
         assert_eq!(chinese.settings, "设置...");
         assert_ne!(english.file, chinese.file);
+        assert_ne!(english.edit, chinese.edit);
+        assert_ne!(english.window, chinese.window);
     }
 }

@@ -162,32 +162,37 @@ export function joinRelativePath(parent: string, name: string): string {
   return `${parent.replace(/\/+$/, "")}/${name}`;
 }
 
-export function workspaceErrorMessage(code: string): string {
+export function workspaceErrorMessage(
+  code: string,
+  translate?: (key: string) => string,
+): string {
+  const localized = (key: string, fallback: string): string =>
+    translate?.(key) ?? fallback;
   switch (code) {
     case "outside_root":
-      return "That path is outside the workspace folder.";
+      return localized("workspace.error.outsideRoot", "That path is outside the workspace folder.");
     case "invalid_name":
-      return "Enter a valid name without path separators.";
+      return localized("workspace.error.invalidName", "Enter a valid name without path separators.");
     case "already_exists":
-      return "That name already exists.";
+      return localized("workspace.error.alreadyExists", "That name already exists.");
     case "not_found":
-      return "The item no longer exists.";
+      return localized("workspace.error.notFound", "The item no longer exists.");
     case "permission_denied":
-      return "Permission was denied.";
+      return localized("workspace.error.permissionDenied", "Permission was denied.");
     case "unsupported_type":
-      return "That file type is not supported.";
+      return localized("workspace.error.unsupportedType", "That file type is not supported.");
     case "not_a_directory":
-      return "That path is not a folder.";
+      return localized("workspace.error.notDirectory", "That path is not a folder.");
     case "invalid_utf8":
-      return "The file is not valid UTF-8 text.";
+      return localized("workspace.error.invalidUtf8", "The file is not valid UTF-8 text.");
     case "invalid_path":
-      return "Preview paths must be absolute.";
+      return localized("workspace.error.invalidPath", "Preview paths must be absolute.");
     case "file_too_large":
-      return "The file is too large to preview safely.";
+      return localized("workspace.error.fileTooLarge", "The file is too large to preview safely.");
     case "root_not_registered":
-      return "The workspace folder is no longer registered.";
+      return localized("workspace.error.rootNotRegistered", "The workspace folder is no longer registered.");
     default:
-      return "The workspace operation failed.";
+      return localized("workspace.error.operationFailed", "The workspace operation failed.");
   }
 }
 

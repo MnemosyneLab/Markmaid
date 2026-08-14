@@ -1,8 +1,8 @@
 # MarkMaid Roadmap
 
-Last reviewed: 2026-08-13
+Last reviewed: 2026-08-14
 
-This document tracks candidate work after the published v0.1.9 release.
+This document tracks candidate work after the v0.1.9 release candidate.
 It is a prioritization tool,
 not a promise that every item will ship. An item moves into a version plan only
 after its user value, product behavior, safety boundary, and acceptance tests
@@ -35,7 +35,7 @@ release policy until that decision changes.
 | v0.1.6 | Released | Root reorder, safe diagnostics, cooperative cancellation, shell controllers, and accessible navigation |
 | v0.1.7 | Released | Command Palette, Focus Mode, actionable states, external-app handoff, and performance baselines |
 | v0.1.8 | Released — engineering foundation | Typed frontend↔Rust IPC, session migration tests, continued `main.ts` shell split |
-| v0.1.9 | Released — continuity and localization | Favorites, sidecar bookmarks/highlights/notes, bounded reading history, Chinese UI |
+| v0.1.9 | Release candidate — continuity and localization | Favorites, sidecar bookmarks/highlights/notes, bounded reading history, Chinese UI |
 | v0.2 candidate | On-demand knowledge discovery | Search document contents and understand relationships without a background watcher |
 | Later | Reading depth and scale | Better long-document performance, export control, and remaining local metadata |
 
@@ -157,7 +157,9 @@ workflow.
   separate bootstrap boundary.
 - [x] **Continued `main.ts` decomposition.** Quick Open, Command Palette,
   workspace tree, Find, Settings/status, export/sidebar, external-open, and tab
-  interaction views are extracted; the composition root is 3,998 lines.
+  interaction views are extracted; the v0.1.8 extraction left a 3,998-line
+  composition root, and the v0.1.9 candidate continues the split to 3,812
+  lines.
 
 ### Explicitly deferred from v0.1.8
 
@@ -165,7 +167,7 @@ workflow.
   localization (all selected for v0.1.9).
 - Workspace Switcher, full-text search, and notarization.
 
-## v0.1.9 — reading continuity and localization
+## v0.1.9 release candidate — reading continuity and localization
 
 Selected scope is documented in the [`v0.1.9 plan`](plans/v0.1.9_plan.md). This
 release depends on v0.1.8 foundations and keeps the read-only boundary:

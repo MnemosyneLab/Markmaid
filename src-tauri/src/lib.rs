@@ -169,7 +169,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         .item(&close_tab)
         .item(&reopen_closed_tab)
         .build()?;
-    let edit_menu = SubmenuBuilder::new(app, "Edit")
+    let edit_menu = SubmenuBuilder::new(app, labels.edit)
         .undo()
         .redo()
         .separator()
@@ -193,7 +193,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         .separator()
         .fullscreen()
         .build()?;
-    let window_menu = SubmenuBuilder::new(app, "Window")
+    let window_menu = SubmenuBuilder::new(app, labels.window)
         .minimize()
         .maximize()
         .separator()

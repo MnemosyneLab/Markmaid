@@ -62,9 +62,14 @@ function uuid(index: number): string {
 
 describe("annotation store schema", () => {
   it("starts from an empty store when the top-level value is corrupt", () => {
-    expect(normalizeAnnotationStore(null).store).toEqual(emptyAnnotationStore());
-    expect(normalizeAnnotationStore({ version: 2, documents: {} }).store).toEqual(
-      emptyAnnotationStore(),
+    expect(normalizeAnnotationStore(null).status).toBe("ready");
+    expect(normalizeAnnotationStore({ version: 2, documents: {} })).toMatchObject({
+      status: "unsupported",
+      unsupportedVersion: 2,
+      store: emptyAnnotationStore(),
+    });
+    expect(normalizeAnnotationStore({ version: 1, documents: "bad" }).status).toBe(
+      "invalid",
     );
   });
 
@@ -90,7 +95,7 @@ describe("annotation store schema", () => {
     expect(result.recoveryOnly).toBe(false);
   });
 
-  it("keeps the first valid ID globally and clears dangling bookmark links", () => {
+  it("keeps the first valid ID globally and drops dangling bookmark links", () => {
     const duplicate = uuid(1);
     const result = normalizeAnnotationStore({
       version: 1,
@@ -121,7 +126,7 @@ describe("annotation store schema", () => {
         },
       },
     });
-    expect(linked.store.documents["/a.md"]?.notes[0]?.bookmarkId).toBeUndefined();
+    expect(linked.store.documents["/a.md"]?.notes).toHaveLength(0);
   });
 
   it("rejects empty titles and note bodies after trim, and keeps recovery-only over-cap stores", () => {

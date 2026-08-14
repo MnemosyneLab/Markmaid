@@ -1,4 +1,5 @@
 import type { PreviewLoadResult } from "./types";
+import { message, type Translator } from "./i18n";
 
 export const MARKDOWN_EXTENSIONS = ["md", "markdown", "mdown", "mkd"] as const;
 export const MERMAID_EXTENSIONS = ["mmd"] as const;
@@ -74,30 +75,41 @@ export function displayNameForPath(path: string): string {
   return path.split(/[\\/]/).at(-1) || path;
 }
 
-export function invokeFailureMessage(error: unknown): string {
+export function invokeFailureMessage(
+  error: unknown,
+  translator?: Translator,
+): string {
   if (typeof error === "string" && error.trim()) return error;
   if (error && typeof error === "object" && "message" in error) {
     const message = (error as { message?: unknown }).message;
     if (typeof message === "string" && message.trim()) return message;
   }
-  return "MarkMaid could not load this preview.";
+  return message("preview.loadFailed", translator);
 }
 
-export function unsupportedPreviewResult(path: string): PreviewLoadResult {
+export function unsupportedPreviewResult(
+  path: string,
+  translator?: Translator,
+): PreviewLoadResult {
   return {
     kind: "unsupported",
     requestedPath: path,
     displayName: displayNameForPath(path),
     code: "unsupported_type",
-    message: "This file type is not supported by MarkMaid.",
+    message: message("preview.unsupported", translator),
   };
 }
 
-export function unsupportedNotice(paths: string[]): string {
+export function unsupportedNotice(
+  paths: string[],
+  translator?: Translator,
+): string {
   if (paths.length === 1) {
-    return `${displayNameForPath(paths[0] ?? "This file")} cannot be opened: unsupported file type.`;
+    return message("preview.unsupportedOne", translator, {
+      name: displayNameForPath(paths[0] ?? message("preview.unsupported", translator)),
+    });
   }
-  return `${paths.length} files could not be opened because their file types are unsupported.`;
+  return message("preview.unsupportedMany", translator, { count: paths.length });
 }
 
 export function previewResultRequestedPath(result: PreviewLoadResult): string {

@@ -29,7 +29,7 @@ export function renderStatusBar(deps: StatusViewDeps): string {
     const model = buildActionableState({
       kind: "export-failed",
       canRetry: deps.canRetryExport,
-    });
+    }, deps.translator);
     return `
       <footer class="${deps.statusBarClass} is-alert status-alert-reload-error" aria-label="${t("status.label")}">
         <div class="status-alert">

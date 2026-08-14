@@ -1,5 +1,6 @@
 import type { AppTab } from "../types";
 import { isReadyDocumentTab } from "../export";
+import { message, type Translator } from "../i18n";
 import type { ExportController } from "./export-controller";
 
 export interface ExportViewStyles {
@@ -13,6 +14,7 @@ export interface ExportViewRenderDeps {
   currentTab: AppTab | null;
   styles: ExportViewStyles;
   escapeHtml: (value: string) => string;
+  translator?: Translator;
 }
 
 export interface ExportViewBindDeps {
@@ -26,54 +28,55 @@ export function renderExportModal(deps: ExportViewRenderDeps): string {
   if (!deps.controller.isVisible()) return "";
   const docName = isReadyDocumentTab(deps.currentTab)
     ? deps.currentTab.displayName
-    : "Document";
+    : message("export.document", deps.translator);
+  const t = (key: Parameters<typeof message>[0]) => message(key, deps.translator);
   const { config } = deps.controller.model;
   return `
     <div class="export-modal-backdrop" data-export-backdrop>
       <section class="export-modal" role="dialog" aria-modal="true" aria-labelledby="export-modal-title">
         <div class="export-modal-header">
-          <h2 id="export-modal-title">Export Document</h2>
-          <p class="export-modal-subtitle">Configure format and layout options for <strong>${deps.escapeHtml(docName)}</strong></p>
+          <h2 id="export-modal-title">${t("export.title")}</h2>
+          <p class="export-modal-subtitle">${t("export.subtitle")} <strong>${deps.escapeHtml(docName)}</strong></p>
           <p class="export-modal-subtitle">${
             config.format === "pdf"
-              ? "The macOS print sheet lets you choose Save as PDF, a filename, and a destination."
-              : "After confirming, choose the HTML filename and destination in the save dialog."
+              ? t("export.pdfHint")
+              : t("export.htmlHint")
           }</p>
         </div>
         <div class="export-modal-body">
           <div class="export-field-group">
-            <label for="export-format" class="export-label">Export Format</label>
+            <label for="export-format" class="export-label">${t("export.format")}</label>
             <select id="export-format" class="export-select" data-export-field="format">
-              <option value="html" ${config.format === "html" ? "selected" : ""}>HTML Document (.html)</option>
-              <option value="pdf" ${config.format === "pdf" ? "selected" : ""}>PDF Document (.pdf)</option>
+              <option value="html" ${config.format === "html" ? "selected" : ""}>${t("export.htmlOption")}</option>
+              <option value="pdf" ${config.format === "pdf" ? "selected" : ""}>${t("export.pdfOption")}</option>
             </select>
           </div>
           <div class="export-field-group">
-            <label for="export-paper-size" class="export-label">Paper Size</label>
+            <label for="export-paper-size" class="export-label">${t("export.paperSize")}</label>
             <select id="export-paper-size" class="export-select" data-export-field="paperSize">
-              <option value="a4" ${config.paperSize === "a4" ? "selected" : ""}>A4 (210 × 297 mm)</option>
-              <option value="a5" ${config.paperSize === "a5" ? "selected" : ""}>A5 (148 × 210 mm)</option>
+              <option value="a4" ${config.paperSize === "a4" ? "selected" : ""}>${t("export.a4")}</option>
+              <option value="a5" ${config.paperSize === "a5" ? "selected" : ""}>${t("export.a5")}</option>
             </select>
           </div>
           <div class="export-field-group">
-            <label for="export-orientation" class="export-label">Orientation</label>
+            <label for="export-orientation" class="export-label">${t("export.orientation")}</label>
             <select id="export-orientation" class="export-select" data-export-field="orientation">
-              <option value="portrait" ${config.orientation === "portrait" ? "selected" : ""}>Portrait</option>
-              <option value="landscape" ${config.orientation === "landscape" ? "selected" : ""}>Landscape</option>
+              <option value="portrait" ${config.orientation === "portrait" ? "selected" : ""}>${t("export.portrait")}</option>
+              <option value="landscape" ${config.orientation === "landscape" ? "selected" : ""}>${t("export.landscape")}</option>
             </select>
           </div>
           <div class="export-field-group">
-            <label for="export-margins" class="export-label">Page Margins</label>
+            <label for="export-margins" class="export-label">${t("export.margins")}</label>
             <select id="export-margins" class="export-select" data-export-field="margins">
-              <option value="normal" ${config.margins === "normal" ? "selected" : ""}>Normal (20 mm)</option>
-              <option value="compact" ${config.margins === "compact" ? "selected" : ""}>Compact (10 mm)</option>
-              <option value="wide" ${config.margins === "wide" ? "selected" : ""}>Wide (30 mm)</option>
+              <option value="normal" ${config.margins === "normal" ? "selected" : ""}>${t("export.normalMargins")}</option>
+              <option value="compact" ${config.margins === "compact" ? "selected" : ""}>${t("export.compactMargins")}</option>
+              <option value="wide" ${config.margins === "wide" ? "selected" : ""}>${t("export.wideMargins")}</option>
             </select>
           </div>
         </div>
         <div class="button-row ${deps.styles.buttonRow}">
-          <button class="secondary-button ${deps.styles.secondaryButton}" type="button" data-export-cancel>Cancel</button>
-          <button class="primary-button ${deps.styles.primaryButton}" type="button" data-export-submit>Export</button>
+          <button class="secondary-button ${deps.styles.secondaryButton}" type="button" data-export-cancel>${t("export.cancel")}</button>
+          <button class="primary-button ${deps.styles.primaryButton}" type="button" data-export-submit>${t("export.submit")}</button>
         </div>
       </section>
     </div>

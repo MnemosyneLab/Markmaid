@@ -34,7 +34,7 @@ describe("settings rendering", () => {
     );
     const statusSource = statusViewSource;
 
-    expect(copySource).toContain('title: "Diagnostics copied."');
+    expect(copySource).toContain('translator.t("notice.diagnosticsCopiedTitle")');
     expect(copySource).toContain('tone: "success"');
     expect(copySource).not.toContain("runtime.showNotice");
     expect(copySource).not.toContain('statusAnnouncement = "Diagnostics');

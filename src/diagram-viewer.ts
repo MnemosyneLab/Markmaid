@@ -7,6 +7,7 @@ import {
 } from "./accessibility";
 import { enhanceCodeBlock } from "./code-block";
 import { icon, renderIcons } from "./icons";
+import { message, type MessageKey, type Translator } from "./i18n";
 import { commands } from "./generated/tauri-bindings";
 import { unwrapCommandResult } from "./ipc";
 
@@ -30,7 +31,10 @@ export function dismissMediaViewer(): boolean {
   return true;
 }
 
-export function enhanceDiagramViewers(article: HTMLElement): void {
+export function enhanceDiagramViewers(
+  article: HTMLElement,
+  translator?: Translator,
+): void {
   article
     .querySelectorAll<HTMLButtonElement>(".mermaid-figure .mermaid-expand")
     .forEach((expand) => {
@@ -42,7 +46,9 @@ export function enhanceDiagramViewers(article: HTMLElement): void {
         expand.remove();
         return;
       }
-      expand.addEventListener("click", () => openDiagramViewer(stage, theme));
+      expand.addEventListener("click", () =>
+        openDiagramViewer(stage, theme, translator),
+      );
     });
 
   article
@@ -58,14 +64,22 @@ export function enhanceDiagramViewers(article: HTMLElement): void {
         return;
       }
       showSource.addEventListener("click", () => {
-        showMermaidSource(figure, stage, template.content.textContent ?? "");
+        showMermaidSource(
+          figure,
+          stage,
+          template.content.textContent ?? "",
+          translator,
+        );
       });
     });
 
-  enhanceMarkdownImageViewers(article);
+  enhanceMarkdownImageViewers(article, translator);
 }
 
-export function wrapMarkdownImages(article: HTMLElement): void {
+export function wrapMarkdownImages(
+  article: HTMLElement,
+  translator?: Translator,
+): void {
   article.querySelectorAll<HTMLImageElement>("img").forEach((image) => {
     if (image.closest(".markdown-image-figure, .mermaid-figure")) return;
     if (image.classList.contains("image-preview")) return;
@@ -76,7 +90,7 @@ export function wrapMarkdownImages(article: HTMLElement): void {
     const toolbar = document.createElement("div");
     toolbar.className = "mermaid-toolbar";
     toolbar.innerHTML = `
-      <button class="mermaid-expand" type="button" title="View image fullscreen" aria-label="View image fullscreen">${icon("maximize-2")}</button>
+      <button class="mermaid-expand" type="button" title="${message("viewer.viewImageFullscreen", translator)}" aria-label="${message("viewer.viewImageFullscreen", translator)}">${icon("maximize-2")}</button>
     `;
 
     const stage = document.createElement("div");
@@ -92,7 +106,10 @@ export function wrapMarkdownImages(article: HTMLElement): void {
   });
 }
 
-function enhanceMarkdownImageViewers(article: HTMLElement): void {
+function enhanceMarkdownImageViewers(
+  article: HTMLElement,
+  translator?: Translator,
+): void {
   article
     .querySelectorAll<HTMLButtonElement>(".markdown-image-figure .mermaid-expand")
     .forEach((expand) => {
@@ -102,7 +119,7 @@ function enhanceMarkdownImageViewers(article: HTMLElement): void {
         expand.remove();
         return;
       }
-      const open = (): void => openImageViewer(image);
+      const open = (): void => openImageViewer(image, translator);
       expand.addEventListener("click", open);
       image.addEventListener("click", open);
       image.setAttribute("role", "button");
@@ -120,6 +137,7 @@ function showMermaidSource(
   figure: HTMLElement,
   stage: HTMLElement,
   source: string,
+  translator?: Translator,
 ): void {
   const preview = document.createDocumentFragment();
   while (stage.firstChild) preview.append(stage.firstChild);
@@ -135,14 +153,18 @@ function showMermaidSource(
   const codeBlock = enhanceCodeBlock(pre, {
     language: "mermaid",
     embedded: true,
+    translator,
   });
   if (!codeBlock) return;
 
   const previewButton = document.createElement("button");
   previewButton.className = "code-preview";
   previewButton.type = "button";
-  previewButton.title = "Show diagram preview";
-  previewButton.setAttribute("aria-label", "Show diagram preview");
+  previewButton.title = message("viewer.showDiagramPreview", translator);
+  previewButton.setAttribute(
+    "aria-label",
+    message("viewer.showDiagramPreview", translator),
+  );
   previewButton.innerHTML = icon("image");
   previewButton.addEventListener("click", () => {
     stage.replaceChildren(preview);
@@ -155,6 +177,7 @@ function showMermaidSource(
 function openDiagramViewer(
   stage: HTMLElement,
   theme: MermaidAppearance,
+  translator?: Translator,
 ): void {
   const svg = stage.querySelector("svg");
   if (!svg) return;
@@ -167,15 +190,19 @@ function openDiagramViewer(
 
   openMediaViewer({
     theme,
-    label: "Mermaid diagram viewer",
-    closeLabel: "Close diagram viewer",
+    translator,
+    label: message("viewer.mermaidDiagram", translator),
+    closeLabel: message("viewer.closeDiagram", translator),
     content: clone,
     baseWidth: svg.getBoundingClientRect().width,
     onExport: () => void exportDiagram(svg),
   });
 }
 
-function openImageViewer(image: HTMLImageElement): void {
+function openImageViewer(
+  image: HTMLImageElement,
+  translator?: Translator,
+): void {
   const clone = image.cloneNode(true) as HTMLImageElement;
   clone.removeAttribute("role");
   clone.removeAttribute("tabindex");
@@ -193,8 +220,11 @@ function openImageViewer(image: HTMLImageElement): void {
 
   openMediaViewer({
     theme: "light",
-    label: image.alt ? `Image viewer: ${image.alt}` : "Image viewer",
-    closeLabel: "Close image viewer",
+    translator,
+    label: image.alt
+      ? `${message("viewer.imageViewer", translator)}: ${image.alt}`
+      : message("viewer.imageViewer", translator),
+    closeLabel: message("viewer.closeImage", translator),
     content: clone,
     baseWidth,
   });
@@ -202,6 +232,7 @@ function openImageViewer(image: HTMLImageElement): void {
 
 function openMediaViewer(options: {
   theme: MermaidAppearance;
+  translator?: Translator;
   label: string;
   closeLabel: string;
   content: HTMLElement | SVGElement;
@@ -219,6 +250,8 @@ function openMediaViewer(options: {
   };
 
   const overlay = document.createElement("div");
+  const t = (key: MessageKey, vars?: Record<string, string | number>): string =>
+    message(key, options.translator, vars);
   overlay.className = `mermaid-viewer fixed inset-x-0 top-[38px] bottom-0 z-40 overflow-hidden backdrop-blur-[18px] backdrop-saturate-[120%] ${viewerTheme.overlay}`;
   overlay.dataset.mermaidTheme = options.theme;
   overlay.setAttribute("role", "dialog");
@@ -230,19 +263,19 @@ function openMediaViewer(options: {
       class="mermaid-viewer-close absolute top-3.5 right-4 z-2 grid size-[34px] place-items-center rounded-app border transition-colors [&>svg]:size-[18px] [&>svg]:stroke-[1.9] ${viewerTheme.control}"
       type="button"
       data-viewer-close
-      title="Close"
+      title="${t("viewer.close")}"
       aria-label="${options.closeLabel}"
     >${icon("x")}</button>
-    <div class="mermaid-viewer-hint absolute bottom-4 left-4 z-2 text-xs font-medium ${viewerTheme.hint}">Scroll to zoom · drag to pan · Esc to close</div>
-    <div class="mermaid-viewer-controls absolute right-4 bottom-4 z-2 flex items-center gap-1.5" aria-label="Viewer controls">
-      <button class="mermaid-viewer-zoom grid size-[34px] place-items-center rounded-app border transition-colors [&>svg]:size-[18px] [&>svg]:stroke-[1.9] ${viewerTheme.control}" type="button" data-zoom="out" title="Zoom out" aria-label="Zoom out">${icon("zoom-out")}</button>
-      <select class="mermaid-viewer-zoom-select h-[34px] w-[82px] rounded-[17px] border px-2 text-sm font-semibold ${viewerTheme.select}" aria-label="Zoom level">
+    <div class="mermaid-viewer-hint absolute bottom-4 left-4 z-2 text-xs font-medium ${viewerTheme.hint}">${t("viewer.hint")}</div>
+    <div class="mermaid-viewer-controls absolute right-4 bottom-4 z-2 flex items-center gap-1.5" aria-label="${t("viewer.controls")}">
+      <button class="mermaid-viewer-zoom grid size-[34px] place-items-center rounded-app border transition-colors [&>svg]:size-[18px] [&>svg]:stroke-[1.9] ${viewerTheme.control}" type="button" data-zoom="out" title="${t("viewer.zoomOut")}" aria-label="${t("viewer.zoomOut")}">${icon("zoom-out")}</button>
+      <select class="mermaid-viewer-zoom-select h-[34px] w-[82px] rounded-[17px] border px-2 text-sm font-semibold ${viewerTheme.select}" aria-label="${t("viewer.zoomLevel")}">
         ${ZOOM_LEVELS.map((level) => `<option value="${level}"${level === DEFAULT_ZOOM ? " selected" : ""}>${level}%</option>`).join("")}
       </select>
-      <button class="mermaid-viewer-zoom grid size-[34px] place-items-center rounded-app border transition-colors [&>svg]:size-[18px] [&>svg]:stroke-[1.9] ${viewerTheme.control}" type="button" data-zoom="in" title="Zoom in" aria-label="Zoom in">${icon("zoom-in")}</button>
+      <button class="mermaid-viewer-zoom grid size-[34px] place-items-center rounded-app border transition-colors [&>svg]:size-[18px] [&>svg]:stroke-[1.9] ${viewerTheme.control}" type="button" data-zoom="in" title="${t("viewer.zoomIn")}" aria-label="${t("viewer.zoomIn")}">${icon("zoom-in")}</button>
       ${
         options.onExport
-          ? `<button class="mermaid-viewer-export grid size-[34px] place-items-center rounded-app border transition-colors [&>svg]:size-[18px] [&>svg]:stroke-[1.9] ${viewerTheme.control}" type="button" title="Export SVG" aria-label="Export SVG">${icon("download")}</button>`
+          ? `<button class="mermaid-viewer-export grid size-[34px] place-items-center rounded-app border transition-colors [&>svg]:size-[18px] [&>svg]:stroke-[1.9] ${viewerTheme.control}" type="button" title="${t("viewer.exportSvg")}" aria-label="${t("viewer.exportSvg")}">${icon("download")}</button>`
           : ""
       }
     </div>

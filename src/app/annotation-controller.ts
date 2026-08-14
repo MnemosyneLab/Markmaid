@@ -1,5 +1,6 @@
 import {
   ANNOTATION_STORE_KEY,
+  MAX_NOTE_BODY_UNITS,
   MAX_ANNOTATIONS_PER_PATH,
   clearNoteBookmarkLinks,
   cloneAnnotationStore,
@@ -13,6 +14,7 @@ import {
   removeById,
   replaceById,
   rewriteAnnotationPaths,
+  validateAnnotationStoreRecords,
   utf16Length,
   type AnnotationStoreV1,
   type AnnotationsByPath,
@@ -32,6 +34,11 @@ export type AnnotationMutationError =
   | "cap-exceeded"
   | "invalid-record"
   | "conflict";
+
+export type AnnotationPathMutationResult =
+  | { status: "applied"; conflict: null }
+  | { status: "skipped"; conflict: null }
+  | { status: "conflict"; conflict: string };
 
 export class AnnotationMutationRejected extends Error {
   readonly code: AnnotationMutationError;
@@ -57,8 +64,8 @@ export interface AnnotationController {
   addHighlight(input: Omit<Highlight, "id" | "createdAt" | "updatedAt"> & { id?: string }): Highlight;
   updateHighlights(path: string, highlights: readonly Highlight[]): void;
   removeHighlight(path: string, id: string): void;
-  rewritePaths(rewrite: (path: string) => string | null): { conflict: string | null };
-  removeUnderPrefix(matcher: (path: string) => boolean): void;
+  rewritePaths(rewrite: (path: string) => string | null): AnnotationPathMutationResult;
+  removeUnderPrefix(matcher: (path: string) => boolean): AnnotationPathMutationResult;
   annotationsFor(path: string): AnnotationsByPath;
   persistNow(): Promise<void>;
 }
@@ -69,6 +76,7 @@ export interface AnnotationControllerDeps {
   createId?: () => string;
   schedule?: (fn: () => void, ms: number) => number;
   clearSchedule?: (id: number) => void;
+  translate?: (key: string) => string;
   onNotice?: (notice: string, options: { title: string; dismissTitle: string }) => void;
   onChange?: (store: AnnotationStoreV1) => void;
 }
@@ -102,6 +110,20 @@ export function createAnnotationController(
   const schedule = deps.schedule ?? ((fn, ms) => globalThis.setTimeout(fn, ms) as unknown as number);
   const clearSchedule = deps.clearSchedule ?? ((id) => globalThis.clearTimeout(id));
 
+  function notifyStoreUnavailable(): void {
+    const notice =
+      deps.translate?.("notice.annotationsUnavailable") ??
+      ANNOTATION_STORE_FAILURE_NOTICE;
+    deps.onNotice?.(notice, {
+      title:
+        deps.translate?.("notice.annotationsUnavailableTitle") ??
+        ANNOTATION_STORE_FAILURE_NOTICE_OPTIONS.title,
+      dismissTitle:
+        deps.translate?.("notice.dismissAnnotationsNotice") ??
+        ANNOTATION_STORE_FAILURE_NOTICE_OPTIONS.dismissTitle,
+    });
+  }
+
   function emit(): void {
     deps.onChange?.(store);
   }
@@ -126,19 +148,27 @@ export function createAnnotationController(
     writeInFlight = true;
     try {
       dirty = false;
-      const snapshot = cloneAnnotationStore(store);
-      await handle.set(ANNOTATION_STORE_KEY, snapshot);
-      if (dirty) {
+      await handle.set(ANNOTATION_STORE_KEY, cloneAnnotationStore(store));
+      if (dirty && !writeDisabled) {
         dirty = false;
         await handle.set(ANNOTATION_STORE_KEY, cloneAnnotationStore(store));
       }
     } catch {
-      disableWrites(
-        ANNOTATION_STORE_WRITE_FAILURE_NOTICE,
-        ANNOTATION_STORE_WRITE_FAILURE_NOTICE_OPTIONS,
-      );
+      const notice =
+        deps.translate?.("notice.annotationsWriteFailed") ??
+        ANNOTATION_STORE_WRITE_FAILURE_NOTICE;
+      disableWrites(notice, {
+        ...ANNOTATION_STORE_WRITE_FAILURE_NOTICE_OPTIONS,
+        title:
+          deps.translate?.("notice.annotationsWriteFailedTitle") ??
+          ANNOTATION_STORE_WRITE_FAILURE_NOTICE_OPTIONS.title,
+        dismissTitle:
+          deps.translate?.("notice.dismissAnnotationsNotice") ??
+          ANNOTATION_STORE_WRITE_FAILURE_NOTICE_OPTIONS.dismissTitle,
+      });
     } finally {
       writeInFlight = false;
+      if (dirty && !writeDisabled) schedulePersist();
     }
   }
 
@@ -164,19 +194,27 @@ export function createAnnotationController(
         "Annotation storage is over capacity. Remove items before adding more.",
       );
     }
-    if (exceedsAnnotationCaps(next)) {
+    if (!validateAnnotationStoreRecords(next)) {
+      throw new AnnotationMutationRejected(
+        "invalid-record",
+        "That annotation change contains invalid metadata.",
+      );
+    }
+    const exceedsCaps = exceedsAnnotationCaps(next);
+    if (exceedsCaps && !(recoveryOnly && options.allowRecoveryWrite)) {
       throw new AnnotationMutationRejected(
         "cap-exceeded",
         "That annotation change would exceed the stored annotation limit.",
       );
     }
+    const remainsRecoveryOnly = recoveryOnly && exceedsCaps;
     store = next;
-    if (recoveryOnly && !exceedsAnnotationCaps(store)) {
+    if (recoveryOnly && !remainsRecoveryOnly) {
       recoveryOnly = false;
       writable = !writeDisabled;
     }
     emit();
-    schedulePersist();
+    if (!remainsRecoveryOnly || options.allowRecoveryWrite) schedulePersist();
   }
 
   function bucket(path: string): AnnotationsByPath {
@@ -210,12 +248,28 @@ export function createAnnotationController(
     }
   }
 
+  function requireExisting<T extends { id: string }>(
+    items: readonly T[],
+    id: string,
+  ): void {
+    if (!items.some((item) => item.id === id)) {
+      throw new AnnotationMutationRejected(
+        "invalid-record",
+        "That annotation no longer exists.",
+      );
+    }
+  }
+
   return {
     getStore: () => store,
     isWritable: () => writable && !writeDisabled,
     isRecoveryOnly: () => recoveryOnly,
 
     async load() {
+      writeDisabled = false;
+      recoveryOnly = false;
+      writable = false;
+      dirty = false;
       try {
         handle = await deps.openStore();
       } catch {
@@ -223,16 +277,21 @@ export function createAnnotationController(
         writable = false;
         writeDisabled = true;
         store = emptyAnnotationStore();
-        deps.onNotice?.(
-          ANNOTATION_STORE_FAILURE_NOTICE,
-          ANNOTATION_STORE_FAILURE_NOTICE_OPTIONS,
-        );
+        notifyStoreUnavailable();
         emit();
         return;
       }
       try {
         const candidate = await handle.get<unknown>(ANNOTATION_STORE_KEY);
-        const normalized = normalizeAnnotationStore(candidate ?? emptyAnnotationStore());
+        const normalized = normalizeAnnotationStore(candidate);
+        if (normalized.status !== "ready") {
+          store = emptyAnnotationStore();
+          writable = false;
+          writeDisabled = true;
+          notifyStoreUnavailable();
+          emit();
+          return;
+        }
         store = normalized.store;
         recoveryOnly = normalized.recoveryOnly;
         writable = !recoveryOnly;
@@ -242,18 +301,15 @@ export function createAnnotationController(
         writable = false;
         writeDisabled = true;
         store = emptyAnnotationStore();
-        deps.onNotice?.(
-          ANNOTATION_STORE_FAILURE_NOTICE,
-          ANNOTATION_STORE_FAILURE_NOTICE_OPTIONS,
-        );
+        notifyStoreUnavailable();
         emit();
       }
     },
 
     addBookmark(input) {
       requireWritableMutation();
-      const title = normalizeNewlines(input.title).trim();
-      if (!title) {
+      const title = normalizeNewlines(input.title);
+      if (!title.trim()) {
         throw new AnnotationMutationRejected("invalid-record", "Enter a bookmark title.");
       }
       const timestamp = now();
@@ -284,8 +340,9 @@ export function createAnnotationController(
 
     updateBookmark(bookmark) {
       requireWritableMutation();
-      const title = normalizeNewlines(bookmark.title).trim();
-      if (!title) {
+      requireExisting(bucket(bookmark.path).bookmarks, bookmark.id);
+      const title = normalizeNewlines(bookmark.title);
+      if (!title.trim()) {
         throw new AnnotationMutationRejected("invalid-record", "Enter a bookmark title.");
       }
       const next = { ...bookmark, title, updatedAt: now() };
@@ -312,17 +369,27 @@ export function createAnnotationController(
 
     addNote(input) {
       requireWritableMutation();
-      const body = normalizeNewlines(input.body).trim();
-      if (!body) {
+      const body = normalizeNewlines(input.body);
+      if (!body.trim()) {
         throw new AnnotationMutationRejected("invalid-record", "Enter a note.");
       }
-      if (utf16Length(body) > 4096) {
+      if (utf16Length(body) > MAX_NOTE_BODY_UNITS) {
         throw new AnnotationMutationRejected(
           "cap-exceeded",
           "That note is longer than 4,096 characters.",
         );
       }
       const timestamp = now();
+      const current = bucket(input.path);
+      if (
+        input.bookmarkId &&
+        !current.bookmarks.some((bookmark) => bookmark.id === input.bookmarkId)
+      ) {
+        throw new AnnotationMutationRejected(
+          "invalid-record",
+          "The note bookmark is not in this document.",
+        );
+      }
       const next: Note = {
         id: input.id ?? createId(),
         path: input.path,
@@ -331,7 +398,6 @@ export function createAnnotationController(
         updatedAt: timestamp,
         ...(input.bookmarkId ? { bookmarkId: input.bookmarkId } : {}),
       };
-      const current = bucket(input.path);
       if (current.notes.length >= MAX_ANNOTATIONS_PER_PATH) {
         throw new AnnotationMutationRejected(
           "cap-exceeded",
@@ -349,8 +415,9 @@ export function createAnnotationController(
 
     updateNote(note) {
       requireWritableMutation();
-      const body = normalizeNewlines(note.body).trim();
-      if (!body) {
+      requireExisting(bucket(note.path).notes, note.id);
+      const body = normalizeNewlines(note.body);
+      if (!body.trim()) {
         throw new AnnotationMutationRejected("invalid-record", "Enter a note.");
       }
       const next = { ...note, body, updatedAt: now() };
@@ -401,6 +468,17 @@ export function createAnnotationController(
 
     updateHighlights(path, highlights) {
       requireWritableMutation();
+      const current = bucket(path);
+      const currentIds = new Set(current.highlights.map((highlight) => highlight.id));
+      if (
+        highlights.some((highlight) => !currentIds.has(highlight.id)) ||
+        highlights.length !== current.highlights.length
+      ) {
+        throw new AnnotationMutationRejected(
+          "invalid-record",
+          "That highlight set is no longer current.",
+        );
+      }
       commit(
         withBucket(path, (bucket) => ({
           ...bucket,
@@ -421,24 +499,23 @@ export function createAnnotationController(
     },
 
     rewritePaths(rewrite) {
+      if (writeDisabled) return { status: "skipped", conflict: null };
+      requireWritableMutation();
       const rewritten = rewriteAnnotationPaths(store, rewrite);
-      if (rewritten.conflict) return { conflict: rewritten.conflict };
-      if (exceedsAnnotationCaps(rewritten.store)) {
-        throw new AnnotationMutationRejected(
-          "cap-exceeded",
-          "Renaming would make annotation storage exceed its limit.",
-        );
+      if (rewritten.conflict) {
+        return { status: "conflict", conflict: rewritten.conflict };
       }
-      store = rewritten.store;
-      emit();
-      schedulePersist();
-      return { conflict: null };
+      commit(rewritten.store);
+      return { status: "applied", conflict: null };
     },
 
     removeUnderPrefix(matcher) {
-      store = removeAnnotationsUnderPrefix(store, matcher);
-      emit();
-      schedulePersist();
+      if (writeDisabled) return { status: "skipped", conflict: null };
+      requireWritableMutation();
+      commit(removeAnnotationsUnderPrefix(store, matcher), {
+        allowRecoveryWrite: true,
+      });
+      return { status: "applied", conflict: null };
     },
 
     annotationsFor(path) {

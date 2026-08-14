@@ -1,3 +1,5 @@
+import { message, type MessageKey, type Translator } from "./i18n";
+
 export type ActionableStateArea =
   | "empty"
   | "workspace"
@@ -58,9 +60,39 @@ const action = (
   primary = false,
 ): ActionableStateAction => ({ id, label, ...(primary ? { primary } : {}) });
 
+const ACTION_MESSAGE_KEYS: Partial<Record<ActionableStateActionId, MessageKey>> = {
+  "quick-open": "action.quickOpen",
+  "open-files": "action.openPreviewFiles",
+  "add-folder": "action.addFolder",
+  "command-palette": "action.openCommandPalette",
+  refresh: "action.refresh",
+  reveal: "action.reveal",
+  "remove-root": "action.removeRoot",
+  retry: "action.retry",
+  "copy-details": "action.copyDetails",
+  "remove-metadata": "action.remove",
+  "open-another": "action.openAnother",
+  "retry-index": "action.retryIndex",
+  "continue-partial-results": "action.continuePartialResults",
+  "retry-export": "action.retryExport",
+  "choose-another": "action.chooseAnother",
+};
+
 export function buildActionableState(
   input: ActionableStateInput,
+  translator?: Translator,
 ): ActionableStateModel {
+  const localizedAction = (
+    id: ActionableStateActionId,
+    primary = false,
+  ): ActionableStateAction =>
+    action(
+      id,
+      ACTION_MESSAGE_KEYS[id]
+        ? message(ACTION_MESSAGE_KEYS[id] as MessageKey, translator)
+        : id,
+      primary,
+    );
   switch (input.kind) {
     case "empty":
       return {
@@ -70,14 +102,14 @@ export function buildActionableState(
         recoverable: true,
         actions: input.hasWorkspaceRoots
           ? [
-              action("quick-open", "Quick Open", true),
-              action("open-files", "Open Preview Files"),
-              action("add-folder", "Add Folder"),
+              localizedAction("quick-open", true),
+              localizedAction("open-files"),
+              localizedAction("add-folder"),
             ]
           : [
-              action("add-folder", "Add Folder", true),
-              action("open-files", "Open Preview Files"),
-              action("command-palette", "Open Command Palette"),
+              localizedAction("add-folder", true),
+              localizedAction("open-files"),
+              localizedAction("command-palette"),
             ],
       };
     case "empty-workspace":
@@ -87,9 +119,9 @@ export function buildActionableState(
         code: "empty",
         recoverable: true,
         actions: [
-          action("refresh", "Refresh", true),
-          ...(input.canReveal ? [action("reveal", "Reveal")] : []),
-          ...(input.isRoot ? [action("remove-root", "Remove Root")] : []),
+          localizedAction("refresh", true),
+          ...(input.canReveal ? [localizedAction("reveal")] : []),
+          ...(input.isRoot ? [localizedAction("remove-root")] : []),
         ],
       };
     case "workspace-error":
@@ -99,10 +131,10 @@ export function buildActionableState(
         code: normalizeIssueToken(input.code),
         recoverable: true,
         actions: [
-          action("retry", "Retry", true),
-          ...(input.canReveal ? [action("reveal", "Reveal")] : []),
-          ...(input.isRoot ? [action("remove-root", "Remove Root")] : []),
-          action("copy-details", "Copy Details"),
+          localizedAction("retry", true),
+          ...(input.canReveal ? [localizedAction("reveal")] : []),
+          ...(input.isRoot ? [localizedAction("remove-root")] : []),
+          localizedAction("copy-details"),
         ],
       };
     case "preview-error":
@@ -112,13 +144,13 @@ export function buildActionableState(
         code: normalizeIssueToken(input.code),
         recoverable: true,
         actions: [
-          action("retry", "Retry", true),
-          ...(input.canReveal ? [action("reveal", "Reveal")] : []),
+          localizedAction("retry", true),
+          ...(input.canReveal ? [localizedAction("reveal")] : []),
           ...(input.canRemoveMetadata
-            ? [action("remove-metadata", "Remove")]
+            ? [localizedAction("remove-metadata")]
             : []),
-          action("open-another", "Open Another"),
-          action("copy-details", "Copy Details"),
+          localizedAction("open-another"),
+          localizedAction("copy-details"),
         ],
       };
     case "quick-open-failed":
@@ -128,8 +160,8 @@ export function buildActionableState(
         code: normalizeIssueToken(input.code ?? "index_failed"),
         recoverable: true,
         actions: [
-          action("retry-index", "Retry Index", true),
-          action("copy-details", "Copy Details"),
+          localizedAction("retry-index", true),
+          localizedAction("copy-details"),
         ],
       };
     case "quick-open-truncated":
@@ -139,13 +171,9 @@ export function buildActionableState(
         code: "index_truncated",
         recoverable: true,
         actions: [
-          action(
-            "continue-partial-results",
-            "Continue with Partial Results",
-            true,
-          ),
-          action("refresh", "Refresh"),
-          action("copy-details", "Copy Details"),
+          localizedAction("continue-partial-results", true),
+          localizedAction("refresh"),
+          localizedAction("copy-details"),
         ],
       };
     case "export-failed":
@@ -155,8 +183,8 @@ export function buildActionableState(
         code: normalizeIssueToken(input.code ?? "export_failed"),
         recoverable: input.canRetry,
         actions: [
-          ...(input.canRetry ? [action("retry-export", "Retry Export", true)] : []),
-          action("copy-details", "Copy Details"),
+          ...(input.canRetry ? [localizedAction("retry-export", true)] : []),
+          localizedAction("copy-details"),
         ],
       };
     case "external-open-failed":
@@ -166,10 +194,10 @@ export function buildActionableState(
         code: normalizeIssueToken(input.code ?? "external_open_failed"),
         recoverable: true,
         actions: [
-          action("retry", "Retry", true),
-          action("choose-another", "Choose Another"),
-          ...(input.canReveal ? [action("reveal", "Reveal")] : []),
-          action("copy-details", "Copy Details"),
+          localizedAction("retry", true),
+          localizedAction("choose-another"),
+          ...(input.canReveal ? [localizedAction("reveal")] : []),
+          localizedAction("copy-details"),
         ],
       };
   }

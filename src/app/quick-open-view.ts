@@ -201,6 +201,7 @@ function renderQuickOpenStatus(model: QuickOpenViewRenderModel): string {
     messages.push(
       ...workspaceIndexNotices(quickSwitcher.index, {
         includeTruncation: !quickSwitcher.partialResultsAcknowledged,
+        translate: (key) => message(key, model.translator),
       }),
     );
   }
@@ -226,10 +227,10 @@ function renderQuickOpenStatus(model: QuickOpenViewRenderModel): string {
   }
 
   const actionable = quickSwitcher.indexError
-    ? buildActionableState({ kind: "quick-open-failed" })
+    ? buildActionableState({ kind: "quick-open-failed" }, model.translator)
     : !quickSwitcher.partialResultsAcknowledged &&
         (build.truncated || Boolean(quickSwitcher.index?.truncatedRootIds.length))
-      ? buildActionableState({ kind: "quick-open-truncated" })
+      ? buildActionableState({ kind: "quick-open-truncated" }, model.translator)
       : null;
 
   if (messages.length === 0) return "";

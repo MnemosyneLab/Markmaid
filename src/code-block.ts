@@ -1,4 +1,5 @@
 import { commands } from "./generated/tauri-bindings";
+import { message, type Translator } from "./i18n";
 import { unwrapCommandResult } from "./ipc";
 import { icon, renderIcons } from "./icons";
 
@@ -12,6 +13,7 @@ export interface EnhanceCodeBlockOptions {
   language?: string;
   embedded?: boolean;
   copyValue?: string;
+  translator?: Translator;
 }
 
 interface DeferredCodeController {
@@ -49,7 +51,7 @@ export function languageFromClassNames(
   return "text";
 }
 
-export function enhanceCodeBlocks(root: ParentNode): void {
+export function enhanceCodeBlocks(root: ParentNode, translator?: Translator): void {
   root.querySelectorAll<HTMLElement>("pre > code").forEach((code) => {
     const pre = code.parentElement;
     if (!(pre instanceof HTMLPreElement)) return;
@@ -57,9 +59,12 @@ export function enhanceCodeBlocks(root: ParentNode): void {
     const source = deferred?.querySelector<HTMLTemplateElement>(
       ".code-source-template",
     )?.content.textContent;
-    const enhancement = enhanceCodeBlock(pre, { copyValue: source ?? undefined });
+    const enhancement = enhanceCodeBlock(pre, {
+      copyValue: source ?? undefined,
+      translator,
+    });
     if (deferred && enhancement && source !== undefined) {
-      enhanceDeferredCodeBlock(deferred, enhancement.code, source);
+      enhanceDeferredCodeBlock(deferred, enhancement.code, source, translator);
     }
   });
 }
@@ -92,11 +97,15 @@ export function enhanceCodeBlock(
   const copyButton = document.createElement("button");
   copyButton.className = "code-copy";
   copyButton.type = "button";
-  copyButton.title = "Copy code";
-  copyButton.setAttribute("aria-label", "Copy code");
+  copyButton.title = message("code.copy", options.translator);
+  copyButton.setAttribute("aria-label", message("code.copy", options.translator));
   copyButton.innerHTML = icon("copy");
   copyButton.addEventListener("click", () =>
-    void copyCode(options.copyValue ?? code.textContent ?? "", copyButton),
+    void copyCode(
+      options.copyValue ?? code.textContent ?? "",
+      copyButton,
+      options.translator,
+    ),
   );
 
   toolbar.append(copyButton);
@@ -130,20 +139,21 @@ export async function copyText(value: string): Promise<boolean> {
 async function copyCode(
   value: string,
   button: HTMLButtonElement,
+  translator?: Translator,
 ): Promise<void> {
   const copied = await copyText(value);
   if (!copied) return;
 
   const original = button.innerHTML;
   button.disabled = true;
-  button.textContent = "Copied";
-  button.setAttribute("aria-label", "Code copied");
+  button.textContent = message("code.copied", translator);
+  button.setAttribute("aria-label", message("code.copiedAria", translator));
   window.setTimeout(() => {
     button.disabled = false;
     button.innerHTML = original;
     renderIcons(button);
-    button.title = "Copy code";
-    button.setAttribute("aria-label", "Copy code");
+    button.title = message("code.copy", translator);
+    button.setAttribute("aria-label", message("code.copy", translator));
   }, 1200);
 }
 
@@ -151,6 +161,7 @@ function enhanceDeferredCodeBlock(
   frame: HTMLElement,
   code: HTMLElement,
   source: string,
+  translator?: Translator,
 ): void {
   const expand = frame.querySelector<HTMLButtonElement>("[data-code-expand]");
   const totalLines = Number(frame.dataset.codeTotalLines ?? 0);
@@ -168,8 +179,12 @@ function enhanceDeferredCodeBlock(
       return;
     }
     const count = Math.min(200, remaining);
-    expand.innerHTML = `Show ${count} more lines${icon("chevron-down")}`;
-    expand.setAttribute("aria-label", `Show ${count} more lines`);
+    const label = message("code.showMoreLines", translator, { count });
+    expand.innerHTML = `${label}${icon("chevron-down")}`;
+    expand.setAttribute(
+      "aria-label",
+      message("code.showMoreLinesAria", translator, { count }),
+    );
     renderIcons(expand);
   };
 

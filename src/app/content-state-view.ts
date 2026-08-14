@@ -18,11 +18,12 @@ export function renderEmptyStateMarkup(
   hasWorkspaceRoots: boolean,
   styles: ContentStateStyles,
   copy: { heading: string; body: string; shortcut: string },
+  translator?: Translator,
 ): string {
   const model = buildActionableState({
     kind: "empty",
     hasWorkspaceRoots,
-  });
+  }, translator);
   return `
     <section class="empty-state ${styles.centeredState}">
       <div class="empty-copy ${styles.emptyCopy}">

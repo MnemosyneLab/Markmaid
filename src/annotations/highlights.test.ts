@@ -102,5 +102,20 @@ describe("highlight anchoring", () => {
     });
     expect(cancelled.cancelled).toBe(true);
     expect(cancelled.results).toEqual([]);
+
+    let current = true;
+    const invalidatedDuringYield = await reanchorHighlightsForSource(
+      source,
+      highlights.slice(0, 2),
+      2,
+      {
+        isCurrent: () => current,
+        yieldBetween: async () => {
+          current = false;
+        },
+      },
+    );
+    expect(invalidatedDuringYield.cancelled).toBe(true);
+    expect(invalidatedDuringYield.results).toEqual([]);
   });
 });

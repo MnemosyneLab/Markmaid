@@ -19,9 +19,9 @@ import {
   dismissMediaViewer,
   enhanceDiagramViewers,
   isMediaViewerOpen,
-  wrapMarkdownImages,
 } from "./diagram-viewer";
 import { icon, renderIcons } from "./icons";
+import type { MessageKey } from "./i18n";
 import { enhanceMath } from "./math";
 import {
   matchesRevisionBaseline,
@@ -42,16 +42,13 @@ import {
   clearRecentDocuments,
   DEFAULT_SIDEBAR_WIDTH,
   DEFAULT_STATE,
-  DEFAULT_TABLE_OF_CONTENTS_WIDTH,
   documentKey,
   errorTabForLoading,
   loadingImageTab,
   loadingMermaidTab,
   loadingTab,
   MAX_SIDEBAR_WIDTH,
-  MAX_TABLE_OF_CONTENTS_WIDTH,
   MIN_SIDEBAR_WIDTH,
-  MIN_TABLE_OF_CONTENTS_WIDTH,
   moveTab,
   openSettings,
   previewPath,
@@ -78,7 +75,6 @@ import {
   handleFocusTrapTab,
   resolveTabListKeyAction,
   sidebarResizeStep,
-  tableOfContentsResizeStep,
   type FocusKey,
 } from "./accessibility";
 import {
@@ -129,7 +125,6 @@ import {
 import {
   createPersistence,
   loadSessionForBootstrap,
-  SESSION_STORE_UNSUPPORTED_NOTICE_OPTIONS,
 } from "./app/persistence";
 import { createPreviewController } from "./app/preview-controller";
 import {
@@ -192,11 +187,18 @@ import {
 import { planWorkspaceRootRemoval } from "./workspace-removal";
 import { createAnnotationShell } from "./app/annotation-shell";
 import { preflightAnnotationRewrite } from "./app/annotation-controller";
+import { bookmarkFragmentAtScroll } from "./annotations/bookmarks";
 import { ANNOTATION_STORE_FILENAME } from "./annotations/schema";
 import { isFavoritePath, toggleFavoriteInState } from "./favorites";
 import { createLocaleRuntime } from "./app/locale-runtime";
 import { hasAppMetadataUnderPrefix, stripPathMetadata } from "./app/path-lifecycle";
 import { renderEmptyStateMarkup, renderErrorMarkup, renderLoadingMarkup } from "./app/content-state-view";
+import { prepareDocumentContent as prepareDocumentContentView } from "./app/document-content";
+import { decodeFragment, resolveLocalPath } from "./app/document-links";
+import {
+  bindDocumentOutlineResize,
+  createDocumentOutline,
+} from "./app/document-outline";
 import { swapShellHtml } from "./app/preview-stage";
 import { createShellCommandHandlers, favoriteMenuLabel, type CommandContext } from "./app/shell-commands";
 import { normalizePreviewTaskOutcomes, unwrapCommandResult } from "./ipc";
@@ -424,7 +426,8 @@ const workspaceController = createWorkspaceController(runtime, {
     const rootEntry = runtime
       .getState()
       .workspaceRoots.find((item) => item.id === rootId);
-    const label = rootEntry?.displayName ?? "Folder";
+    const label =
+      rootEntry?.displayName ?? localeRuntime.translator().t("workspace.folder");
     statusAnnouncement = formatPositionAnnouncement(label, position, total);
     selectedWorkspaceNode = { rootId, relativePath: "" };
     workspaceTreeFocus = { rootId, relativePath: "" };
@@ -467,11 +470,6 @@ let sidebarResizeSession: {
   startX: number;
   startWidth: number;
 } | null = null;
-let tableOfContentsResizeSession: {
-  pointerId: number;
-  startX: number;
-  startWidth: number;
-} | null = null;
 let suppressTabClickKey: string | null = null;
 let suppressTabClickUntil = 0;
 let suppressNativeDropUntil = 0;
@@ -493,7 +491,14 @@ let preservePreviewDom = false;
 const persistence = createPersistence({
   getStore: () => stateStore,
   getState: () => runtime.getState(),
-  onPersistenceUnavailable: (notice, options) => { showGlobalNotice(notice, options); render(); },
+  onPersistenceUnavailable: () => {
+    const translator = localeRuntime.translator();
+    showGlobalNotice(translator.t("notice.sessionWriteFailed"), {
+      title: translator.t("notice.sessionWriteFailedTitle"),
+      dismissTitle: translator.t("notice.dismissSessionNotice"),
+    });
+    render();
+  },
   syncRecentDocuments: async (paths) => {
     unwrapCommandResult(await commands.syncRecentDocuments(paths));
   },
@@ -568,8 +573,9 @@ const annotations = createAnnotationShell({
     render();
   },
   captureActiveScroll: () => captureActiveScroll(),
-  setPendingAnchor: (key, fragment) => {
-    pendingAnchors.set(key, fragment);
+  findBookmarkFragment: () => findCurrentBookmarkFragment(),
+  scrollToFragment: (fragment) => {
+    return scrollToAnchor(root.querySelector<HTMLElement>(".markdown-body"), fragment);
   },
   restoreScroll: (scrollTop) => {
     const current = activeTab(runtime.getState());
@@ -606,6 +612,7 @@ const exportController = createExportController(runtime, {
 const navigation = createNavigationController(runtime, {
   captureActiveScroll: () => captureActiveScroll(),
   onBeforeCloseTab: (key) => {
+    annotations.invalidateReanchor(true);
     previewController.invalidateTab(key);
     pendingAnchors.delete(key);
     externalChangeNotices.delete(key);
@@ -693,12 +700,13 @@ const commandHandlers = createShellCommandHandlers({
         documentSearch.activeIndex >= 0,
     );
   },
+  translate: (key) => localeRuntime.translator().t(key),
 });
 const localeRuntime = createLocaleRuntime<CommandContext>({
   getPreference: () => runtime.getState().uiLocale,
   handlers: commandHandlers,
   onResolvedChange: (locale) => {
-    void commands.setUiLocale(locale);
+    void syncNativeUiLocale(locale);
     const current = activeTab(runtime.getState());
     preservePreviewDom = Boolean(
       current && current.kind !== "settings" && current.status === "ready",
@@ -735,9 +743,10 @@ const commandPalette = createCommandPaletteController<CommandContext>({
         : null,
   onExecutionError: (commandId, error) => {
     recordDiagnosticError(`command:${commandId}`, error);
-    showGlobalNotice("The selected command could not be completed.", {
-      title: "Command failed.",
-      dismissTitle: "Dismiss command error",
+    const translator = localeRuntime.translator();
+    showGlobalNotice(translator.t("notice.commandFailed"), {
+      title: translator.t("notice.commandFailedTitle"),
+      dismissTitle: translator.t("notice.dismissCommandError"),
     });
     render();
   },
@@ -793,19 +802,21 @@ async function bootstrap(): Promise<void> {
   stateStore = session.store;
   runtime.commit(session.state);
   if (session.status === "unavailable") {
-    showGlobalNotice(
-      session.notice,
-      {
-        title: "Saved session unavailable.",
-        dismissTitle: "Dismiss saved session notice",
-      },
-    );
+    const translator = localeRuntime.translator();
+    showGlobalNotice(translator.t("notice.sessionUnavailable"), {
+      title: translator.t("notice.sessionUnavailableTitle"),
+      dismissTitle: translator.t("notice.dismissSessionNotice"),
+    });
   } else if (session.status === "unsupported") {
-    showGlobalNotice(session.notice, SESSION_STORE_UNSUPPORTED_NOTICE_OPTIONS);
+    const translator = localeRuntime.translator();
+    showGlobalNotice(translator.t("notice.sessionUnsupported"), {
+      title: translator.t("notice.sessionUnsupportedTitle"),
+      dismissTitle: translator.t("notice.dismissSessionNotice"),
+    });
   }
   state = runtime.getState();
   localeRuntime.refresh();
-  void commands.setUiLocale(localeRuntime.resolved());
+  void syncNativeUiLocale(localeRuntime.resolved());
   applyTheme();
   render();
   await annotations.load();
@@ -901,13 +912,13 @@ async function registerNativeListeners(): Promise<void> {
 
 async function chooseDocuments(): Promise<void> {
   const selection = await open({
-    title: "Open Preview Files",
+    title: localeRuntime.translator().t("chrome.openFiles"),
     multiple: true,
     directory: false,
     fileAccessMode: "scoped",
     filters: [
       {
-        name: "Preview files",
+        name: localeRuntime.translator().t("chrome.previewFilesFilter"),
         extensions: [
           ...MARKDOWN_EXTENSIONS,
           ...MERMAID_EXTENSIONS,
@@ -936,7 +947,10 @@ async function openDocumentPaths(
     (path) => classifyOpenablePath(path) !== null,
   );
   if (unsupportedPaths.length > 0) {
-    runtime.showNotice("global", unsupportedNotice(unsupportedPaths));
+    runtime.showNotice(
+      "global",
+      unsupportedNotice(unsupportedPaths, localeRuntime.translator()),
+    );
   }
   if (openablePaths.length === 0) {
     render();
@@ -1029,7 +1043,7 @@ async function openDocumentPaths(
       }
     } catch (error) {
       recordDiagnosticError("load-preview-paths", error);
-      const message = invokeFailureMessage(error);
+      const message = invokeFailureMessage(error, localeRuntime.translator());
       for (const request of requests) {
         if (!previewController.isLoadCurrent(request.key, request.token)) continue;
         const loading = state.tabs.find(
@@ -1080,7 +1094,7 @@ function applyPreviewLoadResult(
     const message =
       result.kind === "unsupported"
         ? result.message
-        : "The preview loader returned an unexpected file type.";
+        : localeRuntime.translator().t("preview.unexpectedType");
     runtime.showNotice("global", message);
     const errorTab = errorTabForLoading(loading, message);
     runtime.commit(replacePreviewTab(state, request.key, errorTab));
@@ -1123,6 +1137,7 @@ async function reloadActiveDocument(): Promise<void> {
   captureActiveScroll();
   const current = activeTab(state);
   if (!current || current.kind === "settings") return;
+  annotations.invalidateReanchor(true);
 
   if (current.kind === "mermaid" || current.kind === "image") {
     const path = previewPath(current);
@@ -1190,7 +1205,7 @@ async function reloadActiveDocument(): Promise<void> {
     );
     if (!latest) return;
     recordDiagnosticError("reload-document", error);
-    const message = invokeFailureMessage(error);
+    const message = invokeFailureMessage(error, localeRuntime.translator());
     if (latest.status === "ready") {
       runtime.commit({
         ...state,
@@ -1261,6 +1276,7 @@ async function checkActiveDocumentFreshness(): Promise<void> {
       const notice = noticeForRevision(
         result,
         ignoredExternalChangeSignatures.get(latest.key) ?? null,
+        (key) => localeRuntime.translator().t(key),
       );
       if (notice) externalChangeNotices.set(latest.key, notice);
       else externalChangeNotices.delete(latest.key);
@@ -1352,9 +1368,10 @@ function maybeOfferMetadataRemoval(
   const tab = activeTab(runtime.getState());
   if (!tab || tab.kind === "settings" || tab.status !== "error") return;
   const key = kind === "favorite" ? "notice.missingFavorite" : "notice.missingHistory";
-  showGlobalNotice(localeRuntime.translator().t(key), {
-    title: "Preview not opened.",
-    dismissTitle: "Dismiss preview notice",
+  const translator = localeRuntime.translator();
+  showGlobalNotice(translator.t(key), {
+    title: translator.t("notice.previewNotOpenedTitle"),
+    dismissTitle: translator.t("notice.dismiss"),
   });
 }
 
@@ -1390,7 +1407,11 @@ function toggleFocusMode(): void {
   runtime.commit(toggleFocusModeState(state));
   state = runtime.getState();
   const focusMode = state.focusMode;
-  statusAnnouncement = `Focus Mode ${focusMode ? "on" : "off"}.`;
+  statusAnnouncement = localeRuntime.translator().t("status.focusMode", {
+    state: focusMode
+      ? localeRuntime.translator().t("status.on")
+      : localeRuntime.translator().t("status.off"),
+  });
   applyFocusModeToShell();
   const announcer = root.querySelector<HTMLElement>("#status-announcer");
   if (announcer) announcer.textContent = statusAnnouncement;
@@ -1540,7 +1561,10 @@ async function ensurePreviewLoaded(key: string | null, force = false): Promise<v
       replacePreviewTab(
         state,
         key,
-        errorTabForLoading(latest, invokeFailureMessage(error)),
+        errorTabForLoading(
+          latest,
+          invokeFailureMessage(error, localeRuntime.translator()),
+        ),
       ),
     );
     state = runtime.getState();
@@ -1602,11 +1626,12 @@ function showGlobalNotice(
   message: string,
   options: Partial<Omit<GlobalNotice, "message">> = {},
 ): void {
+  const translator = localeRuntime.translator();
   globalNotice = {
-    title: options.title ?? "Preview not opened.",
+    title: options.title ?? translator.t("notice.previewNotOpenedTitle"),
     message,
     tone: options.tone ?? "error",
-    dismissTitle: options.dismissTitle ?? "Dismiss preview notice",
+    dismissTitle: options.dismissTitle ?? translator.t("notice.dismiss"),
   };
   if (globalNoticeTimer !== null) window.clearTimeout(globalNoticeTimer);
   globalNoticeTimer = window.setTimeout(() => {
@@ -1663,7 +1688,10 @@ function render(): void {
           ${icon(state.leftSidebarVisible ? "panel-left-close" : "panel-left-open")}
           <span class="sr-only">${state.leftSidebarVisible ? t.t("chrome.hideSidebar") : t.t("chrome.showSidebar")}</span>
         </button>`;
-  const navState = computeNavigationControlState(state);
+  const navState = computeNavigationControlState(
+    state,
+    (key) => localeRuntime.translator().t(key),
+  );
   const navButtons = navState.isDocument
     ? `<button class="icon-button ${UI.iconButton}" type="button" data-action="navigate-back" title="${navState.backTitle}" aria-label="${navState.backAriaLabel}" ${navState.canGoBack ? "" : "disabled"}>
           ${icon("chevron-left")}
@@ -1685,6 +1713,7 @@ function render(): void {
     colorTheme: state.colorTheme,
     theme: state.theme,
     systemDark: colorScheme.matches,
+    translator: t,
     externalChange:
       current?.kind === "document" && current.status === "ready"
         ? (externalChangeNotices.get(current.key) ?? null)
@@ -1818,6 +1847,7 @@ function externalOpenViewDeps(): ExternalOpenViewDeps {
     preferredTargetId: state.externalOpenTargetId,
     escapeHtml,
     escapeAttribute,
+    translator: localeRuntime.translator(),
     icon,
     onOpenPrimary: openPreferredExternalApplication,
     onOpenChooser: openExternalApplicationPicker,
@@ -1871,6 +1901,8 @@ function quickSwitcherBuild() {
       workspaceRoots: state.workspaceRoots,
       favorites: state.favorites,
       scope: quickSwitcher.scope,
+      settingsLabel: localeRuntime.translator().t("quickOpen.settings"),
+      settingsDetail: localeRuntime.translator().t("quickOpen.openTab"),
     },
   );
 }
@@ -1897,8 +1929,8 @@ function bindQuickSwitcher(): void {
     },
     onCopyDetails: () => {
       const model = quickSwitcher.indexError
-        ? buildActionableState({ kind: "quick-open-failed" })
-        : buildActionableState({ kind: "quick-open-truncated" });
+        ? buildActionableState({ kind: "quick-open-failed" }, localeRuntime.translator())
+        : buildActionableState({ kind: "quick-open-truncated" }, localeRuntime.translator());
       void copyActionableDetails(model);
     },
     onClearScope: () => overlay.clearQuickSwitcherScope(),
@@ -1933,7 +1965,6 @@ async function submitExportModal(): Promise<void> {
   await exportController.submit();
 }
 
-
 function renderExportModal(): string {
   return renderExportModalView({
     controller: exportController,
@@ -1944,6 +1975,7 @@ function renderExportModal(): string {
       secondaryButton: UI.secondaryButton,
     },
     escapeHtml,
+    translator: localeRuntime.translator(),
   });
 }
 
@@ -2029,10 +2061,10 @@ async function refreshWorkspaceMarkdownIndex(requestId: number): Promise<void> {
       unavailableRootIds: [],
       truncatedRootIds: [],
     };
-    quickSwitcher.indexError =
-      error instanceof Error
-        ? `Pinned folder search unavailable: ${error.message}`
-        : "Pinned folder search unavailable";
+    quickSwitcher.indexError = localeRuntime.translator().t(
+      "quickOpen.indexUnavailable",
+      { message: error instanceof Error ? error.message : "" },
+    );
     updateQuickSwitcherResults();
   } finally {
     workspaceController.finishIndex(token);
@@ -2119,7 +2151,10 @@ function invalidateWorkspaceCache(
 function workspaceInvokeError(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error);
   const code = text.split(":", 1)[0] ?? "";
-  return workspaceErrorMessage(code || "permission_denied");
+  return workspaceErrorMessage(
+    code || "permission_denied",
+    (key) => localeRuntime.translator().t(key as MessageKey),
+  );
 }
 
 function bindWorkspaceInteractions(): void {
@@ -2173,7 +2208,7 @@ function bindWorkspaceInteractions(): void {
                 code: "list_failed",
                 canReveal: true,
                 isRoot: target.relativePath === "",
-              }),
+              }, localeRuntime.translator()),
             );
             break;
         }
@@ -2227,7 +2262,7 @@ async function addWorkspaceRoot(): Promise<void> {
   const selected = await open({
     directory: true,
     multiple: false,
-    title: "Add Folder to Workspace",
+    title: localeRuntime.translator().t("workspace.addFolderTitle"),
   });
   if (!selected || Array.isArray(selected)) return;
   try {
@@ -2278,6 +2313,7 @@ async function runWorkspaceAction(
   kind: string,
   canonicalPath: string,
 ): Promise<void> {
+  const translator = localeRuntime.translator();
   switch (action) {
     case "open":
       if (kind === "markdown" || kind === "mermaid" || kind === "image") {
@@ -2289,10 +2325,10 @@ async function runWorkspaceAction(
         kind: "create-markdown",
         rootId,
         relativePath,
-        title: "New Markdown File",
-        label: "File name",
+        title: translator.t("workspace.newMarkdownTitle"),
+        label: translator.t("workspace.fileName"),
         initialValue: "Untitled.md",
-        confirmLabel: "Create",
+        confirmLabel: translator.t("workspace.create"),
       });
       break;
     case "new-folder":
@@ -2300,10 +2336,10 @@ async function runWorkspaceAction(
         kind: "create-folder",
         rootId,
         relativePath,
-        title: "New Folder",
-        label: "Folder name",
-        initialValue: "New Folder",
-        confirmLabel: "Create",
+        title: translator.t("workspace.newFolderTitle"),
+        label: translator.t("workspace.folderName"),
+        initialValue: translator.t("workspace.newFolderDefault"),
+        confirmLabel: translator.t("workspace.create"),
       });
       break;
     case "rename": {
@@ -2312,10 +2348,10 @@ async function runWorkspaceAction(
         kind: "rename",
         rootId,
         relativePath,
-        title: "Rename",
-        label: "Name",
+        title: translator.t("workspace.renameTitle"),
+        label: translator.t("workspace.name"),
         initialValue: name,
-        confirmLabel: "Rename",
+        confirmLabel: translator.t("workspace.renameConfirm"),
       });
       break;
     }
@@ -2328,18 +2364,20 @@ async function runWorkspaceAction(
         canonicalPath,
       );
       const metadataWarning = hasMetadata
-        ? ` ${localeRuntime.translator().t("notice.trashHasMetadata")}`
+        ? ` ${translator.t("notice.trashHasMetadata")}`
         : "";
       openWorkspaceDialog({
         kind: "confirm-trash",
         rootId,
         relativePath,
-        title: isDirectory ? "Move Folder to Trash?" : `Move "${name}" to Trash?`,
+        title: isDirectory
+          ? translator.t("workspace.trashFolderTitle")
+          : translator.t("workspace.trashItemTitle", { name }),
         label: "",
         initialValue: "",
-        confirmLabel: "Move to Trash",
+        confirmLabel: translator.t("workspace.moveToTrashConfirm"),
         message: isDirectory
-          ? `This folder and its contents will be moved to Trash.${metadataWarning}`
+          ? translator.t("workspace.trashFolderMessage", { metadata: metadataWarning })
           : metadataWarning || undefined,
       });
       break;
@@ -2368,11 +2406,13 @@ async function runWorkspaceAction(
         kind: "confirm-unregister-root",
         rootId,
         relativePath: "",
-        title: "Remove from Workspace?",
+        title: translator.t("workspace.removeTitle"),
         label: "",
         initialValue: "",
-        confirmLabel: "Remove Root",
-        message: `“${removal.root.displayName}” will be removed from MarkMaid. Files will remain on disk, and open tabs will stay open.`,
+        confirmLabel: translator.t("workspace.removeRoot"),
+        message: translator.t("workspace.removeMessage", {
+          name: removal.root.displayName,
+        }),
       });
       break;
     }
@@ -2456,7 +2496,7 @@ async function confirmWorkspaceDialog(): Promise<void> {
   const input = root.querySelector<HTMLInputElement>("#workspace-dialog-input");
   const name = input?.value.trim() ?? "";
   if (!name) {
-    workspaceNotice = "Enter a valid name.";
+    workspaceNotice = localeRuntime.translator().t("workspace.enterName");
     render();
     return;
   }
@@ -2488,7 +2528,7 @@ async function confirmWorkspaceDialog(): Promise<void> {
     } else if (dialog.kind === "rename") {
       const currentPath = workspaceCanonicalPath(dialog.rootId, dialog.relativePath);
       if (!currentPath) {
-        workspaceNotice = "That item is no longer available.";
+        workspaceNotice = localeRuntime.translator().t("workspace.itemUnavailable");
         closeWorkspaceDialog();
         return;
       }
@@ -2513,13 +2553,14 @@ async function confirmWorkspaceDialog(): Promise<void> {
       if (mutation.oldPath && mutation.newPath) {
         runtime.commit(applyWorkspaceRename(state, mutation.oldPath, mutation.newPath));
         state = runtime.getState();
+        annotations.invalidateReanchor(true);
         const rewritten = annotations.controller.rewritePaths((path) =>
           rewritePathPrefix(path, mutation.oldPath ?? "", mutation.newPath ?? ""),
         );
         if (rewritten.conflict) {
           showGlobalNotice(localeRuntime.translator().t("notice.renameConflict"), {
-            title: "Rename metadata conflict.",
-            dismissTitle: "Dismiss rename notice",
+            title: localeRuntime.translator().t("notice.renameConflictTitle"),
+            dismissTitle: localeRuntime.translator().t("notice.dismissRenameNotice"),
           });
         }
       }
@@ -2768,7 +2809,7 @@ function bindShellInteractions(): void {
               const tab = activeTab(state);
               return tab?.kind === "document" && tab.status === "ready";
             })(),
-          }),
+          }, localeRuntime.translator()),
         );
       }
     });
@@ -3044,6 +3085,7 @@ function renderContent(
   tab: AppTab | null,
 ): void {
   if (!container) return;
+  annotations.invalidateReanchor();
   if (!tab) {
     renderEmptyState(container);
     return;
@@ -3081,6 +3123,7 @@ function renderEmptyState(container: HTMLElement): void {
       body: t.t("empty.copy"),
       shortcut: t.t("empty.shortcut"),
     },
+    t,
   );
   container.querySelectorAll<HTMLElement>("[data-empty-action]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -3122,7 +3165,7 @@ function renderError(container: HTMLElement, tab: PreviewTab): void {
           state.documentVisitHistory.some((entry) => entry.path === revealPath) ||
           state.closedTabsHistory.some((entry) => entry.path === revealPath)),
     ),
-  });
+  }, localeRuntime.translator());
   container.innerHTML = renderErrorMarkup(tab, model, UI, escapeHtml);
   container.querySelectorAll<HTMLElement>("[data-error-action]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -3149,11 +3192,12 @@ function renderError(container: HTMLElement, tab: PreviewTab): void {
 }
 
 async function revealActionablePath(path: string): Promise<void> {
+  const translator = localeRuntime.translator();
   const probe = await revealTargets.revalidate(path);
   if (probe.status !== "available") {
-    showGlobalNotice("This item is no longer available in Finder.", {
-      title: "Reveal unavailable.",
-      dismissTitle: "Dismiss reveal notice",
+    showGlobalNotice(translator.t("notice.revealUnavailable"), {
+      title: translator.t("notice.revealUnavailableTitle"),
+      dismissTitle: translator.t("notice.dismissRevealNotice"),
     });
     render();
     return;
@@ -3162,15 +3206,16 @@ async function revealActionablePath(path: string): Promise<void> {
     await revealItemInDir(path);
   } catch (error) {
     recordDiagnosticError("reveal-actionable-path", error);
-    showGlobalNotice("Could not reveal this item in Finder.", {
-      title: "Reveal failed.",
-      dismissTitle: "Dismiss reveal error",
+    showGlobalNotice(translator.t("notice.revealFailed"), {
+      title: translator.t("notice.revealFailedTitle"),
+      dismissTitle: translator.t("notice.dismissRevealError"),
     });
     render();
   }
 }
 
 async function copyActionableDetails(model: ActionableStateModel): Promise<void> {
+  const translator = localeRuntime.translator();
   try {
     const environment = await commands.getDiagnosticsEnvironment();
     const copied = await copyText(
@@ -3178,21 +3223,23 @@ async function copyActionableDetails(model: ActionableStateModel): Promise<void>
     );
     showGlobalNotice(
       copied
-        ? "Privacy-safe issue details copied to the clipboard."
-        : "Could not copy issue details to the clipboard.",
+        ? translator.t("notice.detailsCopied")
+        : translator.t("notice.copyFailed"),
       {
-        title: copied ? "Details copied." : "Copy failed.",
+        title: copied
+          ? translator.t("notice.detailsCopiedTitle")
+          : translator.t("notice.copyFailedTitle"),
         tone: copied ? "success" : "error",
         dismissTitle: copied
-          ? "Dismiss copied details notice"
-          : "Dismiss copy error",
+          ? translator.t("notice.dismissCopiedDetails")
+          : translator.t("notice.dismissCopyError"),
       },
     );
   } catch (error) {
     recordDiagnosticError("copy-actionable-details", error);
-    showGlobalNotice("Could not copy issue details to the clipboard.", {
-      title: "Copy failed.",
-      dismissTitle: "Dismiss copy error",
+    showGlobalNotice(translator.t("notice.copyFailed"), {
+      title: translator.t("notice.copyFailedTitle"),
+      dismissTitle: translator.t("notice.dismissCopyError"),
     });
   }
   render();
@@ -3214,7 +3261,7 @@ function renderMermaidPreview(
     <article class="markdown-body mermaid-preview-body">${tab.html}</article>
   `;
   const article = scroller.querySelector<HTMLElement>("article");
-  if (article) enhanceDiagramViewers(article);
+  if (article) enhanceDiagramViewers(article, localeRuntime.translator());
   scroller.scrollTop = tab.scrollTop;
   scroller.addEventListener("scroll", () => {
     runtime.commit(updateScroll(state, tab.key, scroller.scrollTop));
@@ -3257,6 +3304,7 @@ function renderImagePreview(
       colorTheme: state.colorTheme,
       theme: state.theme,
       systemDark: colorScheme.matches,
+      translator: localeRuntime.translator(),
     });
     const left = root.querySelector(".status-left");
     const right = root.querySelector(".status-right");
@@ -3271,7 +3319,9 @@ function renderImagePreview(
       canonicalPath: tab.canonicalPath,
       displayName: tab.displayName,
       code: "preview_failed",
-      message: "The image could not be previewed.",
+      message: localeRuntime.translator().t("preview.imageUnavailable", {
+        name: tab.displayName,
+      }),
       scrollTop: tab.scrollTop,
     }));
     state = runtime.getState();
@@ -3300,29 +3350,52 @@ function renderDocument(
       <strong class="${UI.documentTitle}">${escapeHtml(tab.displayName)}</strong>
       <span class="${UI.documentPath}" title="${escapeAttribute(tab.canonicalPath)}">${escapeHtml(tab.canonicalPath)}</span>
     </div>
-    <button class="secondary-button compact ${UI.secondaryButton} min-h-7 px-2.5 text-xs" type="button" data-document-reload>Reload</button>
+    <button class="secondary-button compact ${UI.secondaryButton} min-h-7 px-2.5 text-xs" type="button" data-document-reload>${localeRuntime.translator().t("chrome.reloadPreview")}</button>
   `;
 
   const article = document.createElement("article");
   article.className = "markdown-body";
   article.innerHTML = tab.html;
-  prepareDocumentContent(article, tab);
-  enhanceCodeBlocks(article);
-  enhanceDiagramViewers(article);
+  prepareDocumentContentView(article, tab, {
+    translator: localeRuntime.translator(),
+    convertFileSrc,
+    onLink: handleDocumentLink,
+  });
+  enhanceCodeBlocks(article, localeRuntime.translator());
+  enhanceDiagramViewers(article, localeRuntime.translator());
   enhanceMath(article);
-  annotations.applyDecorations(scroller, tab);
-  void annotations.reanchorDocument(tab);
 
   scroller.append(header, article);
+  annotations.applyDecorations(scroller, tab);
+  void annotations.reanchorDocument(tab);
   const outline = state.tableOfContentsVisible
-    ? createDocumentOutline(article, scroller)
+    ? createDocumentOutline(article, scroller, {
+        classes: {
+          outline: UI.documentOutline,
+          title: UI.documentOutlineTitle,
+          list: UI.documentOutlineList,
+          item: UI.documentOutlineItem,
+        },
+        translator: localeRuntime.translator(),
+        tableOfContentsWidth: state.tableOfContentsWidth,
+      })
     : null;
   const layout = document.createElement("div");
   layout.className = UI.documentLayout;
   layout.append(scroller);
   if (outline) layout.append(outline.resizeHandle, outline.element);
   container.append(layout);
-  if (outline) bindTableOfContentsResize(outline.resizeHandle);
+  if (outline) {
+    bindDocumentOutlineResize(outline.resizeHandle, {
+      getFrame: () => root.querySelector<HTMLElement>(".app-frame"),
+      getCurrentWidth: () => state.tableOfContentsWidth,
+      onWidthChange: (width) => {
+        runtime.commit(setPreferences(state, { tableOfContentsWidth: width }));
+        state = runtime.getState();
+      },
+      schedulePersist,
+    });
+  }
 
   header
     .querySelector<HTMLElement>("[data-document-reload]")
@@ -3342,232 +3415,6 @@ function renderDocument(
       scrollToAnchor(article, pendingAnchor);
     }
     outline?.updateActiveHeading();
-  });
-}
-
-interface DocumentOutline {
-  element: HTMLElement;
-  resizeHandle: HTMLElement;
-  updateActiveHeading: () => void;
-}
-
-function createDocumentOutline(
-  article: HTMLElement,
-  scroller: HTMLElement,
-): DocumentOutline | null {
-  const headings = Array.from(
-    article.querySelectorAll<HTMLHeadingElement>("h1, h2, h3, h4, h5, h6"),
-  ).filter((heading) => heading.id && heading.textContent?.trim());
-  if (headings.length === 0) return null;
-
-  const aside = document.createElement("aside");
-  aside.className = UI.documentOutline;
-  aside.setAttribute("aria-label", "Document outline");
-
-  const resizeHandle = document.createElement("div");
-  resizeHandle.className = "document-outline-resize";
-  resizeHandle.setAttribute("role", "separator");
-  resizeHandle.setAttribute("aria-orientation", "vertical");
-  resizeHandle.setAttribute("aria-label", "Resize document outline");
-  resizeHandle.setAttribute(
-    "aria-valuemin",
-    String(MIN_TABLE_OF_CONTENTS_WIDTH),
-  );
-  resizeHandle.setAttribute(
-    "aria-valuemax",
-    String(MAX_TABLE_OF_CONTENTS_WIDTH),
-  );
-  resizeHandle.setAttribute(
-    "aria-valuenow",
-    String(clampTableOfContentsWidth(state.tableOfContentsWidth)),
-  );
-  resizeHandle.tabIndex = 0;
-
-  const title = document.createElement("h2");
-  title.className = UI.documentOutlineTitle;
-  title.textContent = "On this page";
-  const list = document.createElement("nav");
-  list.className = UI.documentOutlineList;
-  list.setAttribute("aria-label", "Document headings");
-
-  const entries = headings.map((heading) => {
-    const level = Number(heading.tagName.slice(1));
-    const button = document.createElement("button");
-    button.className = UI.documentOutlineItem;
-    button.type = "button";
-    button.dataset.tocTarget = heading.id;
-    button.style.setProperty("--toc-level", String(level));
-    button.textContent = heading.textContent?.trim() ?? "";
-    button.title = button.textContent;
-    button.addEventListener("click", () => {
-      const top =
-        scroller.scrollTop +
-        heading.getBoundingClientRect().top -
-        scroller.getBoundingClientRect().top -
-        20;
-      scroller.scrollTo({
-        top: Math.max(0, top),
-        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
-          ? "auto"
-          : "smooth",
-      });
-    });
-    list.append(button);
-    return { heading, button };
-  });
-
-  aside.append(title, list);
-  const updateActiveHeading = (): void => {
-    const viewportTop = scroller.getBoundingClientRect().top + 84;
-    let active = entries[0];
-    for (const entry of entries) {
-      if (entry.heading.getBoundingClientRect().top <= viewportTop) {
-        active = entry;
-      } else {
-        break;
-      }
-    }
-    entries.forEach((entry) => {
-      const selected = entry === active;
-      entry.button.classList.toggle("is-active", selected);
-      if (selected) {
-        entry.button.setAttribute("aria-current", "location");
-      } else {
-        entry.button.removeAttribute("aria-current");
-      }
-    });
-  };
-
-  return { element: aside, resizeHandle, updateActiveHeading };
-}
-
-function bindTableOfContentsResize(handle: HTMLElement): void {
-  const frame = root.querySelector<HTMLElement>(".app-frame");
-  if (!frame) return;
-
-  const applyWidth = (width: number): void => {
-    frame.style.setProperty("--table-of-contents-width", `${width}px`);
-    handle.setAttribute("aria-valuenow", String(width));
-  };
-
-  handle.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    handle.setPointerCapture(event.pointerId);
-    tableOfContentsResizeSession = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startWidth: clampTableOfContentsWidth(state.tableOfContentsWidth),
-    };
-    document.documentElement.classList.add("is-resizing-document-outline");
-  });
-
-  handle.addEventListener("pointermove", (event) => {
-    if (
-      !tableOfContentsResizeSession ||
-      event.pointerId !== tableOfContentsResizeSession.pointerId
-    ) {
-      return;
-    }
-    const next = clampTableOfContentsWidth(
-      tableOfContentsResizeSession.startWidth +
-        (tableOfContentsResizeSession.startX - event.clientX),
-    );
-    applyWidth(next);
-  });
-
-  const finishResize = (event: PointerEvent): void => {
-    if (
-      !tableOfContentsResizeSession ||
-      event.pointerId !== tableOfContentsResizeSession.pointerId
-    ) {
-      return;
-    }
-    const next = clampTableOfContentsWidth(
-      tableOfContentsResizeSession.startWidth +
-        (tableOfContentsResizeSession.startX - event.clientX),
-    );
-    tableOfContentsResizeSession = null;
-    document.documentElement.classList.remove(
-      "is-resizing-document-outline",
-    );
-    if (handle.hasPointerCapture(event.pointerId)) {
-      handle.releasePointerCapture(event.pointerId);
-    }
-    applyWidth(next);
-    if (next === state.tableOfContentsWidth) return;
-    runtime.commit(setPreferences(state, { tableOfContentsWidth: next }));
-    state = runtime.getState();
-    schedulePersist();
-  };
-
-  handle.addEventListener("pointerup", finishResize);
-  handle.addEventListener("pointercancel", finishResize);
-  handle.addEventListener("keydown", (event) => {
-    const next = tableOfContentsResizeStep(
-      event.key,
-      clampTableOfContentsWidth(state.tableOfContentsWidth),
-      MIN_TABLE_OF_CONTENTS_WIDTH,
-      MAX_TABLE_OF_CONTENTS_WIDTH,
-    );
-    if (next === null) return;
-    event.preventDefault();
-    applyWidth(next);
-    if (next === state.tableOfContentsWidth) return;
-    runtime.commit(setPreferences(state, { tableOfContentsWidth: next }));
-    state = runtime.getState();
-    schedulePersist();
-  });
-  handle.addEventListener("dblclick", () => {
-    tableOfContentsResizeSession = null;
-    document.documentElement.classList.remove(
-      "is-resizing-document-outline",
-    );
-    applyWidth(DEFAULT_TABLE_OF_CONTENTS_WIDTH);
-    if (state.tableOfContentsWidth === DEFAULT_TABLE_OF_CONTENTS_WIDTH) return;
-    runtime.commit(
-      setPreferences(state, {
-        tableOfContentsWidth: DEFAULT_TABLE_OF_CONTENTS_WIDTH,
-      }),
-    );
-    state = runtime.getState();
-    schedulePersist();
-  });
-}
-
-function prepareDocumentContent(
-  article: HTMLElement,
-  tab: ReadyDocumentTab,
-): void {
-  const assets = new Map(tab.imageAssets.map((asset) => [asset.token, asset]));
-  article.querySelectorAll<HTMLImageElement>("img").forEach((image) => {
-    const source = image.getAttribute("src") ?? "";
-    const asset = assets.get(source);
-    image.loading = "lazy";
-    image.decoding = "async";
-    if (!asset) return;
-    if (asset.path) {
-      image.src = convertFileSrc(asset.path);
-      return;
-    }
-
-    const fallback = document.createElement("span");
-    fallback.className = "missing-image";
-    fallback.setAttribute("role", "img");
-    fallback.textContent = image.alt
-      ? `Image unavailable: ${image.alt}`
-      : `Image unavailable: ${asset.original}`;
-    image.replaceWith(fallback);
-  });
-
-  wrapMarkdownImages(article);
-
-  article.querySelectorAll<HTMLAnchorElement>("a").forEach((link) => {
-    link.addEventListener("click", (event) => {
-      event.preventDefault();
-      const href = link.getAttribute("href");
-      if (href) void handleDocumentLink(tab, href);
-    });
   });
 }
 
@@ -3606,11 +3453,15 @@ async function handleDocumentLink(
   if (classifyOpenablePath(path)) {
     await openDocumentPaths([path], decodeFragment(fragment), tab.key);
   } else {
-    runtime.showNotice("global", `Cannot open ${displayNameForPath(path)}: unsupported file type.`);
+    runtime.showNotice(
+      "global",
+      localeRuntime.translator().t("notice.unsupportedType", {
+        name: displayNameForPath(path),
+      }),
+    );
     render();
   }
 }
-
 
 function recordDiagnosticError(operation: string, error: unknown): void {
   recentDiagnosticError = normalizeDiagnosticError(operation, error);
@@ -3631,6 +3482,7 @@ function expandedWorkspaceNodeCount(): number {
 }
 
 async function copyDiagnosticsReport(): Promise<void> {
+  const translator = localeRuntime.translator();
   try {
     const environment = await commands.getDiagnosticsEnvironment();
     const report = formatDiagnosticsReport({
@@ -3645,23 +3497,23 @@ async function copyDiagnosticsReport(): Promise<void> {
     const copied = await copyText(report);
     statusAnnouncement = "";
     if (copied) {
-      showGlobalNotice("Privacy-safe report copied to the clipboard.", {
-        title: "Diagnostics copied.",
+      showGlobalNotice(translator.t("notice.diagnosticsCopied"), {
+        title: translator.t("notice.diagnosticsCopiedTitle"),
         tone: "success",
-        dismissTitle: "Dismiss diagnostics notice",
+        dismissTitle: translator.t("notice.dismissDiagnosticsNotice"),
       });
     } else {
-      showGlobalNotice("Could not copy diagnostics to the clipboard.", {
-        title: "Copy failed.",
-        dismissTitle: "Dismiss diagnostics error",
+      showGlobalNotice(translator.t("notice.diagnosticsCopyFailed"), {
+        title: translator.t("notice.copyFailedTitle"),
+        dismissTitle: translator.t("notice.dismissDiagnosticsError"),
       });
     }
   } catch (error) {
     recordDiagnosticError("copy-diagnostics", error);
     statusAnnouncement = "";
-    showGlobalNotice("Could not copy diagnostics to the clipboard.", {
-      title: "Copy failed.",
-      dismissTitle: "Dismiss diagnostics error",
+    showGlobalNotice(translator.t("notice.diagnosticsCopyFailed"), {
+      title: translator.t("notice.copyFailedTitle"),
+      dismissTitle: translator.t("notice.dismissDiagnosticsError"),
     });
   }
   render();
@@ -3910,35 +3762,36 @@ function scrollToAnchor(
   return true;
 }
 
-function resolveLocalPath(
-  documentPath: string,
-  rawHref: string,
-): string | null {
-  if (!rawHref) return null;
-  try {
-    if (rawHref.startsWith("file://")) {
-      return decodeURIComponent(new URL(rawHref).pathname);
-    }
-    const cleanHref = decodeURIComponent(rawHref.split("?", 1)[0]);
-    if (cleanHref.startsWith("/")) return cleanHref;
-    const directory = documentPath.slice(0, documentPath.lastIndexOf("/"));
-    return `${directory}/${cleanHref}`;
-  } catch {
+function findCurrentBookmarkFragment(): string | null {
+  const current = activeTab(runtime.getState());
+  if (
+    !current ||
+    (current.kind !== "document" && current.kind !== "mermaid") ||
+    current.status !== "ready"
+  ) {
     return null;
   }
+  const scroller = root.querySelector<HTMLElement>(".document-scroll");
+  return scroller ? bookmarkFragmentAtScroll(root, scroller.scrollTop) : null;
 }
 
-function decodeFragment(fragment: string): string {
+async function syncNativeUiLocale(locale: "en" | "zh-Hans"): Promise<void> {
   try {
-    return decodeURIComponent(fragment);
-  } catch {
-    return fragment;
+    unwrapCommandResult(await commands.setUiLocale(locale));
+  } catch (error) {
+    recordDiagnosticError("set-ui-locale", error);
+    const translator = localeRuntime.translator();
+    showGlobalNotice(translator.t("notice.nativeMenuFailed"), {
+      title: translator.t("notice.nativeMenuFailedTitle"),
+      dismissTitle: translator.t("notice.dismissNativeMenuFailure"),
+    });
+    render();
   }
 }
 
 function tabLabel(tab: AppTab): string {
   return tab.kind === "settings"
-    ? "Settings"
+    ? localeRuntime.translator().t("chrome.settings")
     : (disambiguatedTabLabels(state.tabs).get(tab.key) ?? tab.displayName);
 }
 

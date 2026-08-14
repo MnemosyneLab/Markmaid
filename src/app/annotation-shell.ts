@@ -1,11 +1,17 @@
 import { activeTab } from "../state";
 import type { AppRuntime } from "./runtime";
-import type { Translator } from "../i18n";
-import type { AppTab, ReadyDocumentTab } from "../types";
+import type { MessageKey, Translator } from "../i18n";
+import type {
+  AppTab,
+  ReadyDocumentTab,
+  ReadyMermaidTab,
+} from "../types";
 import {
   highlightContext,
   reanchorHighlightsForSource,
   sha256Hex,
+  yieldToEventLoop,
+  type HighlightAnchorResult,
 } from "../annotations/highlights";
 import type { Highlight } from "../annotations/schema";
 import {
@@ -45,6 +51,7 @@ export interface AnnotationShell {
   bind(root: HTMLElement): void;
   applyDecorations(container: HTMLElement, tab: AppTab | null): void;
   reanchorDocument(tab: ReadyDocumentTab): Promise<void>;
+  invalidateReanchor(clearCache?: boolean): void;
   jumpToBookmark(id: string): void;
   staleHighlightIds(path: string): ReadonlySet<string>;
 }
@@ -64,25 +71,67 @@ export interface AnnotationShellDeps {
   ) => void;
   onChange: () => void;
   captureActiveScroll: () => void;
-  setPendingAnchor: (key: string, fragment: string) => void;
+  findBookmarkFragment?: () => string | null;
+  scrollToFragment?: (fragment: string) => boolean;
   restoreScroll: (scrollTop: number) => void;
 }
+
+type ReadyAnnotationPreview = ReadyDocumentTab | ReadyMermaidTab;
 
 export function createAnnotationShell(
   deps: AnnotationShellDeps,
 ): AnnotationShell {
   const model = createAnnotationOverlayModel();
   const staleIds = new Map<string, Set<string>>();
+  const revisionCache = new Map<string, RevisionCacheEntry>();
   let reanchorGeneration = 0;
   const controller = createAnnotationController({
     openStore: deps.openStore,
+    translate: (key) => deps.translator().t(key as MessageKey),
     onNotice: deps.onNotice,
     onChange: () => deps.onChange(),
   });
 
-  function currentDocument(): ReadyDocumentTab | null {
+  function currentPreview(): ReadyAnnotationPreview | null {
     const tab = activeTab(deps.runtime.getState());
-    return tab?.kind === "document" && tab.status === "ready" ? tab : null;
+    return tab &&
+      (tab.kind === "document" || tab.kind === "mermaid") &&
+      tab.status === "ready"
+      ? tab
+      : null;
+  }
+
+  function revisionEntry(tab: ReadyDocumentTab): RevisionCacheEntry {
+    const existing = revisionCache.get(tab.canonicalPath);
+    if (
+      existing &&
+      existing.source === tab.source &&
+      existing.modifiedAtMs === tab.modifiedAtMs &&
+      existing.sizeBytes === tab.sizeBytes
+    ) {
+      return existing;
+    }
+    const created: RevisionCacheEntry = {
+      source: tab.source,
+      modifiedAtMs: tab.modifiedAtMs,
+      sizeBytes: tab.sizeBytes,
+      outcomes: new Map(),
+    };
+    revisionCache.set(tab.canonicalPath, created);
+    return created;
+  }
+
+  async function sourceHashFor(tab: ReadyDocumentTab): Promise<string> {
+    const entry = revisionEntry(tab);
+    if (entry.hash) return entry.hash;
+    if (!entry.hashPromise) {
+      entry.hashPromise = sha256Hex(tab.source).then((hash) => {
+        entry.hash = hash;
+        entry.hashPromise = undefined;
+        return hash;
+      });
+    }
+    return entry.hashPromise;
   }
 
   function itemsFor(path: string) {
@@ -100,7 +149,7 @@ export function createAnnotationShell(
 
   function renderMarkup(): string {
     if (!model.visible) return "";
-    const tab = currentDocument();
+    const tab = currentPreview();
     return renderAnnotationOverlay({
       model,
       items: itemsFor(tab?.canonicalPath ?? ""),
@@ -157,7 +206,7 @@ export function createAnnotationShell(
   }
 
   function currentRows() {
-    const tab = currentDocument();
+    const tab = currentPreview();
     const items = itemsFor(tab?.canonicalPath ?? "");
     if (model.tab === "bookmarks") return items.bookmarks;
     if (model.tab === "highlights") return items.highlights;
@@ -165,7 +214,7 @@ export function createAnnotationShell(
   }
 
   function onActivate(): void {
-    const tab = currentDocument();
+    const tab = currentPreview();
     if (!tab) return;
     const row = currentRows()[model.selectedIndex];
     if (!row) return;
@@ -194,7 +243,7 @@ export function createAnnotationShell(
   }
 
   function onConfirmDelete(): void {
-    const tab = currentDocument();
+    const tab = currentPreview();
     const id = model.confirmingDeleteId;
     if (!tab || !id) return;
     try {
@@ -220,7 +269,7 @@ export function createAnnotationShell(
   }
 
   function onSaveDraft(): void {
-    const tab = currentDocument();
+    const tab = currentPreview();
     if (!tab || !model.editing) return;
     try {
       if (model.editing.kind === "bookmark") {
@@ -232,10 +281,12 @@ export function createAnnotationShell(
             controller.updateBookmark({ ...existing, title: model.draft });
           }
         } else {
+          const fragment = deps.findBookmarkFragment?.() ?? null;
           controller.addBookmark({
             path: tab.canonicalPath,
             title: model.draft || tab.displayName,
             scrollTop: tab.scrollTop,
+            ...(fragment ? { fragment } : {}),
           });
         }
       } else if (model.editing.id) {
@@ -264,28 +315,39 @@ export function createAnnotationShell(
   }
 
   function notifyMutation(error: unknown): void {
-    const message =
+    const translator = deps.translator();
+    const key: MessageKey =
       error instanceof AnnotationMutationRejected
-        ? error.message
-        : "The annotation change could not be completed.";
+        ? ({
+            "store-disabled": "annotation.storeDisabled",
+            "recovery-only": "annotation.recoveryOnly",
+            "cap-exceeded": "annotation.capExceeded",
+            "invalid-record": "annotation.invalidRecord",
+            conflict: "annotation.mutationFailed",
+          } as const)[error.code]
+        : "annotation.mutationFailed";
+    const message = translator.t(key);
     deps.onNotice(message, {
-      title: "Annotation change failed.",
-      dismissTitle: "Dismiss annotation notice",
+      title: translator.t("annotation.mutationFailed"),
+      dismissTitle: translator.t("notice.dismiss"),
     });
   }
 
   function jumpToBookmark(id: string): void {
-    const tab = currentDocument();
+    const tab = currentPreview();
     if (!tab) return;
     const bookmark = controller
       .annotationsFor(tab.canonicalPath)
       .bookmarks.find((item) => item.id === id);
     if (!bookmark) return;
+    if (bookmark.fragment) {
+      if (deps.scrollToFragment?.(bookmark.fragment)) {
+        close();
+        return;
+      }
+    }
     deps.captureActiveScroll();
     deps.restoreScroll(bookmark.scrollTop);
-    if (bookmark.fragment) {
-      deps.setPendingAnchor(tab.key, bookmark.fragment);
-    }
     close();
   }
 
@@ -297,14 +359,14 @@ export function createAnnotationShell(
     close,
     open,
     addBookmark() {
-      const tab = currentDocument();
+      const tab = currentPreview();
       if (!tab) return;
       open("bookmarks", { kind: "bookmark", id: null });
       model.draft = tab.displayName;
       deps.onChange();
     },
     addNote() {
-      const tab = currentDocument();
+      const tab = currentPreview();
       if (!tab) return;
       open("notes", { kind: "note", id: null });
       model.draft = "";
@@ -315,7 +377,7 @@ export function createAnnotationShell(
         const quote = tab.source.slice(match.start, match.end);
         if (!quote) return;
         const context = highlightContext(tab.source, match.start, match.end);
-        const sourceHash = await sha256Hex(tab.source);
+        const sourceHash = await sourceHashFor(tab);
         controller.addHighlight({
           path: tab.canonicalPath,
           start: match.start,
@@ -334,7 +396,7 @@ export function createAnnotationShell(
     renderMarkup,
     bind(root) {
       if (!model.visible) return;
-      const tab = currentDocument();
+      const tab = currentPreview();
       bindAnnotationOverlay(root, {
         model,
         items: itemsFor(tab?.canonicalPath ?? ""),
@@ -365,28 +427,44 @@ export function createAnnotationShell(
           ...highlight,
           stale: stale.has(highlight.id),
         })),
+        tab.source,
       );
+    },
+    invalidateReanchor(clearCache = false) {
+      if (clearCache) revisionCache.clear();
+      reanchorGeneration += 1;
     },
     async reanchorDocument(tab) {
       const generation = ++reanchorGeneration;
-      const outcome = await reanchorHighlightsForSource(
-        tab.source,
-        controller.annotationsFor(tab.canonicalPath).highlights,
-        Date.now(),
-        {
-          yieldBetween: () => Promise.resolve(),
-          isCurrent: () => generation === reanchorGeneration,
-        },
-      );
+      const sourceHash = await sourceHashFor(tab);
+      if (generation !== reanchorGeneration) return;
+      const highlights = controller.annotationsFor(tab.canonicalPath).highlights;
+      const entry = revisionEntry(tab);
+      const inputSignature = highlightSignature(highlights);
+      const cached = entry.outcomes.get(inputSignature);
+      const outcome = cached
+        ? { hash: sourceHash, results: cached, cancelled: false as const }
+        : await reanchorHighlightsForSource(
+            tab.source,
+            highlights,
+            Date.now(),
+            {
+              sourceHash,
+              yieldBetween: yieldToEventLoop,
+              isCurrent: () => generation === reanchorGeneration,
+            },
+          );
       if (outcome.cancelled || generation !== reanchorGeneration) return;
+      if (!cached) {
+        cacheReanchorOutcome(entry, inputSignature, outcome.results);
+      }
       const next: Highlight[] = [];
       const stale = new Set<string>();
-      let changed = false;
       for (const result of outcome.results) {
         next.push(result.highlight);
         if (result.status === "stale") stale.add(result.highlight.id);
-        if (result.status === "reanchored") changed = true;
       }
+      const changed = highlightSignature(next) !== inputSignature;
       staleIds.set(tab.canonicalPath, stale);
       if (changed && controller.isWritable()) {
         try {
@@ -402,6 +480,35 @@ export function createAnnotationShell(
       return staleIds.get(path) ?? new Set();
     },
   };
+}
+
+interface RevisionCacheEntry {
+  source: string;
+  modifiedAtMs: number;
+  sizeBytes: number;
+  hash?: string;
+  hashPromise?: Promise<string>;
+  outcomes: Map<string, HighlightAnchorResult[]>;
+}
+
+function highlightSignature(highlights: readonly Highlight[]): string {
+  return JSON.stringify(highlights);
+}
+
+function cacheReanchorOutcome(
+  entry: RevisionCacheEntry,
+  inputSignature: string,
+  results: readonly HighlightAnchorResult[],
+): void {
+  const cached = results.map((result) => ({
+    status: result.status,
+    highlight: { ...result.highlight },
+  }));
+  entry.outcomes.set(inputSignature, cached);
+  entry.outcomes.set(
+    highlightSignature(cached.map((result) => result.highlight)),
+    cached,
+  );
 }
 
 export { preflightAnnotationRewrite };

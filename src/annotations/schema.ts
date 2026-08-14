@@ -4,6 +4,7 @@ export const ANNOTATION_STORE_FILENAME = "markmaid-annotations.json";
 export const MAX_ANNOTATIONS_PER_PATH = 50;
 export const MAX_ANNOTATIONS_GLOBAL = 500;
 export const MAX_BOOKMARK_TITLE_UNITS = 120;
+export const MAX_BOOKMARK_FRAGMENT_UNITS = 512;
 export const MAX_HIGHLIGHT_QUOTE_UNITS = 512;
 export const MAX_HIGHLIGHT_CONTEXT_UNITS = 64;
 export const MAX_NOTE_BODY_UNITS = 4096;
@@ -57,12 +58,19 @@ export interface AnnotationStoreV1 {
 
 export type AnnotationKind = "bookmarks" | "highlights" | "notes";
 
+export type AnnotationNormalizationStatus =
+  | "ready"
+  | "invalid"
+  | "unsupported";
+
 export interface AnnotationNormalizationResult {
+  status: AnnotationNormalizationStatus;
   store: AnnotationStoreV1;
   droppedBuckets: number;
   recoveryOnly: boolean;
   overCountCap: boolean;
   overByteCap: boolean;
+  unsupportedVersion?: number;
 }
 
 const UUID_PATTERN =
@@ -153,8 +161,40 @@ export function exceedsAnnotationCaps(store: AnnotationStoreV1): boolean {
 export function normalizeAnnotationStore(
   candidate: unknown,
 ): AnnotationNormalizationResult {
-  if (!isRecord(candidate) || candidate.version !== 1 || !isRecord(candidate.documents)) {
+  if (candidate === undefined || candidate === null) {
     return {
+      status: "ready",
+      store: emptyAnnotationStore(),
+      droppedBuckets: 0,
+      recoveryOnly: false,
+      overCountCap: false,
+      overByteCap: false,
+    };
+  }
+  if (!isRecord(candidate) || !Number.isInteger(candidate.version)) {
+    return {
+      status: "invalid",
+      store: emptyAnnotationStore(),
+      droppedBuckets: 0,
+      recoveryOnly: false,
+      overCountCap: false,
+      overByteCap: false,
+    };
+  }
+  if (candidate.version !== 1) {
+    return {
+      status: "unsupported",
+      store: emptyAnnotationStore(),
+      droppedBuckets: 0,
+      recoveryOnly: false,
+      overCountCap: false,
+      overByteCap: false,
+      unsupportedVersion: candidate.version as number,
+    };
+  }
+  if (!isRecord(candidate.documents)) {
+    return {
+      status: "invalid",
       store: emptyAnnotationStore(),
       droppedBuckets: 0,
       recoveryOnly: false,
@@ -174,7 +214,12 @@ export function normalizeAnnotationStore(
       continue;
     }
     const bucket = candidate.documents[key];
-    if (!isRecord(bucket)) {
+    if (
+      !isRecord(bucket) ||
+      !Array.isArray(bucket.bookmarks) ||
+      !Array.isArray(bucket.highlights) ||
+      !Array.isArray(bucket.notes)
+    ) {
       droppedBuckets += 1;
       continue;
     }
@@ -195,12 +240,48 @@ export function normalizeAnnotationStore(
   const overCountCap = countCapExceeded(store);
   const overByteCap = measureAnnotationStoreBytes(store) > MAX_ANNOTATION_STORE_BYTES;
   return {
+    status: "ready",
     store,
     droppedBuckets,
     recoveryOnly: overCountCap || overByteCap,
     overCountCap,
     overByteCap,
   };
+}
+
+/**
+ * Validate a complete mutation candidate without normalizing or mutating it.
+ * The controller uses this at the commit boundary so every add/update/re-anchor
+ * path observes the same record, path, link, and global-ID rules as load.
+ */
+export function validateAnnotationStoreRecords(
+  candidate: unknown,
+): candidate is AnnotationStoreV1 {
+  if (
+    !isRecord(candidate) ||
+    candidate.version !== 1 ||
+    !isRecord(candidate.documents)
+  ) {
+    return false;
+  }
+  const seenIds = new Set<string>();
+  for (const [path, value] of Object.entries(candidate.documents)) {
+    if (!isAbsoluteMacPath(path) || !isRecord(value)) return false;
+    if (
+      !Array.isArray(value.bookmarks) ||
+      !Array.isArray(value.highlights) ||
+      !Array.isArray(value.notes)
+    ) {
+      return false;
+    }
+    const bookmarks = normalizeBookmarks(value.bookmarks, path, seenIds);
+    if (bookmarks.length !== value.bookmarks.length) return false;
+    const highlights = normalizeHighlights(value.highlights, path, seenIds);
+    if (highlights.length !== value.highlights.length) return false;
+    const notes = normalizeNotes(value.notes, path, seenIds, bookmarks);
+    if (notes.length !== value.notes.length) return false;
+  }
+  return true;
 }
 
 function countCapExceeded(store: AnnotationStoreV1): boolean {
@@ -291,8 +372,13 @@ function parseBookmark(
     createdAt: candidate.createdAt as number,
     updatedAt: candidate.updatedAt as number,
   };
-  if (typeof candidate.fragment === "string" && candidate.fragment.length > 0) {
-    bookmark.fragment = candidate.fragment;
+  if (typeof candidate.fragment === "string") {
+    if (utf16Length(candidate.fragment) > MAX_BOOKMARK_FRAGMENT_UNITS) {
+      return null;
+    }
+    if (candidate.fragment.length > 0) bookmark.fragment = candidate.fragment;
+  } else if (candidate.fragment !== undefined) {
+    return null;
   }
   return bookmark;
 }
@@ -366,10 +452,11 @@ function parseNote(
     createdAt: candidate.createdAt as number,
     updatedAt: candidate.updatedAt as number,
   };
-  if (typeof candidate.bookmarkId === "string") {
-    if (bookmarkIds.has(candidate.bookmarkId)) {
-      note.bookmarkId = candidate.bookmarkId;
+  if (candidate.bookmarkId !== undefined) {
+    if (typeof candidate.bookmarkId !== "string" || !bookmarkIds.has(candidate.bookmarkId)) {
+      return null;
     }
+    note.bookmarkId = candidate.bookmarkId;
   }
   return note;
 }

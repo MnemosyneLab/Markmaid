@@ -2,6 +2,16 @@ import type { Highlight } from "./schema";
 
 export type HighlightAnchorStatus = "exact" | "reanchored" | "stale";
 
+export function yieldToEventLoop(): Promise<void> {
+  const scheduler = (
+    globalThis as typeof globalThis & {
+      scheduler?: { yield?: () => Promise<void> };
+    }
+  ).scheduler;
+  if (scheduler?.yield) return scheduler.yield();
+  return new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+}
+
 export interface HighlightAnchorResult {
   status: HighlightAnchorStatus;
   highlight: Highlight;
@@ -73,6 +83,7 @@ export async function reanchorHighlightsForSource(
   highlights: readonly Highlight[],
   now: number,
   options: {
+    sourceHash?: string;
     yieldBetween?: () => Promise<void>;
     isCurrent?: () => boolean;
   } = {},
@@ -81,7 +92,7 @@ export async function reanchorHighlightsForSource(
   results: HighlightAnchorResult[];
   cancelled: boolean;
 } | { cancelled: true; hash: string; results: [] }> {
-  const hash = await sha256Hex(source);
+  const hash = options.sourceHash ?? (await sha256Hex(source));
   if (options.isCurrent && !options.isCurrent()) {
     return { cancelled: true, hash, results: [] };
   }

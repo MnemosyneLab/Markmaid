@@ -1,4 +1,5 @@
 import type { ReadyDocumentTab } from "./types";
+import { message, type MessageKey } from "./i18n";
 
 export interface RevisionBaseline {
   key: string;
@@ -60,20 +61,27 @@ export function revisionSignature(result: DocumentRevisionResult): string | null
 export function noticeForRevision(
   result: DocumentRevisionResult,
   ignoredSignature: string | null,
+  translate?: (key: Extract<MessageKey, "notice.fileChanged" | "notice.previousPreview">) => string,
 ): ExternalChangeNotice | null {
   if (result.status === "unchanged") return null;
   const signature = revisionSignature(result);
   if (!signature || signature === ignoredSignature) return null;
   if (result.status === "changed") {
+    const changed =
+      translate?.("notice.fileChanged") ?? message("notice.fileChanged");
+    const previous =
+      translate?.("notice.previousPreview") ?? message("notice.previousPreview");
     return {
       kind: "changed",
       signature,
-      message: "File changed on disk. The previous preview is still shown.",
+      message: `${changed} ${previous}`,
     };
   }
+  const previous =
+    translate?.("notice.previousPreview") ?? message("notice.previousPreview");
   return {
     kind: "unavailable",
     signature,
-    message: `${result.message} The previous preview is still shown.`,
+    message: `${result.message} ${previous}`,
   };
 }

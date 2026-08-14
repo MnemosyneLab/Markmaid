@@ -30,10 +30,16 @@ export type ExternalOpenResult =
       message: string;
     };
 
-export function externalTargetActionLabel(target: ExternalOpenTarget): string {
-  if (target.kind === "finder") return "Reveal in Finder";
+export function externalTargetActionLabel(
+  target: ExternalOpenTarget,
+  translator?: Translator,
+): string {
+  if (target.kind === "finder") return message("external.revealInFinder", translator);
   if (target.openMode === "containingDirectory") {
-    return `Open containing folder in ${target.displayName}`;
+    return message("external.openContainingFolder", translator, {
+      name: target.displayName,
+    });
   }
-  return `Open in ${target.displayName}`;
+  return message("external.openIn", translator, { name: target.displayName });
 }
+import { message, type Translator } from "./i18n";

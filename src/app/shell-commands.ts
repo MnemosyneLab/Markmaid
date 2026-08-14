@@ -6,6 +6,7 @@ import {
   type CommandId,
 } from "../commands";
 import { canFavorite, isFavoritePath } from "../favorites";
+import type { MessageKey } from "../i18n";
 import type { AppState, AppTab, ColorTheme, ThemeMode } from "../types";
 
 export interface CommandContext {
@@ -43,6 +44,7 @@ export interface ShellCommandDeps {
   externalOpenPath: (tab: AppTab | null) => string | null;
   externalReadyPath: (tab: AppTab | null) => string | null;
   canHighlightFindMatch: () => boolean;
+  translate?: (key: MessageKey) => string;
 }
 
 const enabled: CommandAvailability = COMMAND_ENABLED;
@@ -52,8 +54,19 @@ const disabled = (reason: string): CommandAvailability => ({
   reason,
 });
 
+const disabledMessage = (deps: ShellCommandDeps, key: MessageKey): CommandAvailability =>
+  disabled(deps.translate?.(key) ?? key);
+
 function isReadyDocument(tab: AppTab | null): boolean {
   return Boolean(tab && tab.kind === "document" && tab.status === "ready");
+}
+
+function isReadyAnnotationPreview(tab: AppTab | null): boolean {
+  return Boolean(
+    tab &&
+      (tab.kind === "document" || tab.kind === "mermaid") &&
+      tab.status === "ready",
+  );
 }
 
 export function createShellCommandHandlers(
@@ -98,74 +111,74 @@ function commandAvailability(
     case "application.copy-diagnostics":
       return current?.kind === "settings"
         ? enabled
-        : disabled("Open Settings to copy diagnostics");
+        : disabledMessage(deps, "disabled.openSettingsDiagnostics");
     case "file.export-document":
       return isReadyDocument(current)
         ? enabled
-        : disabled("Open a ready Markdown document first");
+        : disabledMessage(deps, "disabled.openReadyMarkdown");
     case "file.reload-document":
       return current && current.kind !== "settings"
         ? enabled
-        : disabled("No preview is active");
+        : disabledMessage(deps, "disabled.noPreview");
     case "file.reveal-in-finder":
       return deps.externalOpenPath(current)
         ? enabled
-        : disabled("No local text preview is active");
+        : disabledMessage(deps, "disabled.noLocalPreview");
     case "external.open-preferred":
     case "external.choose-application":
       return deps.externalReadyPath(current)
         ? enabled
-        : disabled("Open a Markdown or Mermaid file first");
+        : disabledMessage(deps, "disabled.openMarkdownOrMermaid");
     case "tabs.close":
-      return current ? enabled : disabled("No tab is active");
+      return current ? enabled : disabledMessage(deps, "disabled.noActiveTab");
     case "tabs.reopen-closed":
       return state.closedTabsHistory.length > 0
         ? enabled
-        : disabled("No recently closed tab");
+        : disabledMessage(deps, "disabled.noClosedTab");
     case "tabs.next":
     case "tabs.previous":
       return state.tabs.length > 1
         ? enabled
-        : disabled("Only one tab is open");
+        : disabledMessage(deps, "disabled.onlyOneTab");
     case "tabs.move-up":
-      return currentIndex > 0 ? enabled : disabled("Tab is already first");
+      return currentIndex > 0 ? enabled : disabledMessage(deps, "disabled.tabFirst");
     case "tabs.move-down":
       return currentIndex >= 0 && currentIndex < state.tabs.length - 1
         ? enabled
-        : disabled("Tab is already last");
+        : disabledMessage(deps, "disabled.tabLast");
     case "view.show-sidebar":
       return state.leftSidebarVisible ? hidden : enabled;
     case "view.hide-sidebar":
       return state.leftSidebarVisible ? enabled : hidden;
     case "view.show-outline":
       if (!isReadyDocument(current)) {
-        return disabled("Open a ready Markdown document first");
+        return disabledMessage(deps, "disabled.openReadyMarkdown");
       }
       return state.tableOfContentsVisible ? hidden : enabled;
     case "view.hide-outline":
       if (!isReadyDocument(current)) {
-        return disabled("Open a ready Markdown document first");
+        return disabledMessage(deps, "disabled.openReadyMarkdown");
       }
       return state.tableOfContentsVisible ? enabled : hidden;
     case "file.toggle-favorite":
       return canFavorite(current)
         ? enabled
-        : disabled("Open a ready Markdown or Mermaid document first");
+        : disabledMessage(deps, "disabled.openMarkdownOrMermaid");
     case "file.open-favorites":
       return state.favorites.length > 0
         ? enabled
-        : disabled("No favorites yet");
+        : disabledMessage(deps, "disabled.noFavorites");
     case "annotations.add-bookmark":
     case "annotations.show-bookmarks":
     case "annotations.add-note":
     case "annotations.manage":
-      return isReadyDocument(current)
+      return isReadyAnnotationPreview(current)
         ? enabled
-        : disabled("Open a ready Markdown document first");
+        : disabledMessage(deps, "disabled.openMarkdownOrMermaid");
     case "annotations.highlight-find-match":
       return deps.canHighlightFindMatch()
         ? enabled
-        : disabled("Find a match in a Markdown document first");
+        : disabledMessage(deps, "disabled.noFindMatch");
   }
 }
 

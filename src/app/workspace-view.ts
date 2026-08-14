@@ -279,15 +279,15 @@ export function renderWorkspaceChildren(
           code: "list_failed",
           canReveal,
           isRoot,
-        })
+        }, model.translator)
       : buildActionableState({
           kind: "empty-workspace",
           isRoot,
           canReveal,
-        });
+        }, model.translator);
     return `<div class="workspace-children" role="none" style="--depth: ${depth}">
       <div class="workspace-empty-branch workspace-actionable-state">
-        <span>${loadFailed ? "Folder unavailable" : "No visible items"}</span>
+        <span>${loadFailed ? message("workspace.folderUnavailable", model.translator) : message("workspace.noVisibleItems", model.translator)}</span>
         <div class="workspace-state-actions">
           ${actionable.actions
             .map(
@@ -405,50 +405,52 @@ export function renderWorkspaceDialog(
 export function buildWorkspaceContextMenuItems(
   target: WorkspaceNodeTarget,
   controller: WorkspaceViewController,
+  translator?: Translator,
 ): WorkspaceContextMenuItem[] {
+  const label = (key: Parameters<typeof message>[0]) => message(key, translator);
   const isRoot = target.relativePath === "";
   if (target.kind === "directory") {
     const items: WorkspaceContextMenuItem[] = [
-      { label: "New Markdown File", action: "new-markdown" },
-      { label: "New Folder", action: "new-folder" },
+      { label: label("workspace.newMarkdownFile"), action: "new-markdown" },
+      { label: label("workspace.newFolder"), action: "new-folder" },
     ];
-    if (!isRoot) items.push({ label: "Rename", action: "rename" });
-    if (!isRoot) items.push({ label: "Move to Trash", action: "trash" });
+    if (!isRoot) items.push({ label: label("workspace.rename"), action: "rename" });
+    if (!isRoot) items.push({ label: label("workspace.moveToTrash"), action: "trash" });
     items.push(
-      { label: "Reveal in Finder", action: "reveal" },
-      { label: "Refresh", action: "refresh" },
+      { label: label("workspace.reveal"), action: "reveal" },
+      { label: label("workspace.refresh"), action: "refresh" },
     );
     if (isRoot) {
       items.push(
         {
-          label: "Move Up",
+          label: label("workspace.moveUp"),
           action: "move-up",
           disabled: !controller.canMoveRoot(target.rootId, -1),
         },
         {
-          label: "Move Down",
+          label: label("workspace.moveDown"),
           action: "move-down",
           disabled: !controller.canMoveRoot(target.rootId, 1),
         },
-        { label: "Remove from Workspace", action: "unregister" },
+        { label: label("workspace.removeFromWorkspace"), action: "unregister" },
       );
     }
     return items;
   }
   return [
-    { label: "Open Preview", action: "open" },
-    { label: "Rename", action: "rename" },
-    { label: "Move to Trash", action: "trash" },
-    { label: "Reveal in Finder", action: "reveal" },
+    { label: label("workspace.openPreview"), action: "open" },
+    { label: label("workspace.rename"), action: "rename" },
+    { label: label("workspace.moveToTrash"), action: "trash" },
+    { label: label("workspace.reveal"), action: "reveal" },
   ];
 }
 
 export function renderWorkspaceContextMenu(
   target: WorkspaceNodeTarget,
   controller: WorkspaceViewController,
-  helpers: Pick<WorkspaceViewRenderModel, "escapeHtml">,
+  helpers: Pick<WorkspaceViewRenderModel, "escapeHtml" | "translator">,
 ): string {
-  return buildWorkspaceContextMenuItems(target, controller)
+  return buildWorkspaceContextMenuItems(target, controller, helpers.translator)
     .map(
       (item) =>
         `<button type="button" role="menuitem" tabindex="-1" data-workspace-action="${item.action}" ${item.disabled ? "disabled" : ""}>${helpers.escapeHtml(item.label)}</button>`,
@@ -812,7 +814,7 @@ function showWorkspaceContextMenu(
   const menu = host.ownerDocument.createElement("div");
   menu.className = "context-menu workspace-context-menu";
   menu.setAttribute("role", "menu");
-  menu.setAttribute("aria-label", "Workspace item actions");
+  menu.setAttribute("aria-label", message("workspace.itemActions", model.translator));
   menu.style.left = `${event.clientX}px`;
   menu.style.top = `${event.clientY}px`;
   menu.innerHTML = renderWorkspaceContextMenu(target, model.controller, model);
