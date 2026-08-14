@@ -3,8 +3,11 @@ import type { AppState, ReadyDocumentTab } from "../types";
 import {
   activeTab,
   closeTab,
+  consumeClosedTab,
   cycleTab,
   moveDocumentVisit,
+  peekClosedTab,
+  previewPath,
   recordDocumentVisit,
   reopenClosedTab,
   updateScroll,
@@ -15,7 +18,7 @@ export interface NavigationController {
   selectTab(key: string | null): void;
   closeActiveTab(): void;
   closeTabAndLoadNext(key: string): void;
-  reopenLastClosedTab(): void;
+  reopenLastClosedTab(): Promise<void>;
   selectRelativeTab(direction: 1 | -1): void;
   recordActiveDocumentVisit(
     fragment?: string | null,
@@ -107,12 +110,29 @@ export function createNavigationController(
 
     closeTabAndLoadNext,
 
-    reopenLastClosedTab() {
+    async reopenLastClosedTab() {
+      const closed = peekClosedTab(runtime.getState());
+      if (!closed) return;
       runtime.commit(reopenClosedTab(runtime.getState()));
       recordActiveDocumentVisit();
       renderAndPersist();
       void deps.syncReopenClosedTabAvailability();
-      loadActivePreview();
+      await deps.ensurePreviewLoaded(runtime.getState().activeTabKey);
+      const latest = runtime.getState();
+      const current = activeTab(latest);
+      const ready =
+        Boolean(
+          current &&
+            current.kind !== "settings" &&
+            current.status === "ready" &&
+            current.kind === closed.kind &&
+            previewPath(current) === closed.path,
+        );
+      if (ready) {
+        runtime.commit(consumeClosedTab(latest, closed));
+        void deps.syncReopenClosedTabAvailability();
+        renderAndPersist();
+      }
     },
 
     selectRelativeTab(direction) {

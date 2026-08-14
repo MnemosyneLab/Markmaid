@@ -1,5 +1,6 @@
 import type { AppTab } from "../types";
 import type { IconName } from "../icons";
+import { message, type Translator } from "../i18n";
 import {
   codeMatchLocation,
   findSourceMatches,
@@ -14,6 +15,8 @@ import type { DocumentSearchModel } from "./overlay-controller";
 
 export interface DocumentSearchMatch {
   sourceIndex: number;
+  start: number;
+  end: number;
   marks: HTMLElement[];
   target: HTMLElement | null;
   codeLine: number | null;
@@ -47,6 +50,7 @@ export interface DocumentFindSourceMatchCallbacks {
 export interface DocumentFindViewRenderHelpers {
   escapeAttribute: (value: string) => string;
   icon: (name: IconName) => string;
+  translator?: Translator | (() => Translator);
 }
 
 export interface DocumentFindViewDeps extends DocumentFindViewRenderHelpers {
@@ -61,6 +65,8 @@ export interface DocumentFindViewDeps extends DocumentFindViewRenderHelpers {
   beginDocumentSearchReveal: () => number;
   documentSearchRevealSequence: () => number;
   onClose: () => void;
+  onAddHighlight?: () => void;
+  onHighlightColorChange?: (color: DocumentSearchModel["highlightColor"]) => void;
 }
 
 export interface DocumentFindView {
@@ -73,6 +79,12 @@ export interface DocumentFindView {
   clearHighlights(): void;
 }
 
+function resolveTranslator(
+  translator?: Translator | (() => Translator),
+): Translator | undefined {
+  return typeof translator === "function" ? translator() : translator;
+}
+
 const defaultSourceMatchCallbacks: DocumentFindSourceMatchCallbacks = {
   findSourceMatches,
   parseSourcepos,
@@ -82,16 +94,40 @@ const defaultSourceMatchCallbacks: DocumentFindSourceMatchCallbacks = {
 };
 
 export function renderDocumentSearch(
-  deps: Pick<DocumentFindViewDeps, "model" | "escapeAttribute" | "icon">,
+  deps: Pick<DocumentFindViewDeps, "model" | "escapeAttribute" | "icon" | "translator">,
 ): string {
+  const t = (
+    key: Parameters<typeof message>[0],
+    vars?: Record<string, string | number>,
+  ) => message(key, resolveTranslator(deps.translator), vars);
+  const highlightMode = deps.model.mode === "highlight";
+  const hasMatch = deps.model.matches.length > 0 && deps.model.activeIndex >= 0;
+  const color = deps.model.highlightColor ?? "yellow";
+  const colors = ["yellow", "green", "blue", "pink"] as const;
+  const colorKeys = {
+    yellow: "annotation.color.yellow",
+    green: "annotation.color.green",
+    blue: "annotation.color.blue",
+    pink: "annotation.color.pink",
+  } as const;
   return `
-    <div class="document-search" role="search" aria-label="Find in document">
+    <div class="document-search" role="search" aria-label="${deps.escapeAttribute(t("find.label"))}">
       <i class="document-search-icon" data-lucide="search" aria-hidden="true"></i>
-      <input class="document-search-input" type="search" data-document-search-input value="${deps.escapeAttribute(deps.model.query)}" placeholder="Find in document" aria-label="Find in document" autocomplete="off" spellcheck="false">
-      <span class="document-search-count" data-search-count>0 of 0</span>
-      <button class="document-search-button" type="button" data-search-previous title="Previous match" aria-label="Previous match">${deps.icon("chevron-up")}</button>
-      <button class="document-search-button" type="button" data-search-next title="Next match" aria-label="Next match">${deps.icon("chevron-down")}</button>
-      <button class="document-search-button" type="button" data-search-close title="Close search" aria-label="Close search">${deps.icon("x")}</button>
+      <input class="document-search-input" type="search" data-document-search-input value="${deps.escapeAttribute(deps.model.query)}" placeholder="${deps.escapeAttribute(t("find.placeholder"))}" aria-label="${deps.escapeAttribute(t("find.label"))}" autocomplete="off" spellcheck="false">
+      <span class="document-search-count" data-search-count>${deps.escapeAttribute(t("find.count", { current: 0, total: 0 }))}</span>
+      <button class="document-search-button" type="button" data-search-previous title="${deps.escapeAttribute(t("find.previous"))}" aria-label="${deps.escapeAttribute(t("find.previous"))}">${deps.icon("chevron-up")}</button>
+      <button class="document-search-button" type="button" data-search-next title="${deps.escapeAttribute(t("find.next"))}" aria-label="${deps.escapeAttribute(t("find.next"))}">${deps.icon("chevron-down")}</button>
+      ${
+        highlightMode
+          ? `<div class="document-search-colors" role="group" aria-label="${deps.escapeAttribute(t("find.colorLabel"))}">${colors
+              .map(
+                (token) =>
+                  `<button class="document-search-color is-${token}${color === token ? " is-selected" : ""}" type="button" data-highlight-color="${token}" title="${deps.escapeAttribute(t(colorKeys[token]))}" aria-label="${deps.escapeAttribute(t(colorKeys[token]))}" aria-pressed="${color === token}"></button>`,
+              )
+              .join("")}</div><button class="document-search-button" type="button" data-add-highlight ${hasMatch ? "" : "disabled"} title="${deps.escapeAttribute(t("find.addHighlight"))}" aria-label="${deps.escapeAttribute(t("find.addHighlight"))}">H</button>`
+          : ""
+      }
+      <button class="document-search-button" type="button" data-search-close title="${deps.escapeAttribute(t("find.close"))}" aria-label="${deps.escapeAttribute(t("find.close"))}">${deps.icon("x")}</button>
     </div>
   `;
 }
@@ -119,7 +155,38 @@ export function createDocumentFindView(
     deps.root
       .querySelector<HTMLElement>("[data-search-close]")
       ?.addEventListener("click", deps.onClose);
-    updateDocumentSearchControls(deps.root, deps.model);
+    deps.root
+      .querySelector<HTMLElement>("[data-add-highlight]")
+      ?.addEventListener("click", () => deps.onAddHighlight?.());
+    deps.root.querySelectorAll<HTMLButtonElement>("[data-highlight-color]").forEach(
+      (button) => {
+        button.addEventListener("click", () => {
+          const color = button.dataset.highlightColor;
+          if (
+            color !== "yellow" &&
+            color !== "green" &&
+            color !== "blue" &&
+            color !== "pink"
+          ) {
+            return;
+          }
+          deps.model.highlightColor = color;
+          deps.root
+            .querySelectorAll<HTMLButtonElement>("[data-highlight-color]")
+            .forEach((candidate) => {
+              const selected = candidate.dataset.highlightColor === color;
+              candidate.classList.toggle("is-selected", selected);
+              candidate.setAttribute("aria-pressed", String(selected));
+            });
+          deps.onHighlightColorChange?.(color);
+        });
+      },
+    );
+    updateDocumentSearchControls(
+      deps.root,
+      deps.model,
+      resolveTranslator(deps.translator),
+    );
   }
 
   function refresh(selectFirst: boolean): void {
@@ -129,7 +196,11 @@ export function createDocumentFindView(
     if (!query) {
       deps.model.matches = [];
       deps.model.activeIndex = -1;
-      updateDocumentSearchControls(deps.root, deps.model);
+      updateDocumentSearchControls(
+      deps.root,
+      deps.model,
+      resolveTranslator(deps.translator),
+    );
       return;
     }
 
@@ -149,6 +220,8 @@ export function createDocumentFindView(
         )
       : sourceMatches.map((match) => ({
           sourceIndex: match.start,
+          start: match.start,
+          end: match.end,
           marks: [],
           target: null,
           codeLine: null,
@@ -214,7 +287,11 @@ export function createDocumentFindView(
         inline: "nearest",
       });
     }
-    updateDocumentSearchControls(deps.root, deps.model);
+    updateDocumentSearchControls(
+      deps.root,
+      deps.model,
+      resolveTranslator(deps.translator),
+    );
   }
 
   return {
@@ -223,7 +300,12 @@ export function createDocumentFindView(
     refresh,
     move,
     activate,
-    updateControls: () => updateDocumentSearchControls(deps.root, deps.model),
+    updateControls: () =>
+      updateDocumentSearchControls(
+        deps.root,
+        deps.model,
+        resolveTranslator(deps.translator),
+      ),
     clearHighlights: () => clearDocumentSearchHighlights(deps.root),
   };
 }
@@ -267,12 +349,18 @@ export function activateDocumentSearchMatch(
 export function updateDocumentSearchControls(
   root: HTMLElement,
   model: DocumentSearchModel<DocumentSearchMatch>,
+  translator?: Translator,
 ): void {
   const count = root.querySelector<HTMLElement>("[data-search-count]");
   if (!count) return;
   const total = model.matches.length;
   count.textContent =
-    total === 0 ? "No results" : `${model.activeIndex + 1} of ${total}`;
+    total === 0
+      ? message("find.noResults", translator)
+      : message("find.count", translator, {
+          current: model.activeIndex + 1,
+          total,
+        });
   root
     .querySelectorAll<HTMLButtonElement>(
       "[data-search-previous], [data-search-next]",
@@ -280,6 +368,10 @@ export function updateDocumentSearchControls(
     .forEach((button) => {
       button.disabled = total === 0;
     });
+  const addHighlight = root.querySelector<HTMLButtonElement>("[data-add-highlight]");
+  if (addHighlight) {
+    addHighlight.disabled = total === 0 || model.activeIndex < 0;
+  }
 }
 
 export function clearDocumentSearchHighlights(root: HTMLElement): void {
@@ -321,6 +413,8 @@ export function mapSourceMatchesToRenderedBlocks(
         : null;
     return {
       sourceIndex: match.start,
+      start: match.start,
+      end: match.end,
       marks: [] as HTMLElement[],
       target,
       codeLine: codeLocation?.line ?? null,

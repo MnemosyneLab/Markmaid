@@ -2,6 +2,34 @@
 
 All notable changes to MarkMaid are documented in this file.
 
+## [0.1.9] - 2026-08-13
+
+### Added
+
+- Favorites for ready Markdown and standalone Mermaid documents, with tab-menu
+  toggle, Command Palette commands, and Quick Open ranking ahead of workspace
+  and recents
+- App-local bookmarks, Find-based highlights, and short notes in a separate
+  annotation store that never writes Markdown source
+- Persisted document visit history and closed-tab history across relaunch, with
+  Reopen consuming a closed entry only after a ready preview
+- English and Simplified Chinese UI catalogs, a Settings language preference
+  (`system` / `en` / `zh-Hans`), and localized MarkMaid-authored native menus
+
+### Changed
+
+- Session restore now uses version 2, migrating v0.1.8 sessions and refusing to
+  overwrite a newer unsupported Store
+- Quick Open can open a Favorites-only scope from the Command Palette without a
+  second picker
+- Workspace rename and Trash preflight or clean app metadata independently of
+  the filesystem mutation
+
+### Security
+
+- Annotation quotes, notes, and paths stay out of diagnostics, Copy Details,
+  HTML/PDF export, and the Markdown source
+
 ## [0.1.8] - 2026-08-13
 
 ### Added
@@ -227,6 +255,7 @@ All notable changes to MarkMaid are documented in this file.
 - Manual reload that preserves the previous preview when reloading fails
 - Local release tooling for version sync, ARM builds, and GitHub Releases
 
+[0.1.9]: https://github.com/Weichen-LF/Markmaid/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/Weichen-LF/Markmaid/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/Weichen-LF/Markmaid/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/Weichen-LF/Markmaid/compare/v0.1.5...v0.1.6

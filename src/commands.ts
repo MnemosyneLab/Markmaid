@@ -1,7 +1,12 @@
+import type { Translator } from "./i18n";
+import type { MessageKey } from "./i18n/messages";
+
 export type CommandId =
   | "file.open-preview-files"
   | "workspace.add-folder"
   | "file.quick-open"
+  | "file.toggle-favorite"
+  | "file.open-favorites"
   | "file.export-document"
   | "file.reload-document"
   | "file.reveal-in-finder"
@@ -28,7 +33,12 @@ export type CommandId =
   | "appearance.palette.catppuccin"
   | "appearance.palette.high-contrast"
   | "application.settings"
-  | "application.copy-diagnostics";
+  | "application.copy-diagnostics"
+  | "annotations.add-bookmark"
+  | "annotations.show-bookmarks"
+  | "annotations.highlight-find-match"
+  | "annotations.add-note"
+  | "annotations.manage";
 
 export type CommandSection =
   | "File"
@@ -36,7 +46,8 @@ export type CommandSection =
   | "Tabs"
   | "View"
   | "Appearance"
-  | "Application";
+  | "Application"
+  | "Annotations";
 
 export type CommandAvailability =
   | { state: "hidden" }
@@ -49,7 +60,7 @@ export const COMMAND_HIDDEN: CommandAvailability = { state: "hidden" };
 export interface AppCommand<TContext> {
   id: CommandId;
   label: string;
-  section: CommandSection;
+  section: string;
   keywords: readonly string[];
   shortcutLabel?: string;
   availability(context: TContext): CommandAvailability;
@@ -59,7 +70,7 @@ export interface AppCommand<TContext> {
 export interface CommandMetadata {
   id: CommandId;
   label: string;
-  section: CommandSection;
+  section: string;
   keywords: readonly string[];
   shortcutLabel?: string;
 }
@@ -114,6 +125,18 @@ export const COMMAND_CATALOG_METADATA: readonly CommandMetadata[] = [
     section: "File",
     keywords: ["workspace", "file", "search"],
     shortcutLabel: "⌘P",
+  },
+  {
+    id: "file.toggle-favorite",
+    label: "Toggle Favorite",
+    section: "File",
+    keywords: ["pin", "star", "favorite", "bookmark"],
+  },
+  {
+    id: "file.open-favorites",
+    label: "Open Favorites",
+    section: "File",
+    keywords: ["pin", "star", "favorite", "quick open"],
   },
   {
     id: "file.export-document",
@@ -282,15 +305,125 @@ export const COMMAND_CATALOG_METADATA: readonly CommandMetadata[] = [
     section: "Application",
     keywords: ["support", "debug", "report", "clipboard"],
   },
+  {
+    id: "annotations.add-bookmark",
+    label: "Add Bookmark",
+    section: "Annotations",
+    keywords: ["bookmark", "scroll", "heading"],
+  },
+  {
+    id: "annotations.show-bookmarks",
+    label: "Show Bookmarks",
+    section: "Annotations",
+    keywords: ["bookmark", "list", "jump"],
+  },
+  {
+    id: "annotations.highlight-find-match",
+    label: "Highlight Find Match",
+    section: "Annotations",
+    keywords: ["highlight", "find", "mark"],
+  },
+  {
+    id: "annotations.add-note",
+    label: "Add Note",
+    section: "Annotations",
+    keywords: ["note", "comment", "private"],
+  },
+  {
+    id: "annotations.manage",
+    label: "Manage Annotations",
+    section: "Annotations",
+    keywords: ["bookmark", "highlight", "note", "manage"],
+  },
 ];
+
+const COMMAND_LABEL_KEYS: Record<CommandId, MessageKey> = {
+  "file.open-preview-files": "command.file.open-preview-files",
+  "workspace.add-folder": "command.workspace.add-folder",
+  "file.quick-open": "command.file.quick-open",
+  "file.toggle-favorite": "command.file.toggle-favorite",
+  "file.open-favorites": "command.file.open-favorites",
+  "file.export-document": "command.file.export-document",
+  "file.reload-document": "command.file.reload-document",
+  "file.reveal-in-finder": "command.file.reveal-in-finder",
+  "external.open-preferred": "command.external.open-preferred",
+  "external.choose-application": "command.external.choose-application",
+  "tabs.close": "command.tabs.close",
+  "tabs.reopen-closed": "command.tabs.reopen-closed",
+  "tabs.next": "command.tabs.next",
+  "tabs.previous": "command.tabs.previous",
+  "tabs.move-up": "command.tabs.move-up",
+  "tabs.move-down": "command.tabs.move-down",
+  "view.toggle-focus-mode": "command.view.toggle-focus-mode",
+  "view.show-sidebar": "command.view.show-sidebar",
+  "view.hide-sidebar": "command.view.hide-sidebar",
+  "view.show-outline": "command.view.show-outline",
+  "view.hide-outline": "command.view.hide-outline",
+  "appearance.system": "command.appearance.system",
+  "appearance.light": "command.appearance.light",
+  "appearance.dark": "command.appearance.dark",
+  "appearance.palette.default": "command.appearance.palette.default",
+  "appearance.palette.solarized": "command.appearance.palette.solarized",
+  "appearance.palette.nord": "command.appearance.palette.nord",
+  "appearance.palette.gruvbox": "command.appearance.palette.gruvbox",
+  "appearance.palette.catppuccin": "command.appearance.palette.catppuccin",
+  "appearance.palette.high-contrast": "command.appearance.palette.high-contrast",
+  "application.settings": "command.application.settings",
+  "application.copy-diagnostics": "command.application.copy-diagnostics",
+  "annotations.add-bookmark": "command.annotations.add-bookmark",
+  "annotations.show-bookmarks": "command.annotations.show-bookmarks",
+  "annotations.highlight-find-match": "command.annotations.highlight-find-match",
+  "annotations.add-note": "command.annotations.add-note",
+  "annotations.manage": "command.annotations.manage",
+};
+
+const COMMAND_SECTION_KEYS: Record<CommandSection, MessageKey> = {
+  File: "section.file",
+  External: "section.external",
+  Tabs: "section.tabs",
+  View: "section.view",
+  Appearance: "section.appearance",
+  Application: "section.application",
+  Annotations: "section.annotations",
+};
+
+export function createCommandCatalogMetadata(
+  t: Translator,
+): readonly CommandMetadata[] {
+  return COMMAND_CATALOG_METADATA.map((command) => ({
+    ...command,
+    label: t.t(COMMAND_LABEL_KEYS[command.id]),
+    section: t.t(COMMAND_SECTION_KEYS[command.section as CommandSection]),
+    keywords:
+      t.locale === "zh-Hans"
+        ? uniqueKeywords([
+            ...t.t(COMMAND_LABEL_KEYS[command.id]).split(/\s+/u).filter(Boolean),
+            ...command.keywords,
+          ])
+        : command.keywords,
+  }));
+}
+
+function uniqueKeywords(keywords: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const keyword of keywords) {
+    const key = keyword.toLocaleLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(keyword);
+  }
+  return result;
+}
 
 export function createCommandCatalog<TContext>(
   handlers: CommandCatalogHandlers<TContext>,
+  metadata: readonly CommandMetadata[] = COMMAND_CATALOG_METADATA,
 ): readonly AppCommand<TContext>[] {
-  return COMMAND_CATALOG_METADATA.map((metadata) => ({
-    ...metadata,
-    availability: (context) => handlers.availability(metadata.id, context),
-    execute: (context) => handlers.execute(metadata.id, context),
+  return metadata.map((item) => ({
+    ...item,
+    availability: (context) => handlers.availability(item.id, context),
+    execute: (context) => handlers.execute(item.id, context),
   }));
 }
 

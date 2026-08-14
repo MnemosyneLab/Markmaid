@@ -40,11 +40,15 @@ describe("persistence", () => {
         recentDocuments: ["/notes/a.md"],
       },
     });
-    const state = await loadSessionFromStore(store);
-    expect(state.theme).toBe("dark");
-    expect(state.recentDocuments).toEqual(["/notes/a.md"]);
-    expect(state.closedTabsHistory).toEqual([]);
-    expect(state.focusMode).toBe(false);
+    const loaded = await loadSessionFromStore(store);
+    expect(loaded.status).toBe("ready");
+    if (loaded.status !== "ready") throw new Error("expected ready session");
+    expect(loaded.state.theme).toBe("dark");
+    expect(loaded.state.recentDocuments).toEqual(["/notes/a.md"]);
+    expect(loaded.state.closedTabsHistory).toEqual([]);
+    expect(loaded.state.focusMode).toBe(false);
+    expect(loaded.state.favorites).toEqual([]);
+    expect(loaded.state.uiLocale).toBe("system");
   });
 
   it("propagates store load failures to the bootstrap boundary", async () => {
@@ -94,7 +98,7 @@ describe("persistence", () => {
   );
 
   it("keeps persistence enabled when Store loading succeeds with an invalid value", async () => {
-    const store = memoryStore({ [SESSION_KEY]: { version: 2 } });
+    const store = memoryStore({ [SESSION_KEY]: { version: "nope" } });
     const disablePersistence = vi.fn();
     const result = await loadSessionForBootstrap(async () => store, {
       disablePersistence,
@@ -106,7 +110,43 @@ describe("persistence", () => {
       store,
       persistenceEnabled: true,
     });
-    expect(disablePersistence).not.toHaveBeenCalled();
+      expect(disablePersistence).not.toHaveBeenCalled();
+    });
+
+  it("disables writes for an unsupported future session version without calling set", async () => {
+    const store = memoryStore({
+      [SESSION_KEY]: {
+        version: 99,
+        tabs: [],
+        activeTabKey: null,
+        theme: "dark",
+      },
+    });
+    const set = vi.spyOn(store, "set");
+    const disablePersistence = vi.fn();
+    const result = await loadSessionForBootstrap(async () => store, {
+      disablePersistence,
+    });
+
+    expect(result).toMatchObject({
+      status: "unsupported",
+      version: 99,
+      state: DEFAULT_STATE,
+      store,
+      persistenceEnabled: false,
+    });
+    if (result.status !== "unsupported") {
+      throw new Error("expected an unsupported bootstrap result");
+    }
+    expect(disablePersistence).toHaveBeenCalledOnce();
+    expect(result.notice).not.toContain("private");
+    expect(set).not.toHaveBeenCalled();
+    expect(store.data[SESSION_KEY]).toEqual({
+      version: 99,
+      tabs: [],
+      activeTabKey: null,
+      theme: "dark",
+    });
   });
 
   it("does not persist runtime-only Focus Mode state", () => {

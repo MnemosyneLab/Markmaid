@@ -945,6 +945,38 @@ html.is-resizing-sidebar * {
   stroke-width: 2;
 }
 
+.document-search-colors {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin: 0 2px;
+}
+
+.document-search-color {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--border-strong) 70%, transparent);
+  background: color-mix(in srgb, #eab308 72%, white);
+}
+
+.document-search-color.is-green {
+  background: color-mix(in srgb, #22c55e 72%, white);
+}
+
+.document-search-color.is-blue {
+  background: color-mix(in srgb, #3b82f6 72%, white);
+}
+
+.document-search-color.is-pink {
+  background: color-mix(in srgb, #ec4899 72%, white);
+}
+
+.document-search-color.is-selected {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .markdown-body .document-search-match {
   padding: 0;
   border-radius: 2px;
@@ -952,9 +984,23 @@ html.is-resizing-sidebar * {
   background: color-mix(in srgb, var(--accent) 34%, transparent);
 }
 
-.markdown-body .document-search-match.is-active {
-  background: color-mix(in srgb, var(--accent) 58%, transparent);
-  outline: 1px solid color-mix(in srgb, var(--accent-strong) 75%, transparent);
+.markdown-body .annotation-highlight-mark {
+  padding: 0;
+  border-radius: 2px;
+  color: inherit;
+  background: color-mix(in srgb, #eab308 42%, transparent);
+}
+.markdown-body .annotation-highlight-mark.is-green {
+  background: color-mix(in srgb, #22c55e 42%, transparent);
+}
+.markdown-body .annotation-highlight-mark.is-blue {
+  background: color-mix(in srgb, #3b82f6 42%, transparent);
+}
+.markdown-body .annotation-highlight-mark.is-pink {
+  background: color-mix(in srgb, #ec4899 42%, transparent);
+}
+.markdown-body .annotation-highlight-mark.is-yellow {
+  background: color-mix(in srgb, #eab308 42%, transparent);
 }
 
 .markdown-body .document-search-source-target {

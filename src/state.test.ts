@@ -23,6 +23,7 @@ import {
   openSettings,
   recordDocumentVisit,
   reopenClosedTab,
+  consumeClosedTab,
   replacePreviewTab,
   replaceDocumentResult,
   rewritePreviewPaths,
@@ -302,7 +303,10 @@ describe("tab state", () => {
       scrollTop: 48,
     });
     expect(reopened.activeTabKey).toBe("mermaid:/diagram.mmd");
-    expect(reopened.closedTabsHistory).toEqual([]);
+    expect(reopened.closedTabsHistory).toEqual([
+      { kind: "mermaid", path: "/diagram.mmd", scrollTop: 48, index: 1 },
+    ]);
+    expect(consumeClosedTab(reopened, reopened.closedTabsHistory[0]).closedTabsHistory).toEqual([]);
   });
 
   it("reopens closed preview tabs in last-in-first-out order", () => {
@@ -314,7 +318,9 @@ describe("tab state", () => {
     state = closeTab(state, "document:/document.md");
     state = closeTab(state, "image:/image.png");
     state = reopenClosedTab(state);
+    state = consumeClosedTab(state, state.closedTabsHistory.at(-1)!);
     state = reopenClosedTab(state);
+    state = consumeClosedTab(state, state.closedTabsHistory.at(-1)!);
 
     expect(state.tabs.map((tab) => tab.key)).toEqual([
       "document:/document.md",
@@ -478,18 +484,22 @@ describe("tab state", () => {
     expect(restored.tabs[0]).toMatchObject({ scrollTop: 480 });
   });
 
-  it("does not persist closed-tab history", () => {
+  it("persists closed-tab history across session round trips", () => {
+    const closed = {
+      kind: "document" as const,
+      path: "/one.md",
+      scrollTop: 42,
+      index: 0,
+    };
     const state = addDocumentResults(baseState({
-      closedTabsHistory: [
-        { kind: "document", path: "/one.md", scrollTop: 42, index: 0 },
-      ],
+      closedTabsHistory: [closed],
     }), [ready("/one.md")]);
 
     const persisted = toPersistedSession(state);
     const restored = fromPersistedSession(persisted);
 
-    expect("closedTabsHistory" in persisted).toBe(false);
-    expect(restored.closedTabsHistory).toEqual([]);
+    expect(persisted.closedTabsHistory).toEqual([closed]);
+    expect(restored.closedTabsHistory).toEqual([closed]);
     expect(restored.tabs[0]).toMatchObject({
       status: "loading",
       requestedPath: "/one.md",
@@ -510,10 +520,15 @@ describe("tab state", () => {
     expect(DEFAULT_STATE.workspaceRoots).toEqual([]);
     expect(DEFAULT_STATE.focusMode).toBe(false);
     const restored = fromPersistedSession({
-      version: 1,
+      version: 2,
       tabs: [],
       activeTabKey: null,
       theme: "system",
+      favorites: [],
+      uiLocale: "system",
+      documentVisitHistory: [],
+      documentVisitHistoryIndex: -1,
+      closedTabsHistory: [],
       // Retired v0.1.6 preference is accepted as an unknown legacy field.
       tabPlacement: "top",
     });

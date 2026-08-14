@@ -150,6 +150,54 @@ describe("quick switcher", () => {
     ]);
   });
 
+  it("orders tabs, then favorites, then workspace matches, then recents, with first source winning", () => {
+    const { items } = buildQuickSwitcherItems(
+      tabs,
+      ["/notes/design.md", "/notes/favorite.md"],
+      "md",
+      {
+        workspaceEntries,
+        workspaceRoots,
+        favorites: [
+          { path: "/notes/favorite.md", kind: "document" },
+          { path: "/work/MarkMaid/README.md", kind: "document" },
+        ],
+      },
+    );
+    const kinds = items.map((item) => [item.kind, item.path ?? item.tabKey]);
+    expect(kinds[0]?.[0]).toBe("tab");
+    expect(items.some((item) => item.kind === "favorite" && item.path === "/notes/favorite.md")).toBe(
+      true,
+    );
+    expect(
+      items.filter((item) => item.path === "/work/MarkMaid/README.md").map((item) => item.kind),
+    ).toEqual(["tab"]);
+    expect(
+      items.filter((item) => item.path === "/notes/favorite.md").map((item) => item.kind),
+    ).toEqual(["favorite"]);
+  });
+
+  it("limits favorites scope to favorite items", () => {
+    const { items } = buildQuickSwitcherItems(
+      tabs,
+      ["/notes/design.md"],
+      "",
+      {
+        favorites: [{ path: "/notes/favorite.md", kind: "document" }],
+        scope: "favorites",
+      },
+    );
+    expect(items).toEqual([
+      {
+        id: "favorite:/notes/favorite.md",
+        kind: "favorite",
+        label: "favorite.md",
+        detail: "/notes/favorite.md",
+        path: "/notes/favorite.md",
+      },
+    ]);
+  });
+
   it("keeps empty queries free of workspace listings", () => {
     const { items, workspaceMatchCount } = buildQuickSwitcherItems(
       tabs,

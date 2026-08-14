@@ -35,6 +35,8 @@ function createModel(
     query,
     matches: [],
     activeIndex: -1,
+    mode: "find",
+    highlightColor: "yellow",
   };
 }
 

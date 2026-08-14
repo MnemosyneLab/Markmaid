@@ -8,11 +8,15 @@ import {
   resolveRestoredFocusTarget,
 } from "../ui-logic";
 
+export type HighlightColorChoice = "yellow" | "green" | "blue" | "pink";
+
 export interface DocumentSearchModel<TMatch = unknown> {
   visible: boolean;
   query: string;
   matches: TMatch[];
   activeIndex: number;
+  mode: "find" | "highlight";
+  highlightColor: HighlightColorChoice;
 }
 
 export interface QuickSwitcherModel {
@@ -25,6 +29,7 @@ export interface QuickSwitcherModel {
   index: WorkspaceMarkdownIndex | null;
   indexError: string | null;
   partialResultsAcknowledged: boolean;
+  scope: "all" | "favorites";
 }
 
 export function acknowledgeQuickSwitcherPartialResults(
@@ -52,14 +57,15 @@ export function updateQuickSwitcherQuery(
 export interface OverlayController<TMatch = unknown> {
   readonly quickSwitcher: QuickSwitcherModel;
   readonly documentSearch: DocumentSearchModel<TMatch>;
-  openQuickSwitcher(): void;
+  openQuickSwitcher(scope?: "all" | "favorites"): void;
   closeQuickSwitcher(): void;
   /**
    * Hide Quick Open and cancel index work without rendering — used when an
    * activation continues into another navigation that will render.
    */
   dismissQuickSwitcher(): void;
-  openDocumentSearch(): void;
+  clearQuickSwitcherScope(): void;
+  openDocumentSearch(mode?: "find" | "highlight"): void;
   closeDocumentSearch(): void;
   /**
    * Fully dismiss Quick Open / Find for another modal without rendering. This
@@ -106,6 +112,8 @@ export function createOverlayController<TMatch = unknown>(
     query: "",
     matches: [],
     activeIndex: -1,
+    mode: "find",
+    highlightColor: "yellow",
   };
 
   const quickSwitcher: QuickSwitcherModel = {
@@ -118,6 +126,7 @@ export function createOverlayController<TMatch = unknown>(
     index: null,
     indexError: null,
     partialResultsAcknowledged: false,
+    scope: "all",
   };
 
   function dismissQuickSwitcher(): void {
@@ -125,6 +134,7 @@ export function createOverlayController<TMatch = unknown>(
     quickSwitcher.indexRequestId += 1;
     quickSwitcher.indexing = false;
     quickSwitcher.activeItemId = null;
+    quickSwitcher.scope = "all";
     deps.onQuickOpenClosed();
   }
 
@@ -159,7 +169,7 @@ export function createOverlayController<TMatch = unknown>(
       return documentSearchRevealSequence;
     },
 
-    openQuickSwitcher() {
+    openQuickSwitcher(scope: "all" | "favorites" = "all") {
       const replacingOverlay =
         quickSwitcher.visible || documentSearch.visible;
       if (quickSwitcher.visible) dismissQuickSwitcher();
@@ -174,6 +184,7 @@ export function createOverlayController<TMatch = unknown>(
       quickSwitcher.activeItemId = null;
       quickSwitcher.index = null;
       quickSwitcher.indexError = null;
+      quickSwitcher.scope = scope;
       resetQuickSwitcherPartialResults(quickSwitcher);
       quickSwitcher.indexing = deps.hasWorkspaceRoots();
       const requestId = ++quickSwitcher.indexRequestId;
@@ -194,14 +205,22 @@ export function createOverlayController<TMatch = unknown>(
 
     dismissQuickSwitcher,
 
-    openDocumentSearch() {
-      if (!deps.canOpenDocumentSearch()) return;
+    clearQuickSwitcherScope() {
+      if (!quickSwitcher.visible || quickSwitcher.scope === "all") return;
+      quickSwitcher.scope = "all";
+      deps.render();
+    },
+
+    openDocumentSearch(mode: "find" | "highlight" = "find") {
+      if (!deps.canOpenDocumentSearch() && mode === "find") return;
+      if (mode === "highlight" && !deps.canOpenDocumentSearch()) return;
       const replacingOverlay =
         quickSwitcher.visible || documentSearch.visible;
       if (quickSwitcher.visible) dismissQuickSwitcher();
       const visibility = exclusiveOverlayVisibility("document-search");
       quickSwitcher.visible = visibility.quickOpen;
       documentSearch.visible = visibility.documentSearch;
+      documentSearch.mode = mode;
       if (!replacingOverlay) focusSession.capture();
       deps.render();
       raf(() => {

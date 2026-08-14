@@ -177,10 +177,15 @@ describe("workspace helpers", () => {
 
   it("restores missing workspace session fields with defaults", () => {
     const restored = fromPersistedSession({
-      version: 1,
+      version: 2,
       tabs: [],
       activeTabKey: null,
       theme: "system",
+      favorites: [],
+      uiLocale: "system",
+      documentVisitHistory: [],
+      documentVisitHistoryIndex: -1,
+      closedTabsHistory: [],
     });
     expect(restored.sidebarView).toBe("tabs");
     expect(restored.workspaceRoots).toEqual([]);
@@ -204,7 +209,7 @@ describe("workspace helpers", () => {
     expect(roundTrip.expandedWorkspacePaths).toEqual({ r1: ["guides"] });
   });
 
-  it("preserves pinned-root array order through session v1 round trips", () => {
+  it("preserves pinned-root array order through session round trips", () => {
     const roots: WorkspaceRoot[] = [
       { id: "b", canonicalPath: "/notes", displayName: "notes" },
       { id: "a", canonicalPath: "/docs", displayName: "docs" },

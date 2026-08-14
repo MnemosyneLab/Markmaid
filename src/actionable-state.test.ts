@@ -49,8 +49,13 @@ describe("actionable states", () => {
       }),
     ).toEqual(["retry", "remove-root", "copy-details"]);
     expect(
-      ids({ kind: "preview-error", code: "invalid_utf8", canReveal: true }),
-    ).toEqual(["retry", "reveal", "open-another", "copy-details"]);
+      ids({
+        kind: "preview-error",
+        code: "invalid_utf8",
+        canReveal: true,
+        canRemoveMetadata: true,
+      }),
+    ).toEqual(["retry", "reveal", "remove-metadata", "open-another", "copy-details"]);
     expect(ids({ kind: "quick-open-failed" })).toEqual([
       "retry-index",
       "copy-details",

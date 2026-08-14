@@ -20,7 +20,7 @@ import type {
   MermaidPreview,
   MermaidTab,
   PageWidth,
-  PersistedSessionV1,
+  PersistedSessionV2,
   PersistedTab,
   PreviewTab,
   ReadyDocumentTab,
@@ -30,8 +30,17 @@ import type {
   SidebarView,
   TextFont,
   ThemeMode,
+  UiLocalePreference,
   WorkspaceRoot,
 } from "./types";
+import {
+  removeFavoritesUnderPrefix,
+  rewriteFavoritePaths,
+} from "./favorites";
+import {
+  MAX_CLOSED_TABS_HISTORY,
+  MAX_DOCUMENT_NAVIGATION_HISTORY,
+} from "./session/schema";
 
 export const DEFAULT_SIDEBAR_WIDTH = 232;
 export const MIN_SIDEBAR_WIDTH = 160;
@@ -40,8 +49,10 @@ export const DEFAULT_TABLE_OF_CONTENTS_WIDTH = 248;
 export const MIN_TABLE_OF_CONTENTS_WIDTH = 180;
 export const MAX_TABLE_OF_CONTENTS_WIDTH = 420;
 export const MAX_RECENT_DOCUMENTS = 10;
-export const MAX_CLOSED_TABS_HISTORY = 20;
-export const MAX_DOCUMENT_NAVIGATION_HISTORY = 50;
+export {
+  MAX_CLOSED_TABS_HISTORY,
+  MAX_DOCUMENT_NAVIGATION_HISTORY,
+};
 
 export const DEFAULT_STATE: AppState = {
   tabs: [],
@@ -66,6 +77,8 @@ export const DEFAULT_STATE: AppState = {
   pageWidth: "default",
   tableOfContentsVisible: false,
   recentDocuments: [],
+  favorites: [],
+  uiLocale: "system",
 };
 
 export function clampSidebarWidth(width: number): number {
@@ -437,8 +450,20 @@ export function closeTab(state: AppState, key: string): AppState {
 }
 
 export function reopenClosedTab(state: AppState): AppState {
-  const closed = state.closedTabsHistory.at(-1);
+  const closed = peekClosedTab(state);
   if (!closed) return state;
+
+  const existing = state.tabs.find(
+    (tab) =>
+      tab.kind !== "settings" &&
+      tab.kind === closed.kind &&
+      previewPath(tab) === closed.path,
+  );
+  if (existing) {
+    return existing.key === state.activeTabKey
+      ? state
+      : { ...state, activeTabKey: existing.key };
+  }
 
   const tabs = [...state.tabs];
   const tab = restoreClosedTab(closed);
@@ -447,8 +472,72 @@ export function reopenClosedTab(state: AppState): AppState {
     ...state,
     tabs,
     activeTabKey: tab.key,
-    closedTabsHistory: state.closedTabsHistory.slice(0, -1),
   });
+}
+
+export function peekClosedTab(state: AppState): ClosedTab | undefined {
+  return state.closedTabsHistory.at(-1);
+}
+
+export function consumeClosedTab(
+  state: AppState,
+  closed: ClosedTab,
+): AppState {
+  let index = -1;
+  for (let candidate = state.closedTabsHistory.length - 1; candidate >= 0; candidate -= 1) {
+    const entry = state.closedTabsHistory[candidate];
+    if (
+      entry &&
+      entry.kind === closed.kind &&
+      entry.path === closed.path &&
+      entry.index === closed.index &&
+      entry.scrollTop === closed.scrollTop
+    ) {
+      index = candidate;
+      break;
+    }
+  }
+  if (index < 0) return state;
+  return removeClosedTabEntry(state, index);
+}
+
+export function removeClosedTabEntry(state: AppState, index: number): AppState {
+  if (index < 0 || index >= state.closedTabsHistory.length) return state;
+  return {
+    ...state,
+    closedTabsHistory: state.closedTabsHistory.filter(
+      (_entry, candidate) => candidate !== index,
+    ),
+  };
+}
+
+export function removeDocumentVisitEntry(
+  state: AppState,
+  index: number,
+): AppState {
+  if (index < 0 || index >= state.documentVisitHistory.length) return state;
+  const documentVisitHistory = state.documentVisitHistory.filter(
+    (_entry, candidate) => candidate !== index,
+  );
+  if (documentVisitHistory.length === 0) {
+    return {
+      ...state,
+      documentVisitHistory,
+      documentVisitHistoryIndex: -1,
+    };
+  }
+  const nextIndex =
+    index > 0
+      ? Math.min(index - 1, documentVisitHistory.length - 1)
+      : 0;
+  return {
+    ...state,
+    documentVisitHistory,
+    documentVisitHistoryIndex: Math.min(
+      nextIndex,
+      documentVisitHistory.length - 1,
+    ),
+  };
 }
 
 export function closeTabsMatchingPaths(
@@ -469,10 +558,12 @@ export function closeTabsMatchingPaths(
   const documentVisitHistory = state.documentVisitHistory.filter(
     (entry) => !matcher(entry.path),
   );
+  const favorites = removeFavoritesUnderPrefix(state.favorites, matcher);
   if (
     removedKeys.size === 0 &&
     closedTabsHistory.length === state.closedTabsHistory.length &&
-    documentVisitHistory.length === state.documentVisitHistory.length
+    documentVisitHistory.length === state.documentVisitHistory.length &&
+    favorites.length === state.favorites.length
   ) {
     return state;
   }
@@ -491,6 +582,7 @@ export function closeTabsMatchingPaths(
     tabs,
     activeTabKey,
     recentDocuments,
+    favorites,
     closedTabsHistory,
     documentVisitHistory,
     documentVisitHistoryIndex: Math.min(
@@ -542,6 +634,7 @@ export function rewritePreviewPaths(
     ...state,
     tabs,
     recentDocuments: normalizeRecentDocuments(recentDocuments),
+    favorites: rewriteFavoritePaths(state.favorites, rewrite),
     closedTabsHistory,
     documentVisitHistory,
     activeTabKey:
@@ -670,6 +763,7 @@ export function setPreferences(
     codeFont?: CodeFont;
     pageWidth?: PageWidth;
     tableOfContentsVisible?: boolean;
+    uiLocale?: UiLocalePreference;
   },
 ): AppState {
   const next = { ...state, ...preferences };
@@ -696,9 +790,9 @@ export function clearRecentDocuments(state: AppState): AppState {
   return state.recentDocuments.length === 0 ? state : { ...state, recentDocuments: [] };
 }
 
-export function toPersistedSession(state: AppState): PersistedSessionV1 {
+export function toPersistedSession(state: AppState): PersistedSessionV2 {
   return {
-    version: 1,
+    version: 2,
     tabs: state.tabs.map(persistTab),
     activeTabKey: state.activeTabKey,
     theme: state.theme,
@@ -718,6 +812,11 @@ export function toPersistedSession(state: AppState): PersistedSessionV1 {
     pageWidth: state.pageWidth,
     tableOfContentsVisible: state.tableOfContentsVisible,
     recentDocuments: state.recentDocuments,
+    favorites: state.favorites,
+    uiLocale: state.uiLocale,
+    documentVisitHistory: state.documentVisitHistory,
+    documentVisitHistoryIndex: state.documentVisitHistoryIndex,
+    closedTabsHistory: state.closedTabsHistory,
     ...(state.externalOpenTargetId
       ? { externalOpenTargetId: state.externalOpenTargetId }
       : {}),
@@ -739,9 +838,6 @@ export function fromPersistedSession(value: unknown): AppState {
   return {
     tabs: value.tabs.map(restoreTab),
     activeTabKey: value.activeTabKey,
-    closedTabsHistory: [],
-    documentVisitHistory: [],
-    documentVisitHistoryIndex: -1,
     theme: value.theme,
     colorTheme: isColorTheme(value.colorTheme)
       ? value.colorTheme
@@ -791,6 +887,11 @@ export function fromPersistedSession(value: unknown): AppState {
         ? value.tableOfContentsVisible
         : DEFAULT_STATE.tableOfContentsVisible,
     recentDocuments: normalizeRecentDocuments(value.recentDocuments),
+    favorites: value.favorites,
+    uiLocale: value.uiLocale,
+    closedTabsHistory: value.closedTabsHistory,
+    documentVisitHistory: value.documentVisitHistory,
+    documentVisitHistoryIndex: value.documentVisitHistoryIndex,
   };
 }
 
@@ -1083,16 +1184,23 @@ function deduplicatePreviewTabs(state: AppState): AppState {
   };
 }
 
-function isPersistedSession(value: unknown): value is PersistedSessionV1 {
+function isPersistedSession(value: unknown): value is PersistedSessionV2 {
   if (!value || typeof value !== "object") return false;
-  const candidate = value as Partial<PersistedSessionV1>;
+  const candidate = value as Partial<PersistedSessionV2>;
   return (
-    candidate.version === 1 &&
+    candidate.version === 2 &&
     Array.isArray(candidate.tabs) &&
     candidate.tabs.every(isPersistedTab) &&
     (candidate.activeTabKey === null ||
       typeof candidate.activeTabKey === "string") &&
-    ["system", "light", "dark"].includes(candidate.theme ?? "")
+    ["system", "light", "dark"].includes(candidate.theme ?? "") &&
+    Array.isArray(candidate.favorites) &&
+    (candidate.uiLocale === "system" ||
+      candidate.uiLocale === "en" ||
+      candidate.uiLocale === "zh-Hans") &&
+    Array.isArray(candidate.documentVisitHistory) &&
+    typeof candidate.documentVisitHistoryIndex === "number" &&
+    Array.isArray(candidate.closedTabsHistory)
   );
 }
 

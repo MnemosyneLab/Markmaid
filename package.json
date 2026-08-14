@@ -1,7 +1,7 @@
 {
   "name": "markmaid",
   "private": true,
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "A focused, read-only Markdown reader for macOS",
   "author": "Walt Wang",
   "license": "MIT",

@@ -1,11 +1,13 @@
 import { collectFocusableElements } from "../accessibility";
 import type { CommandId } from "../commands";
+import { message, type Translator } from "../i18n";
 import type { CommandPaletteController } from "./command-palette-controller";
 
 export interface CommandPaletteViewDeps<TContext> {
   controller: CommandPaletteController<TContext>;
   escapeHtml: (value: string) => string;
   escapeAttribute: (value: string) => string;
+  translator?: Translator;
   requestAnimationFrame?: (callback: FrameRequestCallback) => number;
 }
 
@@ -13,6 +15,7 @@ export function renderCommandPalette<TContext>(
   deps: CommandPaletteViewDeps<TContext>,
 ): string {
   const { controller, escapeHtml, escapeAttribute } = deps;
+  const t = (key: Parameters<typeof message>[0]) => message(key, deps.translator);
   const results = controller.results();
   const groups: Array<{
     section: string;
@@ -31,13 +34,13 @@ export function renderCommandPalette<TContext>(
     : "";
   return `
     <div class="command-palette fixed inset-0 z-50 flex justify-center bg-black/20 px-6 pt-[12vh] backdrop-blur-[2px]" data-command-palette-backdrop>
-      <section class="max-h-[min(580px,74vh)] w-[min(680px,100%)] overflow-hidden rounded-[14px] border border-app-border bg-surface-raised shadow-app" role="dialog" aria-modal="true" aria-label="Command Palette">
-        <label class="sr-only" for="command-palette-input">Search application commands</label>
-        <input id="command-palette-input" class="h-13 w-full border-0 border-b border-app-border bg-transparent px-4 text-[15px] text-app-text outline-none placeholder:text-app-muted" type="search" role="combobox" aria-autocomplete="list" aria-expanded="true" aria-controls="command-palette-results" ${activeOptionId ? `aria-activedescendant="${activeOptionId}"` : ""} data-command-palette-input value="${escapeAttribute(controller.model.query)}" placeholder="Type a command" autocomplete="off" spellcheck="false">
+      <section class="max-h-[min(580px,74vh)] w-[min(680px,100%)] overflow-hidden rounded-[14px] border border-app-border bg-surface-raised shadow-app" role="dialog" aria-modal="true" aria-label="${escapeAttribute(t("palette.title"))}" data-command-palette-dialog>
+        <label class="sr-only" for="command-palette-input">${escapeHtml(t("palette.searchLabel"))}</label>
+        <input id="command-palette-input" class="h-13 w-full border-0 border-b border-app-border bg-transparent px-4 text-[15px] text-app-text outline-none placeholder:text-app-muted" type="search" role="combobox" aria-autocomplete="list" aria-expanded="true" aria-controls="command-palette-results" ${activeOptionId ? `aria-activedescendant="${activeOptionId}"` : ""} data-command-palette-input value="${escapeAttribute(controller.model.query)}" placeholder="${escapeAttribute(t("palette.placeholder"))}" autocomplete="off" spellcheck="false">
         <div id="command-palette-results" class="max-h-[calc(min(580px,74vh)-52px)] overflow-y-auto p-2" role="listbox" data-command-palette-results>
           ${
             results.length === 0
-              ? `<p class="px-3 py-8 text-center text-sm text-app-muted">No matching commands</p>`
+              ? `<p class="px-3 py-8 text-center text-sm text-app-muted">${escapeHtml(t("palette.empty"))}</p>`
               : groups
                   .map(
                     ({ section, items }) =>
@@ -119,7 +122,7 @@ export function trapCommandPaletteFocus(
   backward: boolean,
 ): void {
   const dialog = root.querySelector<HTMLElement>(
-    '[role="dialog"][aria-label="Command Palette"]',
+    "[data-command-palette-dialog]",
   );
   if (!dialog) return;
   const focusable = collectFocusableElements(dialog);

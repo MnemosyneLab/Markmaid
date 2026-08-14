@@ -3,6 +3,7 @@ import {
   handleFocusTrapTab,
 } from "../accessibility";
 import { buildActionableState } from "../actionable-state";
+import { message, type Translator } from "../i18n";
 import {
   workspaceIndexNotices,
   type QuickSwitcherBuildResult,
@@ -15,6 +16,9 @@ export interface QuickOpenViewRenderModel {
   build: QuickSwitcherBuildResult;
   workspaceRootCount: number;
   secondaryButtonClass: string;
+  translator?: Translator;
+  scopeLabel?: string;
+  clearScopeLabel?: string;
 }
 
 export interface QuickOpenViewCallbacks {
@@ -26,6 +30,9 @@ export interface QuickOpenViewCallbacks {
   onRetry: () => void;
   onAcknowledgePartial: () => void;
   onCopyDetails: () => void;
+  onClearScope?: () => void;
+  scopeLabel?: string;
+  clearScopeLabel?: string;
 }
 
 export function reconcileQuickOpenSelection(
@@ -46,11 +53,21 @@ export function reconcileQuickOpenSelection(
 }
 
 export function renderQuickOpenView(model: QuickOpenViewRenderModel): string {
+  const t = (key: Parameters<typeof message>[0]) =>
+    message(key, model.translator);
+  const scoped = model.model.scope === "favorites";
+  const scopeChip = scoped
+    ? `<div class="flex items-center gap-2 border-b border-app-border px-3 py-2" data-quick-switcher-scope>
+        <span class="rounded-full bg-surface-hover px-2.5 py-1 text-xs font-semibold">${escapeAttribute(model.scopeLabel ?? t("quickOpen.scopeFavorites"))}</span>
+        <button class="text-xs text-app-muted underline-offset-2 hover:underline" type="button" data-quick-clear-scope>${escapeAttribute(model.clearScopeLabel ?? t("quickOpen.clearScope"))}</button>
+      </div>`
+    : "";
   return `
     <div class="quick-switcher fixed inset-0 z-50 flex justify-center bg-black/20 px-6 pt-[12vh] backdrop-blur-[2px]" data-quick-switcher-backdrop>
-      <section class="max-h-[min(560px,72vh)] w-[min(680px,100%)] overflow-hidden rounded-[14px] border border-app-border bg-surface-raised shadow-app" role="dialog" aria-modal="true" aria-label="Quick open">
-        <label class="sr-only" for="quick-switcher-input">Search open tabs, pinned Markdown files, and recent documents</label>
-        <input id="quick-switcher-input" class="h-13 w-full border-0 border-b border-app-border bg-transparent px-4 text-[15px] text-app-text outline-none placeholder:text-app-muted" type="search" data-quick-switcher-input value="${escapeAttribute(model.model.query)}" placeholder="Search open tabs, pinned Markdown, and recent documents" autocomplete="off" spellcheck="false">
+      <section class="max-h-[min(560px,72vh)] w-[min(680px,100%)] overflow-hidden rounded-[14px] border border-app-border bg-surface-raised shadow-app" role="dialog" aria-modal="true" aria-label="${escapeAttribute(t("quickOpen.title"))}" data-quick-switcher-dialog>
+        <label class="sr-only" for="quick-switcher-input">${escapeAttribute(t("quickOpen.searchLabel"))}</label>
+        <input id="quick-switcher-input" class="h-13 w-full border-0 border-b border-app-border bg-transparent px-4 text-[15px] text-app-text outline-none placeholder:text-app-muted" type="search" data-quick-switcher-input value="${escapeAttribute(model.model.query)}" placeholder="${escapeAttribute(t("quickOpen.placeholder"))}" autocomplete="off" spellcheck="false">
+        ${scopeChip}
         <div class="max-h-[calc(min(560px,72vh)-52px)] overflow-y-auto p-2" data-quick-switcher-results>
           ${renderQuickOpenResults(model)}
         </div>
@@ -74,7 +91,7 @@ export function bindQuickOpenView(
     "[data-quick-switcher-backdrop]",
   );
   const dialog = host.querySelector<HTMLElement>(
-    '[role="dialog"][aria-label="Quick open"]',
+    "[data-quick-switcher-dialog]",
   );
   const results = host.querySelector<HTMLElement>(
     "[data-quick-switcher-results]",
@@ -84,6 +101,20 @@ export function bindQuickOpenView(
   input?.addEventListener("input", () => {
     callbacks.onQueryChange(input.value);
   });
+  input?.addEventListener("keydown", (event) => {
+    if (event.isComposing) return;
+    if (
+      (event.key === "Backspace" || event.key === "Delete") &&
+      input.value === "" &&
+      callbacks.onClearScope
+    ) {
+      event.preventDefault();
+      callbacks.onClearScope();
+    }
+  });
+  host
+    .querySelector("[data-quick-clear-scope]")
+    ?.addEventListener("click", () => callbacks.onClearScope?.());
 
   backdrop?.addEventListener("pointerdown", (event) => {
     if (event.target === event.currentTarget) callbacks.onClose();
@@ -158,10 +189,12 @@ export function bindQuickOpenView(
 }
 
 function renderQuickOpenStatus(model: QuickOpenViewRenderModel): string {
+  const t = (key: Parameters<typeof message>[0]) =>
+    message(key, model.translator);
   const { model: quickSwitcher, build } = model;
   const messages: string[] = [];
   if (quickSwitcher.indexing) {
-    messages.push("Indexing pinned folders…");
+    messages.push(t("quickOpen.indexing"));
   } else if (quickSwitcher.indexError) {
     messages.push(quickSwitcher.indexError);
   } else {
@@ -178,7 +211,7 @@ function renderQuickOpenStatus(model: QuickOpenViewRenderModel): string {
     model.workspaceRootCount > 0 &&
     !quickSwitcher.query.trim()
   ) {
-    messages.push("Type to search pinned Markdown files");
+    messages.push(t("quickOpen.typeToSearch"));
   }
 
   if (
@@ -186,10 +219,10 @@ function renderQuickOpenStatus(model: QuickOpenViewRenderModel): string {
     build.items.length === 0 &&
     quickSwitcher.query.trim()
   ) {
-    messages.push("No matching documents");
+    messages.push(t("quickOpen.empty"));
   }
   if (build.truncated && !quickSwitcher.partialResultsAcknowledged) {
-    messages.push("Showing first 200 matches — keep typing to narrow results");
+    messages.push(t("quickOpen.truncated"));
   }
 
   const actionable = quickSwitcher.indexError
@@ -218,6 +251,8 @@ function renderQuickOpenStatus(model: QuickOpenViewRenderModel): string {
 }
 
 function renderQuickOpenItems(model: QuickOpenViewRenderModel): string {
+  const t = (key: Parameters<typeof message>[0]) =>
+    message(key, model.translator);
   const { model: quickSwitcher, build } = model;
   if (build.items.length === 0) {
     if (
@@ -227,7 +262,7 @@ function renderQuickOpenItems(model: QuickOpenViewRenderModel): string {
     ) {
       return "";
     }
-    return `<p class="px-3 py-8 text-center text-sm text-app-muted">No matching documents</p>`;
+    return `<p class="px-3 py-8 text-center text-sm text-app-muted">${escapeHtml(t("quickOpen.empty"))}</p>`;
   }
   return build.items
     .map(
@@ -239,8 +274,8 @@ function renderQuickOpenItems(model: QuickOpenViewRenderModel): string {
           </span>
           ${
             item.kind === "workspace"
-              ? `<span class="flex-none rounded-md border border-app-border px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-app-muted uppercase">Workspace</span>`
-              : `<span class="flex-none text-[10px] font-semibold tracking-wide text-app-muted uppercase">${item.kind === "tab" ? "Open" : "Recent"}</span>`
+              ? `<span class="flex-none rounded-md border border-app-border px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-app-muted uppercase">${escapeHtml(t("quickOpen.kind.workspace"))}</span>`
+              : `<span class="flex-none text-[10px] font-semibold tracking-wide text-app-muted uppercase">${escapeHtml(item.kind === "tab" ? t("quickOpen.kind.tab") : item.kind === "favorite" ? t("quickOpen.kind.favorite") : t("quickOpen.kind.recent"))}</span>`
           }
         </button>
       `,

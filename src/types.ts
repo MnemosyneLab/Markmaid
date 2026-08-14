@@ -180,6 +180,17 @@ export interface ClosedTab {
   index: number;
 }
 
+export type FavoriteKind = "document" | "mermaid";
+
+export interface FavoriteEntry {
+  path: string;
+  kind: FavoriteKind;
+  addedAt: number;
+}
+
+export type UiLocalePreference = "system" | "en" | "zh-Hans";
+export type ResolvedUiLocale = "en" | "zh-Hans";
+
 export type WorkspaceEntryKind = "directory" | "markdown" | "mermaid" | "image";
 
 export interface WorkspaceRoot {
@@ -297,6 +308,8 @@ export interface AppState {
   pageWidth: PageWidth;
   tableOfContentsVisible: boolean;
   recentDocuments: string[];
+  favorites: FavoriteEntry[];
+  uiLocale: UiLocalePreference;
 }
 
 export type PersistedTab =
@@ -327,6 +340,33 @@ export interface PersistedSessionV1 {
   externalOpenTargetId?: string;
   // Kept for one-time migration from the earlier light/dark selector.
   mermaidTheme?: "light" | "dark";
+}
+
+export interface PersistedSessionV2 {
+  version: 2;
+  tabs: PersistedTab[];
+  activeTabKey: string | null;
+  theme: ThemeMode;
+  colorTheme?: ColorTheme;
+  sidebarView?: SidebarView;
+  sidebarWidth?: number;
+  tableOfContentsWidth?: number;
+  leftSidebarVisible?: boolean;
+  workspaceRoots?: WorkspaceRoot[];
+  expandedWorkspacePaths?: Record<string, string[]>;
+  mermaidLightTheme?: MermaidLightTheme;
+  mermaidDarkTheme?: MermaidDarkTheme;
+  textFont?: TextFont;
+  codeFont?: CodeFont;
+  pageWidth?: PageWidth;
+  tableOfContentsVisible?: boolean;
+  recentDocuments?: string[];
+  externalOpenTargetId?: string;
+  favorites: FavoriteEntry[];
+  uiLocale: UiLocalePreference;
+  documentVisitHistory: DocumentNavigationEntry[];
+  documentVisitHistoryIndex: number;
+  closedTabsHistory: ClosedTab[];
 }
 
 export type ExportFormat = "html" | "pdf";

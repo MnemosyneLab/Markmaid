@@ -1,5 +1,6 @@
 import { formatPositionAnnouncement } from "../accessibility";
 import type { AppState, AppTab } from "../types";
+import { message, type Translator } from "../i18n";
 import {
   POINTER_DRAG_THRESHOLD_PX,
   shouldBeginPointerDrag,
@@ -33,6 +34,9 @@ export interface TabViewDeps {
   openExternalApplicationPicker: () => Promise<unknown> | void;
   copyText: (value: string) => Promise<unknown> | void;
   revealItemInDir: (path: string) => Promise<unknown> | void;
+  onToggleFavorite?: (key: string) => void;
+  favoriteLabel?: (tab: AppTab) => string | null;
+  translator?: Translator;
   onSuppressTabClick: (key: string, until: number) => void;
   onSuppressNativeDrop: (until: number) => void;
 }
@@ -223,7 +227,10 @@ export function bindTabView(deps: TabViewDeps): TabViewController {
     menu.className =
       "tab-context-menu fixed z-50 min-w-52 rounded-[10px] border border-app-border bg-surface-raised p-1.5 text-sm text-app-text shadow-app";
     menu.setAttribute("role", "menu");
-    menu.setAttribute("aria-label", `${deps.tabLabel(tab)} actions`);
+    menu.setAttribute(
+      "aria-label",
+      message("tab.actions", deps.translator, { name: deps.tabLabel(tab) }),
+    );
 
     const addAction = (
       label: string,
@@ -252,11 +259,19 @@ export function bindTabView(deps: TabViewDeps): TabViewController {
     };
 
     const tabIndex = state.tabs.findIndex((candidate) => candidate.key === tabKey);
-    addAction("Close", () => deps.closeTab(tabKey));
+    addAction(message("tab.close", deps.translator), () => deps.closeTab(tabKey));
+    const favoriteLabel = deps.favoriteLabel?.(tab);
+    if (favoriteLabel && deps.onToggleFavorite) {
+      addAction(favoriteLabel, () => deps.onToggleFavorite?.(tabKey));
+    }
     addSeparator();
-    addAction("Move Up", () => moveTabByOffset(tabKey, -1), tabIndex <= 0);
     addAction(
-      "Move Down",
+      message("tab.moveUp", deps.translator),
+      () => moveTabByOffset(tabKey, -1),
+      tabIndex <= 0,
+    );
+    addAction(
+      message("tab.moveDown", deps.translator),
       () => moveTabByOffset(tabKey, 1),
       tabIndex < 0 || tabIndex >= state.tabs.length - 1,
     );
@@ -269,9 +284,15 @@ export function bindTabView(deps: TabViewDeps): TabViewController {
             ? (tab.canonicalPath ?? tab.requestedPath)
             : tab.requestedPath;
       addSeparator();
-      addAction("Copy file name", () => deps.copyText(tab.displayName));
-      addAction("Copy absolute path", () => deps.copyText(path));
-      addAction("Reveal in Finder", () => deps.revealItemInDir(path));
+      addAction(message("tab.copyName", deps.translator), () =>
+        deps.copyText(tab.displayName),
+      );
+      addAction(message("tab.copyPath", deps.translator), () =>
+        deps.copyText(path),
+      );
+      addAction(message("tab.reveal", deps.translator), () =>
+        deps.revealItemInDir(path),
+      );
     }
     if (
       tab.kind !== "settings" &&
@@ -279,11 +300,11 @@ export function bindTabView(deps: TabViewDeps): TabViewController {
       tab.status === "ready"
     ) {
       addSeparator();
-      addAction("Open in Preferred Application", async () => {
+      addAction(message("tab.openPreferred", deps.translator), async () => {
         deps.onSelectTabForExternalOpen(tab.key);
         await deps.openPreferredExternalApplication();
       });
-      addAction("Choose External Application…", async () => {
+      addAction(message("tab.chooseExternal", deps.translator), async () => {
         deps.onSelectTabForExternalOpen(tab.key);
         await deps.openExternalApplicationPicker();
       });

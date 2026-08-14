@@ -1,4 +1,4 @@
-import type { AppState, PersistedSessionV1 } from "../types";
+import type { AppState, PersistedSessionV2 } from "../types";
 import {
   fromPersistedSession,
   migrateSession,
@@ -54,6 +54,12 @@ export const SESSION_STORE_WRITE_FAILURE_NOTICE_OPTIONS = {
   title: "Session changes not saved.",
   dismissTitle: "Dismiss session persistence notice",
 } as const;
+export const SESSION_STORE_UNSUPPORTED_NOTICE =
+  "This session was saved by a newer MarkMaid version. Persistence is disabled so that data is not overwritten.";
+export const SESSION_STORE_UNSUPPORTED_NOTICE_OPTIONS = {
+  title: "Newer session not loaded.",
+  dismissTitle: "Dismiss saved session notice",
+} as const;
 
 export type SessionBootstrapResult<T extends SessionStore = SessionStore> =
   | {
@@ -69,6 +75,14 @@ export type SessionBootstrapResult<T extends SessionStore = SessionStore> =
       store: null;
       persistenceEnabled: false;
       notice: typeof SESSION_STORE_FAILURE_NOTICE;
+    }
+  | {
+      status: "unsupported";
+      version: number;
+      state: AppState;
+      store: T;
+      persistenceEnabled: false;
+      notice: typeof SESSION_STORE_UNSUPPORTED_NOTICE;
     };
 
 /**
@@ -88,9 +102,21 @@ export async function loadSessionForBootstrap<T extends SessionStore>(
   }
 
   try {
+    const loaded = await loadSessionFromStore(store);
+    if (loaded.status === "unsupported") {
+      persistence?.disablePersistence();
+      return {
+        status: "unsupported",
+        version: loaded.version,
+        state: loaded.state,
+        store,
+        persistenceEnabled: false,
+        notice: SESSION_STORE_UNSUPPORTED_NOTICE,
+      };
+    }
     return {
       status: "ready",
-      state: await loadSessionFromStore(store),
+      state: loaded.state,
       store,
       persistenceEnabled: true,
     };
@@ -181,13 +207,24 @@ export function createPersistence(deps: PersistenceDeps): PersistenceScheduler {
  */
 export async function loadSessionFromStore(
   store: SessionStore,
-): Promise<AppState> {
+): Promise<
+  | { status: "ready"; state: AppState }
+  | { status: "unsupported"; version: number; state: AppState }
+> {
   const candidate = await store.get<unknown>(SESSION_KEY);
-  return fromPersistedSession(migrateSession(candidate));
+  const outcome = migrateSession(candidate);
+  if (outcome.status === "unsupported") {
+    return {
+      status: "unsupported",
+      version: outcome.version,
+      state: fromPersistedSession(outcome),
+    };
+  }
+  return { status: "ready", state: fromPersistedSession(outcome) };
 }
 
-/** Serialize the live app state into the session-v1 shape written to disk. */
-export function sessionSnapshot(state: AppState): PersistedSessionV1 {
+/** Serialize the live app state into the session-v2 shape written to disk. */
+export function sessionSnapshot(state: AppState): PersistedSessionV2 {
   return toPersistedSession(state);
 }
 

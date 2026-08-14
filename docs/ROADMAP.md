@@ -2,8 +2,7 @@
 
 Last reviewed: 2026-08-13
 
-This document tracks candidate work after the published v0.1.8 release and the
-selected scope for v0.1.9 (reading continuity and localization).
+This document tracks candidate work after the published v0.1.9 release.
 It is a prioritization tool,
 not a promise that every item will ship. An item moves into a version plan only
 after its user value, product behavior, safety boundary, and acceptance tests
@@ -36,7 +35,7 @@ release policy until that decision changes.
 | v0.1.6 | Released | Root reorder, safe diagnostics, cooperative cancellation, shell controllers, and accessible navigation |
 | v0.1.7 | Released | Command Palette, Focus Mode, actionable states, external-app handoff, and performance baselines |
 | v0.1.8 | Released — engineering foundation | Typed frontend↔Rust IPC, session migration tests, continued `main.ts` shell split |
-| v0.1.9 | Planned — continuity and localization | Favorites, sidecar bookmarks/highlights/notes, bounded reading history, Chinese UI |
+| v0.1.9 | Released — continuity and localization | Favorites, sidecar bookmarks/highlights/notes, bounded reading history, Chinese UI |
 | v0.2 candidate | On-demand knowledge discovery | Search document contents and understand relationships without a background watcher |
 | Later | Reading depth and scale | Better long-document performance, export control, and remaining local metadata |
 
@@ -166,7 +165,7 @@ workflow.
   localization (all selected for v0.1.9).
 - Workspace Switcher, full-text search, and notarization.
 
-## v0.1.9 planned — reading continuity and localization
+## v0.1.9 — reading continuity and localization
 
 Selected scope is documented in the [`v0.1.9 plan`](plans/v0.1.9_plan.md). This
 release depends on v0.1.8 foundations and keeps the read-only boundary:
@@ -174,14 +173,14 @@ annotations never write into Markdown source files.
 
 ### Selected user-facing scope
 
-- [ ] **Favorites.** Pin documents independently of Recents as app metadata.
-- [ ] **Favorites in Quick Open and Command Palette.** Discover and toggle
+- [x] **Favorites.** Pin documents independently of Recents as app metadata.
+- [x] **Favorites in Quick Open and Command Palette.** Discover and toggle
   favorites without a second file-search surface.
-- [ ] **Bookmarks / highlights / notes.** Sidecar metadata with Command Palette
+- [x] **Bookmarks / highlights / notes.** Sidecar metadata with Command Palette
   actions; stale highlights degrade without rewriting source files.
-- [ ] **Bounded persisted reading history.** Persist the existing 50-entry visit
+- [x] **Bounded persisted reading history.** Persist the existing 50-entry visit
   history and 20-entry closed-tab history across restarts.
-- [ ] **Chinese / localized UI.** String catalogs, Settings `uiLocale`
+- [x] **Chinese / localized UI.** String catalogs, Settings `uiLocale`
   preference (`system` / `en` / `zh-Hans`), and English fallback tests.
 
 ### Explicitly deferred from v0.1.9

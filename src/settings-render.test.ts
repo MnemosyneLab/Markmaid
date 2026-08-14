@@ -22,7 +22,8 @@ describe("settings rendering", () => {
 
     expect(source.match(/aria-labelledby="diagnostics-settings"/g) ?? []).toHaveLength(1);
     expect(source.match(/id="diagnostics-settings"/g) ?? []).toHaveLength(1);
-    expect(source.match(/data-copy-diagnostics>Copy Diagnostics/g) ?? []).toHaveLength(1);
+    expect(source.match(/data-copy-diagnostics>/g) ?? []).toHaveLength(1);
+    expect(source).toContain('t("settings.copyDiagnosticsButton")');
   });
 
   it("announces diagnostics copy through the typed global status only", () => {

@@ -20,6 +20,7 @@ function model(overrides: Partial<QuickSwitcherModel> = {}): QuickSwitcherModel 
     index: null,
     indexError: null,
     partialResultsAcknowledged: false,
+    scope: "all",
     ...overrides,
   };
 }

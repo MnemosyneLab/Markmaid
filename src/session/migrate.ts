@@ -1,3 +1,4 @@
+import { normalizeFavorites } from "../favorites";
 import {
   DEFAULT_STATE,
   MAX_RECENT_DOCUMENTS,
@@ -11,14 +12,21 @@ import type {
   MermaidLightTheme,
   PageWidth,
   PersistedSessionV1,
+  PersistedSessionV2,
   PersistedTab,
   SidebarView,
   ThemeMode,
   WorkspaceRoot,
 } from "../types";
-
-/** The current on-disk session shape. It intentionally remains version 1. */
-export type PersistedSessionCurrent = PersistedSessionV1;
+import {
+  CURRENT_SESSION_VERSION,
+  isAbsoluteMacPath,
+  isFiniteNumber,
+  isRecord,
+  normalizeV2ContinuityFields,
+  v2Defaults,
+  type SessionMigrationOutcome,
+} from "./schema";
 
 const COLOR_THEMES: readonly ColorTheme[] = [
   "default",
@@ -52,42 +60,99 @@ const PAGE_WIDTHS: readonly PageWidth[] = [
   "full",
 ];
 
+export type { SessionMigrationOutcome };
+export type PersistedSessionCurrent = PersistedSessionV2;
+
 /**
- * Validate and normalize a parsed Store value into the current persisted
- * schema. This function is deliberately pure: it performs no file or path
- * system access and ignores fields that are not part of session-v1.
+ * Validate and migrate a parsed Store value into the current persisted schema.
+ * This function is deliberately pure: it performs no file or path system access.
  */
-export function migrateSession(
-  candidate: unknown,
-): PersistedSessionCurrent | null {
-  if (!isRecord(candidate)) return null;
-  if (candidate.version !== 1) return null;
-  if (!Array.isArray(candidate.tabs) || !isThemeMode(candidate.theme)) {
-    return null;
+export function migrateSession(candidate: unknown): SessionMigrationOutcome {
+  if (!isRecord(candidate)) return { status: "invalid" };
+  if (isUnsupportedVersion(candidate.version)) {
+    return { status: "unsupported", version: candidate.version };
   }
+  if (candidate.version === 1) {
+    const v1 = migrateV1(candidate);
+    return v1
+      ? { status: "ready", session: migrateV1ToV2(v1) }
+      : { status: "invalid" };
+  }
+  if (candidate.version === CURRENT_SESSION_VERSION) {
+    const v2 = migrateV2(candidate);
+    return v2 ? { status: "ready", session: v2 } : { status: "invalid" };
+  }
+  return { status: "invalid" };
+}
 
-  const tabs = migrateTabs(candidate.tabs);
-  const activeTabKey = resolveActiveTabKey(candidate.activeTabKey, tabs);
-  const session: PersistedSessionV1 = {
-    version: 1,
-    tabs,
-    activeTabKey,
-    theme: candidate.theme,
+export function migrateV1ToV2(session: PersistedSessionV1): PersistedSessionV2 {
+  return {
+    ...session,
+    version: 2,
+    favorites: [],
+    ...v2Defaults(),
   };
-
-  addOptionalFields(session, candidate);
-  return session;
 }
 
 /** Restore a migrated session, or a fresh runtime default when migration failed. */
 export function fromPersistedSession(
-  session: PersistedSessionCurrent | null,
+  session: PersistedSessionCurrent | SessionMigrationOutcome | null,
 ): AppState {
-  return session ? restorePersistedSession(session) : { ...DEFAULT_STATE };
+  if (!session) return { ...DEFAULT_STATE };
+  if ("status" in session) {
+    return session.status === "ready"
+      ? restorePersistedSession(session.session)
+      : { ...DEFAULT_STATE };
+  }
+  return restorePersistedSession(session);
 }
 
-/** Serialize live state using the unchanged session-v1 public schema. */
 export { toPersistedSession };
+
+function isUnsupportedVersion(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    value !== 1 &&
+    value !== CURRENT_SESSION_VERSION
+  );
+}
+
+function migrateV1(
+  candidate: Record<string, unknown>,
+): PersistedSessionV1 | null {
+  if (!Array.isArray(candidate.tabs) || !isThemeMode(candidate.theme)) {
+    return null;
+  }
+  const tabs = migrateTabs(candidate.tabs);
+  const session: PersistedSessionV1 = {
+    version: 1,
+    tabs,
+    activeTabKey: resolveActiveTabKey(candidate.activeTabKey, tabs),
+    theme: candidate.theme,
+  };
+  addOptionalFields(session, candidate);
+  return session;
+}
+
+function migrateV2(
+  candidate: Record<string, unknown>,
+): PersistedSessionV2 | null {
+  if (!Array.isArray(candidate.tabs) || !isThemeMode(candidate.theme)) {
+    return null;
+  }
+  const tabs = migrateTabs(candidate.tabs);
+  const session: PersistedSessionV2 = {
+    version: 2,
+    tabs,
+    activeTabKey: resolveActiveTabKey(candidate.activeTabKey, tabs),
+    theme: candidate.theme,
+    favorites: normalizeFavorites(candidate.favorites),
+    ...normalizeV2ContinuityFields(candidate),
+  };
+  addOptionalFields(session, candidate);
+  return session;
+}
 
 function migrateTabs(value: unknown[]): PersistedTab[] {
   const seenKeys = new Set<string>();
@@ -149,7 +214,7 @@ function resolveActiveTabKey(
 }
 
 function addOptionalFields(
-  session: PersistedSessionV1,
+  session: PersistedSessionV1 | PersistedSessionV2,
   candidate: Record<string, unknown>,
 ): void {
   if (isColorTheme(candidate.colorTheme)) {
@@ -193,8 +258,6 @@ function addOptionalFields(
   if (typeof candidate.externalOpenTargetId === "string") {
     session.externalOpenTargetId = candidate.externalOpenTargetId;
   }
-  // `mermaidTheme` is a retired selector. The current light/dark fields keep
-  // their independent defaults; do not translate or persist this legacy field.
 }
 
 function normalizeRecentDocuments(value: unknown[]): string[] {
@@ -265,18 +328,6 @@ function normalizeExpandedPaths(
     });
   }
   return result;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function isAbsoluteMacPath(value: string): boolean {
-  return value.trim().length > 0 && value.startsWith("/");
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value);
 }
 
 function isThemeMode(value: unknown): value is ThemeMode {

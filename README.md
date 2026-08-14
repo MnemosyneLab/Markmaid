@@ -18,8 +18,11 @@ Features include:
 - Offline KaTeX math for inline `$...$` and block `$$...$$`
 - Export the current Markdown document to HTML or PDF (`⌘E`)
 - Reopen Closed Tab (`⇧⌘T`) for recently closed preview tabs
-- Quick Open (`⌘P`) across open tabs, pinned Markdown files, and recent documents
+- Quick Open (`⌘P`) across open tabs, favorites, pinned Markdown files, and recent documents
   (path/name match only; refreshes the pinned-folder index each time it opens)
+- Favorites for ready Markdown and standalone Mermaid files, independent of Recents
+- App-local bookmarks, Find-based highlights, and notes that never write into Markdown
+- English and Simplified Chinese UI, with a Settings language preference that can follow macOS
 - Command Palette (`⇧⌘P`) for app commands without mixing files into command
   search, plus runtime-only Focus Mode (`⇧⌘F`) for distraction-free reading
 - A native external-application split button for ready Markdown / Mermaid files,
@@ -71,7 +74,7 @@ run the same command against that `.app` path instead.
 | Shortcut | Action |
 | --- | --- |
 | `⌘O` | Open Markdown, Mermaid, or image files |
-| `⌘P` | Quick Open (open tabs, pinned Markdown, recent documents) |
+| `⌘P` | Quick Open (tabs, favorites, pinned Markdown, recents) |
 | `⇧⌘P` | Open the Command Palette |
 | `⇧⌘F` | Toggle Focus Mode |
 | `⌘E` | Export the current document (HTML or PDF) |
@@ -189,9 +192,10 @@ Future feature and optimization candidates are tracked in
   keyboard/focus utilities and privacy-safe diagnostic/recovery models
 - `src/commands.ts` / `src/focus-mode.ts`: typed app commands and the runtime
   reading-layout model
-- `src/state.ts`: tab, workspace-root, and persisted-session state model
-- `src/session/migrate.ts`: pure session-v1 validation, migration, and
+- `src/state.ts`: tab, workspace-root, favorites, locale, and persisted-session state
+- `src/session/migrate.ts`: session-v1 to session-v2 validation, migration, and
   serialization boundary
+- `src/annotations/` / `src/i18n/`: annotation store schema/highlights and UI catalogs
 - `src/workspace.ts` / `src/status.ts` / `src/ui-logic.ts`: workspace helpers, status bar, Quick Open matching
 - `src/search.ts`: source-backed in-document Find matching
 - `src/math.ts`: offline KaTeX math enhancement for Markdown preview

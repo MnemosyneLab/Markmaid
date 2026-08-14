@@ -8,6 +8,7 @@ import {
   type TreeItemModel,
 } from "../accessibility";
 import { icon } from "../icons";
+import { message, type Translator } from "../i18n";
 import {
   POINTER_DRAG_THRESHOLD_PX,
   shouldBeginPointerDrag,
@@ -120,6 +121,7 @@ export interface WorkspaceViewRenderModel {
   escapeHtml: (value: string) => string;
   escapeAttribute: (value: string) => string;
   styles?: Partial<WorkspaceViewStyles>;
+  translator?: Translator;
 }
 
 export interface WorkspaceViewCallbacks {
@@ -162,11 +164,15 @@ export function renderWorkspaceView(model: WorkspaceViewRenderModel): string {
 }
 
 export function renderWorkspacePanel(model: WorkspaceViewRenderModel): string {
+  const t = (
+    key: Parameters<typeof message>[0],
+    vars?: Record<string, string | number>,
+  ) => message(key, model.translator, vars);
   return `
     <div class="workspace-panel">
       <div class="workspace-header">
-        <strong>Workspace</strong>
-        <button class="icon-button" type="button" data-action="add-workspace-root" title="Add Folder" aria-label="Add Folder">
+        <strong>${t("workspace.title")}</strong>
+        <button class="icon-button" type="button" data-action="add-workspace-root" title="${t("workspace.addFolder")}" aria-label="${t("workspace.addFolder")}">
           ${icon("folder-plus")}
         </button>
       </div>
@@ -178,8 +184,8 @@ export function renderWorkspacePanel(model: WorkspaceViewRenderModel): string {
       ${
         model.state.workspaceRoots.length === 0
           ? `<div class="workspace-empty">
-              <p>Pin folders to browse Markdown, Mermaid, and images.</p>
-              <button class="primary-button ${styles(model).primaryButton}" type="button" data-action="add-workspace-root">Add Folder</button>
+              <p>${t("workspace.empty")}</p>
+              <button class="primary-button ${styles(model).primaryButton}" type="button" data-action="add-workspace-root">${t("workspace.addFolder")}</button>
             </div>`
           : renderWorkspaceTree(model)
       }
@@ -190,7 +196,7 @@ export function renderWorkspacePanel(model: WorkspaceViewRenderModel): string {
 export function renderWorkspaceTree(model: WorkspaceViewRenderModel): string {
   if (model.state.workspaceRoots.length === 0) return "";
   return `
-    <div class="workspace-tree" role="tree" aria-label="Workspace files">
+    <div class="workspace-tree" role="tree" aria-label="${message("workspace.files", model.translator)}">
       ${model.state.workspaceRoots
         .map((root, index) =>
           renderWorkspaceRoot(root, index, model.state.workspaceRoots.length, model),
@@ -229,8 +235,8 @@ export function renderWorkspaceRoot(
         data-canonical-path="${model.escapeAttribute(rootEntry.canonicalPath)}"
         title="${model.escapeAttribute(rootEntry.canonicalPath)}"
       >
-        <button class="workspace-drag-handle" type="button" tabindex="-1" data-drag-root-handle="${model.escapeAttribute(rootEntry.id)}" aria-label="Reorder ${model.escapeAttribute(rootEntry.displayName)}" title="Drag to reorder">${icon("grip-vertical")}</button>
-        <button class="workspace-twistie" type="button" tabindex="-1" data-toggle-expand aria-label="${expanded ? "Collapse" : "Expand"}">${icon(expanded ? "chevron-down" : "chevron-right")}</button>
+        <button class="workspace-drag-handle" type="button" tabindex="-1" data-drag-root-handle="${model.escapeAttribute(rootEntry.id)}" aria-label="${model.escapeAttribute(message("workspace.reorder", model.translator, { name: rootEntry.displayName }))}" title="${model.escapeAttribute(message("workspace.dragToReorder", model.translator))}">${icon("grip-vertical")}</button>
+        <button class="workspace-twistie" type="button" tabindex="-1" data-toggle-expand aria-label="${expanded ? message("workspace.collapse", model.translator) : message("workspace.expand", model.translator)}">${icon(expanded ? "chevron-down" : "chevron-right")}</button>
         <span class="workspace-label">${model.escapeHtml(rootEntry.displayName)}</span>
       </div>
       ${expanded ? renderWorkspaceChildren(rootEntry.id, "", 1, model) : ""}
@@ -246,7 +252,7 @@ export function renderWorkspaceChildren(
 ): string {
   const children = model.cache.cachedChildren(rootId, parentRelativePath);
   if (!children) {
-    return `<div class="workspace-children" role="none" style="--depth: ${depth}"><div class="workspace-empty-branch">Loading…</div></div>`;
+    return `<div class="workspace-children" role="none" style="--depth: ${depth}"><div class="workspace-empty-branch">${message("workspace.loading", model.translator)}</div></div>`;
   }
 
   const isRoot = parentRelativePath === "";
@@ -332,7 +338,7 @@ export function renderWorkspaceChildren(
               >
                 ${
                   isDirectory
-                    ? `<button class="workspace-twistie" type="button" tabindex="-1" data-toggle-expand aria-label="${isExpanded ? "Collapse" : "Expand"}">${icon(isExpanded ? "chevron-down" : "chevron-right")}</button>`
+                    ? `<button class="workspace-twistie" type="button" tabindex="-1" data-toggle-expand aria-label="${isExpanded ? message("workspace.collapse", model.translator) : message("workspace.expand", model.translator)}">${icon(isExpanded ? "chevron-down" : "chevron-right")}</button>`
                     : `<span class="workspace-twistie-spacer" aria-hidden="true"></span>`
                 }
                 <span class="workspace-label">${model.escapeHtml(entry.name)}</span>
@@ -357,7 +363,10 @@ export function renderWorkspaceChildren(
 
 export function renderWorkspaceDialog(
   dialog: WorkspaceDialogModel | null,
-  model: Pick<WorkspaceViewRenderModel, "escapeHtml" | "escapeAttribute" | "styles">,
+  model: Pick<
+    WorkspaceViewRenderModel,
+    "escapeHtml" | "escapeAttribute" | "styles" | "translator"
+  >,
 ): string {
   if (!dialog) return "";
   const classes = styles(model);
@@ -371,7 +380,7 @@ export function renderWorkspaceDialog(
           <h2>${model.escapeHtml(dialog.title)}</h2>
           <p>${model.escapeHtml(dialog.message ?? "")}</p>
           <div class="button-row ${classes.buttonRow}">
-            <button class="secondary-button ${classes.secondaryButton}" type="button" data-dialog-cancel>Cancel</button>
+            <button class="secondary-button ${classes.secondaryButton}" type="button" data-dialog-cancel>${message("annotation.cancel", model.translator)}</button>
             <button class="primary-button ${classes.primaryButton}" type="button" data-dialog-confirm>${model.escapeHtml(dialog.confirmLabel)}</button>
           </div>
         </section>
@@ -385,7 +394,7 @@ export function renderWorkspaceDialog(
         <label class="workspace-dialog-label" for="workspace-dialog-input">${model.escapeHtml(dialog.label)}</label>
         <input id="workspace-dialog-input" class="workspace-dialog-input" type="text" value="${model.escapeAttribute(dialog.initialValue)}" autocomplete="off" spellcheck="false">
         <div class="button-row ${classes.buttonRow}">
-          <button class="secondary-button ${classes.secondaryButton}" type="button" data-dialog-cancel>Cancel</button>
+          <button class="secondary-button ${classes.secondaryButton}" type="button" data-dialog-cancel>${message("annotation.cancel", model.translator)}</button>
           <button class="primary-button ${classes.primaryButton}" type="button" data-dialog-confirm>${model.escapeHtml(dialog.confirmLabel)}</button>
         </div>
       </section>

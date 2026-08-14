@@ -2,6 +2,7 @@ mod diagnostics;
 mod document;
 mod external_apps;
 pub mod ipc;
+pub(crate) mod menu_locale;
 mod printing;
 mod reveal;
 mod tasks;
@@ -48,6 +49,9 @@ struct RecentDocuments(Mutex<Vec<String>>);
 #[derive(Default)]
 struct ReopenClosedTabAvailability(Mutex<bool>);
 
+#[derive(Default)]
+struct UiLocaleState(Mutex<menu_locale::NativeUiLocale>);
+
 fn about_metadata(icon: Option<tauri::image::Image<'static>>) -> AboutMetadata<'static> {
     AboutMetadata {
         name: Some("MarkMaid".to_string()),
@@ -63,45 +67,52 @@ fn about_metadata(icon: Option<tauri::image::Image<'static>>) -> AboutMetadata<'
     }
 }
 
+fn current_ui_locale(app: &AppHandle) -> menu_locale::NativeUiLocale {
+    app.try_state::<UiLocaleState>()
+        .map(|state| *state.0.lock().expect("ui locale lock poisoned"))
+        .unwrap_or_default()
+}
+
 fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
-    let settings = MenuItemBuilder::with_id("settings", "Settings...")
+    let labels = menu_locale::labels(current_ui_locale(app));
+    let settings = MenuItemBuilder::with_id("settings", labels.settings)
         .accelerator("CmdOrCtrl+,")
         .build(app)?;
-    let open = MenuItemBuilder::with_id("open", "Open...")
+    let open = MenuItemBuilder::with_id("open", labels.open)
         .accelerator("CmdOrCtrl+O")
         .build(app)?;
-    let quick_open = MenuItemBuilder::with_id("quick-open", "Quick Open...")
+    let quick_open = MenuItemBuilder::with_id("quick-open", labels.quick_open)
         .accelerator("CmdOrCtrl+P")
         .build(app)?;
-    let command_palette = MenuItemBuilder::with_id("command-palette", "Command Palette...")
+    let command_palette = MenuItemBuilder::with_id("command-palette", labels.command_palette)
         .accelerator("CmdOrCtrl+Shift+P")
         .build(app)?;
-    let focus_mode = MenuItemBuilder::with_id("focus-mode", "Toggle Focus Mode")
+    let focus_mode = MenuItemBuilder::with_id("focus-mode", labels.focus_mode)
         .accelerator("CmdOrCtrl+Shift+F")
         .build(app)?;
-    let export = MenuItemBuilder::with_id("export", "Export Document...")
+    let export = MenuItemBuilder::with_id("export", labels.export)
         .accelerator("CmdOrCtrl+E")
         .build(app)?;
-    let close_tab = MenuItemBuilder::with_id("close-tab", "Close Tab")
+    let close_tab = MenuItemBuilder::with_id("close-tab", labels.close_tab)
         .accelerator("CmdOrCtrl+W")
         .build(app)?;
-    let reopen_closed_tab = MenuItemBuilder::with_id("reopen-closed-tab", "Reopen Closed Tab")
+    let reopen_closed_tab = MenuItemBuilder::with_id("reopen-closed-tab", labels.reopen_closed_tab)
         .accelerator("CmdOrCtrl+Shift+T")
         .enabled(reopen_closed_tab_available(app))
         .build(app)?;
-    let reload = MenuItemBuilder::with_id("reload", "Reload Document")
+    let reload = MenuItemBuilder::with_id("reload", labels.reload)
         .accelerator("CmdOrCtrl+R")
         .build(app)?;
-    let next_tab = MenuItemBuilder::with_id("next-tab", "Next Tab")
+    let next_tab = MenuItemBuilder::with_id("next-tab", labels.next_tab)
         .accelerator("Ctrl+Tab")
         .build(app)?;
-    let previous_tab = MenuItemBuilder::with_id("previous-tab", "Previous Tab")
+    let previous_tab = MenuItemBuilder::with_id("previous-tab", labels.previous_tab)
         .accelerator("Ctrl+Shift+Tab")
         .build(app)?;
-    let navigate_back = MenuItemBuilder::with_id("navigate-back", "Back")
+    let navigate_back = MenuItemBuilder::with_id("navigate-back", labels.navigate_back)
         .accelerator("CmdOrCtrl+[")
         .build(app)?;
-    let navigate_forward = MenuItemBuilder::with_id("navigate-forward", "Forward")
+    let navigate_forward = MenuItemBuilder::with_id("navigate-forward", labels.navigate_forward)
         .accelerator("CmdOrCtrl+]")
         .build(app)?;
 
@@ -115,9 +126,9 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
                 .clone()
         })
         .unwrap_or_default();
-    let mut recent_menu = SubmenuBuilder::new(app, "Open Recent");
+    let mut recent_menu = SubmenuBuilder::new(app, labels.open_recent);
     if recent_documents.is_empty() {
-        let empty = MenuItemBuilder::with_id("recent-empty", "No Recent Documents")
+        let empty = MenuItemBuilder::with_id("recent-empty", labels.no_recent_documents)
             .enabled(false)
             .build(app)?;
         recent_menu = recent_menu.item(&empty);
@@ -127,7 +138,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
                 .build(app)?;
             recent_menu = recent_menu.item(&item);
         }
-        let clear = MenuItemBuilder::with_id("clear-recent", "Clear Menu").build(app)?;
+        let clear = MenuItemBuilder::with_id("clear-recent", labels.clear_menu).build(app)?;
         recent_menu = recent_menu.separator().item(&clear);
     }
     let recent_menu = recent_menu.build()?;
@@ -148,7 +159,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         .separator()
         .quit()
         .build()?;
-    let file_menu = SubmenuBuilder::new(app, "File")
+    let file_menu = SubmenuBuilder::new(app, labels.file)
         .item(&open)
         .item(&quick_open)
         .item(&recent_menu)
@@ -167,7 +178,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         .paste()
         .select_all()
         .build()?;
-    let view_menu = SubmenuBuilder::new(app, "View")
+    let view_menu = SubmenuBuilder::new(app, labels.view)
         .item(&command_palette)
         .separator()
         .item(&navigate_back)
@@ -413,6 +424,7 @@ pub fn run() {
         .manage(PendingOpenPaths::default())
         .manage(RecentDocuments::default())
         .manage(ReopenClosedTabAvailability::default())
+        .manage(UiLocaleState::default())
         .manage(WorkspaceRegistry::default())
         .manage(BackgroundTaskRegistry::default())
         .manage(ExternalAppsState::default())

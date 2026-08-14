@@ -47,6 +47,27 @@ describe("overlay controller", () => {
     expect(focusInput).toHaveBeenCalledOnce();
   });
 
+  it("opens a favorites scope and clears it back to all", () => {
+    const overlay = createOverlayController({
+      render: () => {},
+      hasWorkspaceRoots: () => false,
+      canOpenDocumentSearch: () => true,
+      onQuickOpenOpened: () => {},
+      onQuickOpenClosed: () => {},
+      clearDocumentSearchHighlights: () => {},
+      focusQuickOpenInput: () => {},
+      focusDocumentSearchInput: () => {},
+      requestAnimationFrame: () => 1,
+    });
+    overlay.openQuickSwitcher("favorites");
+    expect(overlay.quickSwitcher.scope).toBe("favorites");
+    overlay.clearQuickSwitcherScope();
+    expect(overlay.quickSwitcher.scope).toBe("all");
+    overlay.closeQuickSwitcher();
+    overlay.openQuickSwitcher();
+    expect(overlay.quickSwitcher.scope).toBe("all");
+  });
+
   it("closes Quick Open and notifies cancellation", () => {
     const onClosed = vi.fn();
     const overlay = createOverlayController({

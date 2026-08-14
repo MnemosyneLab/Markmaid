@@ -54,6 +54,10 @@ const PROHIBITED_FIELD_MARKERS = [
   "query",
   "recentDocuments",
   "message",
+  "note",
+  "quote",
+  "body",
+  "favorites",
 ] as const;
 
 export { PROHIBITED_FIELD_MARKERS };

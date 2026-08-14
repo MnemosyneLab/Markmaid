@@ -59,6 +59,7 @@ describe("export configuration and gating seam", () => {
     expect(html).toContain("<svg><path /></svg>");
     expect(html).toContain(".katex { color: black; }");
     expect(html).not.toContain("https://");
+    expect(html).not.toContain("annotation-highlight-mark");
   });
 
   it("maps every paper, orientation, and margin option into print CSS", () => {

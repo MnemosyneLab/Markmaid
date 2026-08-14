@@ -12,17 +12,21 @@ export const QUICK_SWITCHER_WORKSPACE_LIMIT = 200;
 
 export interface QuickSwitcherItem {
   id: string;
-  kind: "tab" | "workspace" | "recent";
+  kind: "tab" | "favorite" | "workspace" | "recent";
   label: string;
   detail: string;
   tabKey?: string;
   path?: string;
 }
 
+export type QuickSwitcherScope = "all" | "favorites";
+
 export interface QuickSwitcherBuildOptions {
   workspaceEntries?: WorkspaceMarkdownEntry[];
   workspaceRoots?: WorkspaceRoot[];
   workspaceLimit?: number;
+  favorites?: Array<{ path: string; kind: "document" | "mermaid" }>;
+  scope?: QuickSwitcherScope;
 }
 
 export interface QuickSwitcherBuildResult {
@@ -134,6 +138,7 @@ export function buildQuickSwitcherItems(
       label: openLabels.get(tab.key) ?? tab.displayName,
       detail: path,
       tabKey: tab.key,
+      path,
     });
   }
 
@@ -149,6 +154,20 @@ export function buildQuickSwitcherItems(
     });
   }
 
+  const favoriteItems: QuickSwitcherItem[] = [];
+  const favoritePaths = new Set<string>();
+  for (const favorite of options.favorites ?? []) {
+    if (openPaths.has(favorite.path) || favoritePaths.has(favorite.path)) continue;
+    favoritePaths.add(favorite.path);
+    favoriteItems.push({
+      id: `favorite:${favorite.path}`,
+      kind: "favorite",
+      label: fileName(favorite.path),
+      detail: favorite.path,
+      path: favorite.path,
+    });
+  }
+
   const terms = query.toLocaleLowerCase().trim().split(/\s+/).filter(Boolean);
   const filterItems = (items: QuickSwitcherItem[]): QuickSwitcherItem[] => {
     if (terms.length === 0) return items;
@@ -159,11 +178,23 @@ export function buildQuickSwitcherItems(
   };
 
   const filteredTabs = filterItems(tabItems);
-  const filteredRecent = filterItems(recentItems);
+  const filteredFavorites = filterItems(favoriteItems);
+  const filteredRecent = filterItems(recentItems).filter(
+    (item) => !item.path || !favoritePaths.has(item.path),
+  );
+  const scope = options.scope ?? "all";
+
+  if (scope === "favorites") {
+    return {
+      items: filteredFavorites,
+      workspaceMatchCount: 0,
+      truncated: false,
+    };
+  }
 
   if (terms.length === 0) {
     return {
-      items: [...filteredTabs, ...filteredRecent],
+      items: [...filteredTabs, ...filteredFavorites, ...filteredRecent],
       workspaceMatchCount: 0,
       truncated: false,
     };
@@ -171,7 +202,11 @@ export function buildQuickSwitcherItems(
 
   const queryText = query.toLocaleLowerCase().trim();
   const workspaceMatches = (options.workspaceEntries ?? [])
-    .filter((entry) => !openPaths.has(entry.canonicalPath))
+    .filter(
+      (entry) =>
+        !openPaths.has(entry.canonicalPath) &&
+        !favoritePaths.has(entry.canonicalPath),
+    )
     .map((entry) => {
       const rootName = rootsById.get(entry.rootId)?.displayName ?? entry.rootId;
       const detailPath = entry.relativePath
@@ -213,7 +248,12 @@ export function buildQuickSwitcherItems(
   );
 
   return {
-    items: [...filteredTabs, ...workspaceItems, ...recentWithoutWorkspace],
+    items: [
+      ...filteredTabs,
+      ...filteredFavorites,
+      ...workspaceItems,
+      ...recentWithoutWorkspace,
+    ],
     workspaceMatchCount,
     truncated,
   };

@@ -1,5 +1,6 @@
 import { setPreferences } from "../state";
 import type { IconName } from "../icons";
+import { message, type Translator } from "../i18n";
 import type {
   AppState,
   ColorTheme,
@@ -8,6 +9,7 @@ import type {
   MermaidTheme,
   PageWidth,
   ThemeMode,
+  UiLocalePreference,
 } from "../types";
 
 export type MermaidAppearance = "light" | "dark";
@@ -66,6 +68,7 @@ export type SettingsPreferencePatch = Partial<
     | "textFont"
     | "codeFont"
     | "pageWidth"
+    | "uiLocale"
   >
 >;
 
@@ -80,6 +83,7 @@ export interface SettingsViewControlDeps {
   >;
   escapeAttribute: (value: string) => string;
   icon: (name: IconName) => string;
+  translator?: Translator;
 }
 
 export interface SettingsViewDeps extends SettingsViewControlDeps {
@@ -91,6 +95,8 @@ export interface SettingsViewDeps extends SettingsViewControlDeps {
   darkMermaidThemes: ReadonlyArray<MermaidDarkTheme>;
   fontOptions: ReadonlyArray<SettingsFontOption>;
   pageWidthOptions: ReadonlyArray<SettingsOption<PageWidth>>;
+  localeOptions?: ReadonlyArray<SettingsOption<UiLocalePreference>>;
+  onLocaleChange?: (locale: UiLocalePreference) => void;
   copy: () => void | Promise<void>;
   capture: () => void;
   commit: (nextState: AppState) => void;
@@ -132,7 +138,9 @@ export function settingSelect<T extends MermaidTheme>(
   deps: SettingsViewControlDeps,
 ): string {
   const label =
-    kind === "mermaid-light" ? "Mermaid light theme" : "Mermaid dark theme";
+    kind === "mermaid-light"
+      ? message("settings.mermaidLightLabel", deps.translator)
+      : message("settings.mermaidDarkLabel", deps.translator);
   return `
     <div class="mermaid-theme-select ${deps.ui.selectWrapper}">
       <select class="${deps.ui.select}" data-${kind} aria-label="${label}">
@@ -149,7 +157,7 @@ export function settingSelect<T extends MermaidTheme>(
 }
 
 export function selectControl<T extends string>(
-  kind: "page-width",
+  kind: "page-width" | "ui-locale",
   options: ReadonlyArray<SettingsOption<T>>,
   selected: T,
   label: string,
@@ -177,7 +185,7 @@ export function colorThemeSelect(
 ): string {
   return `
     <div class="color-theme-select ${deps.ui.selectWrapper}">
-      <select class="${deps.ui.select}" data-color-theme aria-label="Color palette">
+      <select class="${deps.ui.select}" data-color-theme aria-label="${message("settings.colorPaletteLabel", deps.translator)}">
         ${options
           .map(
             (theme) =>
@@ -214,24 +222,48 @@ export function fontInput(
 
 export function renderSettingsMarkup(deps: SettingsViewDeps): string {
   const { state, ui } = deps;
+  const t = (key: Parameters<typeof message>[0]) => message(key, deps.translator);
   return `
     <section class="settings-page ${ui.settingsPage}">
       <div class="settings-content ${ui.settingsContent}">
       <header class="settings-header ${ui.settingsHeader}">
-        <span class="${ui.settingsEyebrow}">Preferences</span>
-        <h1 class="${ui.settingsHeading}">Reading settings</h1>
-        <p class="${ui.settingsCopy}">Changes apply immediately and are restored the next time MarkMaid opens.</p>
+        <span class="${ui.settingsEyebrow}">${t("settings.eyebrow")}</span>
+        <h1 class="${ui.settingsHeading}">${t("settings.heading")}</h1>
+        <p class="${ui.settingsCopy}">${t("settings.copy")}</p>
       </header>
 
-      <section class="${ui.settingsSection}" aria-labelledby="appearance-settings">
-        <h2 id="appearance-settings" class="${ui.settingsSectionTitle}">Appearance</h2>
+      ${
+        deps.localeOptions
+          ? `<section class="${ui.settingsSection}" aria-labelledby="language-settings">
+        <h2 id="language-settings" class="${ui.settingsSectionTitle}">${t("settings.language")}</h2>
         <div class="${ui.settingsSectionBody}">
           <div class="setting-group ${ui.settingGroup}">
             <div class="setting-copy">
-              <h3 class="${ui.settingTitle}">Appearance mode</h3>
-              <p class="${ui.settingDescription}">Use the macOS appearance or keep a fixed light or dark mode.</p>
+              <h3 class="${ui.settingTitle}">${t("settings.uiLanguage")}</h3>
+              <p class="${ui.settingDescription}">${t("settings.uiLanguageHelp")}</p>
             </div>
-            <div class="segmented-control ${ui.segmented}" role="group" aria-label="Theme">
+            ${selectControl(
+              "ui-locale",
+              deps.localeOptions,
+              state.uiLocale,
+              t("settings.uiLanguageLabel"),
+              deps,
+            )}
+          </div>
+        </div>
+      </section>`
+          : ""
+      }
+
+      <section class="${ui.settingsSection}" aria-labelledby="appearance-settings">
+        <h2 id="appearance-settings" class="${ui.settingsSectionTitle}">${t("settings.appearance")}</h2>
+        <div class="${ui.settingsSectionBody}">
+          <div class="setting-group ${ui.settingGroup}">
+            <div class="setting-copy">
+              <h3 class="${ui.settingTitle}">${t("settings.appearanceMode")}</h3>
+              <p class="${ui.settingDescription}">${t("settings.appearanceModeHelp")}</p>
+            </div>
+            <div class="segmented-control ${ui.segmented}" role="group" aria-label="${t("settings.themeGroup")}">
               ${deps.themeOptions
                 .map((option) =>
                   settingButton(
@@ -247,8 +279,8 @@ export function renderSettingsMarkup(deps: SettingsViewDeps): string {
           </div>
           <div class="setting-group ${ui.settingGroup}">
             <div class="setting-copy">
-              <h3 class="${ui.settingTitle}">Color palette</h3>
-              <p class="${ui.settingDescription}">Applies a matched light and dark palette across the app, Markdown, and syntax highlighting.</p>
+              <h3 class="${ui.settingTitle}">${t("settings.colorPalette")}</h3>
+              <p class="${ui.settingDescription}">${t("settings.colorPaletteHelp")}</p>
             </div>
             ${colorThemeSelect(state.colorTheme, deps.colorThemeOptions, deps)}
           </div>
@@ -256,7 +288,7 @@ export function renderSettingsMarkup(deps: SettingsViewDeps): string {
       </section>
 
       <section class="${ui.settingsSection}" aria-labelledby="typography-settings">
-        <h2 id="typography-settings" class="${ui.settingsSectionTitle}">Typography</h2>
+        <h2 id="typography-settings" class="${ui.settingsSectionTitle}">${t("settings.typography")}</h2>
         <div class="${ui.settingsSectionBody}">
           ${deps.fontOptions
             .map(
@@ -280,18 +312,18 @@ export function renderSettingsMarkup(deps: SettingsViewDeps): string {
       </section>
 
       <section class="${ui.settingsSection}" aria-labelledby="workspace-settings">
-        <h2 id="workspace-settings" class="${ui.settingsSectionTitle}">Workspace</h2>
+        <h2 id="workspace-settings" class="${ui.settingsSectionTitle}">${t("settings.workspace")}</h2>
         <div class="${ui.settingsSectionBody}">
           <div class="setting-group ${ui.settingGroup}">
             <div class="setting-copy">
-              <h3 class="${ui.settingTitle}">Page width</h3>
-              <p class="${ui.settingDescription}">Sets the maximum reading width for Markdown previews while keeping side margins on smaller windows.</p>
+              <h3 class="${ui.settingTitle}">${t("settings.pageWidth")}</h3>
+              <p class="${ui.settingDescription}">${t("settings.pageWidthHelp")}</p>
             </div>
             ${selectControl(
               "page-width",
               deps.pageWidthOptions,
               state.pageWidth,
-              "Page width",
+              t("settings.pageWidth"),
               deps,
             )}
           </div>
@@ -299,12 +331,12 @@ export function renderSettingsMarkup(deps: SettingsViewDeps): string {
       </section>
 
       <section class="${ui.settingsSection}" aria-labelledby="mermaid-settings">
-        <h2 id="mermaid-settings" class="${ui.settingsSectionTitle}">Mermaid</h2>
+        <h2 id="mermaid-settings" class="${ui.settingsSectionTitle}">${t("settings.mermaid")}</h2>
         <div class="${ui.settingsSectionBody}">
           <div class="setting-group mermaid-theme-group ${ui.settingGroup}">
             <div class="setting-copy">
-              <h3 class="${ui.settingTitle}">Light theme</h3>
-              <p class="${ui.settingDescription}">Used whenever the app appearance is light.</p>
+              <h3 class="${ui.settingTitle}">${t("settings.mermaidLight")}</h3>
+              <p class="${ui.settingDescription}">${t("settings.mermaidLightHelp")}</p>
             </div>
             ${settingSelect(
               "mermaid-light",
@@ -315,8 +347,8 @@ export function renderSettingsMarkup(deps: SettingsViewDeps): string {
           </div>
           <div class="setting-group mermaid-theme-group ${ui.settingGroup}">
             <div class="setting-copy">
-              <h3 class="${ui.settingTitle}">Dark theme</h3>
-              <p class="${ui.settingDescription}">Used whenever the app appearance is dark.</p>
+              <h3 class="${ui.settingTitle}">${t("settings.mermaidDark")}</h3>
+              <p class="${ui.settingDescription}">${t("settings.mermaidDarkHelp")}</p>
             </div>
             ${settingSelect(
               "mermaid-dark",
@@ -329,20 +361,20 @@ export function renderSettingsMarkup(deps: SettingsViewDeps): string {
       </section>
 
       <section class="${ui.settingsSection}" aria-labelledby="diagnostics-settings">
-        <h2 id="diagnostics-settings" class="${ui.settingsSectionTitle}">Diagnostics</h2>
+        <h2 id="diagnostics-settings" class="${ui.settingsSectionTitle}">${t("settings.diagnostics")}</h2>
         <div class="${ui.settingsSectionBody}">
           <div class="setting-group ${ui.settingGroup}">
             <div class="setting-copy">
-              <h3 class="${ui.settingTitle}">Copy diagnostics</h3>
-              <p class="${ui.settingDescription}">Copies a privacy-safe environment and state summary. Document contents, filenames, and full paths are never included.</p>
+              <h3 class="${ui.settingTitle}">${t("settings.copyDiagnostics")}</h3>
+              <p class="${ui.settingDescription}">${t("settings.copyDiagnosticsHelp")}</p>
             </div>
-            <button class="secondary-button ${ui.secondaryButton}" type="button" data-copy-diagnostics>Copy Diagnostics</button>
+            <button class="secondary-button ${ui.secondaryButton}" type="button" data-copy-diagnostics>${t("settings.copyDiagnosticsButton")}</button>
           </div>
         </div>
       </section>
 
       <footer class="settings-note ${ui.settingsNote}">
-        GFM and Mermaid preview are enabled. Editing and automatic file refresh are not part of this version.
+        ${t("settings.footer")}
       </footer>
       </div>
     </section>
@@ -467,6 +499,18 @@ export function bindSettings(
         deps.persist();
       });
     });
+
+  container
+    .querySelectorAll<HTMLSelectElement>("[data-ui-locale]")
+    .forEach((select) => {
+      select.addEventListener("change", () => {
+        commitPreferences(deps, currentState, {
+          uiLocale: select.value as UiLocalePreference,
+        });
+        deps.onLocaleChange?.(select.value as UiLocalePreference);
+        deps.persist();
+      });
+    });
 }
 
 export function renderSettings(
@@ -475,4 +519,88 @@ export function renderSettings(
 ): void {
   container.innerHTML = renderSettingsMarkup(deps);
   bindSettings(container, deps);
+}
+
+export function localizedSettingsControlOptions(
+  state: AppState,
+  translator: Translator,
+): Pick<
+  SettingsViewDeps,
+  | "themeOptions"
+  | "colorThemeOptions"
+  | "fontOptions"
+  | "pageWidthOptions"
+  | "localeOptions"
+> {
+  const t = (key: Parameters<typeof message>[0]) => message(key, translator);
+  return {
+    themeOptions: [
+      { value: "system", label: t("settings.mode.system") },
+      { value: "light", label: t("settings.mode.light") },
+      { value: "dark", label: t("settings.mode.dark") },
+    ],
+    colorThemeOptions: [
+      {
+        value: "default",
+        label: t("settings.palette.default"),
+        description: t("settings.palette.defaultHelp"),
+      },
+      {
+        value: "solarized",
+        label: t("settings.palette.solarized"),
+        description: t("settings.palette.solarizedHelp"),
+      },
+      {
+        value: "nord",
+        label: t("settings.palette.nord"),
+        description: t("settings.palette.nordHelp"),
+      },
+      {
+        value: "gruvbox",
+        label: t("settings.palette.gruvbox"),
+        description: t("settings.palette.gruvboxHelp"),
+      },
+      {
+        value: "catppuccin",
+        label: t("settings.palette.catppuccin"),
+        description: t("settings.palette.catppuccinHelp"),
+      },
+      {
+        value: "high-contrast",
+        label: t("settings.palette.highContrast"),
+        description: t("settings.palette.highContrastHelp"),
+      },
+    ],
+    fontOptions: [
+      {
+        kind: "text-font",
+        title: t("settings.textFont"),
+        description: t("settings.textFontHelp"),
+        value: state.textFont,
+        placeholder: t("settings.textFontPlaceholder"),
+        label: t("settings.textFont"),
+      },
+      {
+        kind: "code-font",
+        title: t("settings.codeFont"),
+        description: t("settings.codeFontHelp"),
+        value: state.codeFont,
+        placeholder: t("settings.codeFontPlaceholder"),
+        label: t("settings.codeFont"),
+      },
+    ],
+    pageWidthOptions: [
+      { value: "default", label: t("settings.pageWidth.default") },
+      { value: "narrow", label: t("settings.pageWidth.narrow") },
+      { value: "comfortable", label: t("settings.pageWidth.comfortable") },
+      { value: "wide", label: t("settings.pageWidth.wide") },
+      { value: "extra-wide", label: t("settings.pageWidth.extraWide") },
+      { value: "full", label: t("settings.pageWidth.full") },
+    ],
+    localeOptions: [
+      { value: "system", label: t("settings.locale.system") },
+      { value: "en", label: t("settings.locale.en") },
+      { value: "zh-Hans", label: t("settings.locale.zhHans") },
+    ],
+  };
 }

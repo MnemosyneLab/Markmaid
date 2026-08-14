@@ -18,6 +18,7 @@ export type ActionableStateActionId =
   | "continue-partial-results"
   | "reveal"
   | "remove-root"
+  | "remove-metadata"
   | "copy-details"
   | "open-another"
   | "choose-another";
@@ -45,7 +46,7 @@ export type ActionableStateInput =
       canReveal: boolean;
       isRoot: boolean;
     }
-  | { kind: "preview-error"; code: string; canReveal: boolean }
+  | { kind: "preview-error"; code: string; canReveal: boolean; canRemoveMetadata?: boolean }
   | { kind: "quick-open-failed"; code?: string }
   | { kind: "quick-open-truncated" }
   | { kind: "export-failed"; canRetry: boolean; code?: string }
@@ -113,6 +114,9 @@ export function buildActionableState(
         actions: [
           action("retry", "Retry", true),
           ...(input.canReveal ? [action("reveal", "Reveal")] : []),
+          ...(input.canRemoveMetadata
+            ? [action("remove-metadata", "Remove")]
+            : []),
           action("open-another", "Open Another"),
           action("copy-details", "Copy Details"),
         ],

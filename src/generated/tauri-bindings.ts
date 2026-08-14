@@ -100,6 +100,14 @@ async syncReopenClosedTabAvailability(available: boolean) : Promise<Result<null,
     else return { status: "error", error: e  as any };
 }
 },
+async setUiLocale(locale: NativeUiLocale) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_ui_locale", { locale }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async registerWorkspaceRoot(path: string) : Promise<Result<WorkspaceRoot, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("register_workspace_root", { path }) };
@@ -202,6 +210,7 @@ export type ImageAsset = { token: string; original: string; path: string | null 
 export type ImagePreview = { status: string; requestedPath: string; canonicalPath: string; displayName: string; path: string; sizeBytes: number; modifiedAtMs: number; code?: string | null; message?: string | null }
 export type MermaidPreview = { status: string; requestedPath: string; canonicalPath: string; displayName: string; source: string; html: string; sizeBytes: number; modifiedAtMs: number; code?: string | null; message?: string | null }
 export type MermaidTheme = "default" | "base" | "forest" | "neutral" | "neo" | "redux" | "redux-color" | "dark" | "neo-dark" | "redux-dark" | "redux-dark-color"
+export type NativeUiLocale = "en" | "zh-Hans"
 export type PreviewLoadResult = { kind: "document"; result: DocumentLoadResult } | { kind: "mermaid"; result: MermaidPreview } | { kind: "image"; result: ImagePreview } | { kind: "unsupported"; requestedPath: string; displayName: string; code: string; message: string }
 export type PreviewTaskOutcome = { status: "completed"; taskId: string; result: PreviewLoadResult } | { status: "cancelled"; taskId: string }
 export type PreviewTaskRequest = { taskId: string; path: string }

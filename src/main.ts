@@ -5,7 +5,6 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { load, type Store } from "@tauri-apps/plugin-store";
-
 import {
   copyText,
   enhanceCodeBlocks,
@@ -105,6 +104,7 @@ import {
   renderExportModal as renderExportModalView,
 } from "./app/export-view";
 import {
+  localizedSettingsControlOptions,
   renderSettings as renderSettingsView,
   type SettingsViewDeps,
 } from "./app/settings-view";
@@ -129,6 +129,7 @@ import {
 import {
   createPersistence,
   loadSessionForBootstrap,
+  SESSION_STORE_UNSUPPORTED_NOTICE_OPTIONS,
 } from "./app/persistence";
 import { createPreviewController } from "./app/preview-controller";
 import {
@@ -158,24 +159,15 @@ import {
   renderExternalOpenMenu as renderExternalOpenMenuView,
   type ExternalOpenViewDeps,
 } from "./app/external-open-view";
-import {
-  createRevealTargetController,
-} from "./app/reveal-target-controller";
+import { createRevealTargetController } from "./app/reveal-target-controller";
 import {
   bindQuickOpenView,
   reconcileQuickOpenSelection,
   renderQuickOpenResults,
   renderQuickOpenView,
 } from "./app/quick-open-view";
-import {
-  createCommandCatalog,
-  type CommandAvailability,
-  type CommandId,
-} from "./commands";
-import {
-  type ExternalOpenResult,
-} from "./external-apps";
-import { focusModeShellModel, toggleFocusModeState } from "./focus-mode";
+import type { ExternalOpenResult } from "./external-apps";
+import { applyFocusModeDom, toggleFocusModeState } from "./focus-mode";
 import {
   formatDiagnosticsReport,
   normalizeDiagnosticError,
@@ -191,12 +183,22 @@ import {
   applyWorkspaceRename,
   applyWorkspaceTrash,
   expandedPathsForRoot,
+  isPathPrefix,
   parentRelativePath,
+  rewritePathPrefix,
   toggleExpandedPath,
   workspaceErrorMessage,
 } from "./workspace";
 import { planWorkspaceRootRemoval } from "./workspace-removal";
-import { commands } from "./generated/tauri-bindings";
+import { createAnnotationShell } from "./app/annotation-shell";
+import { preflightAnnotationRewrite } from "./app/annotation-controller";
+import { ANNOTATION_STORE_FILENAME } from "./annotations/schema";
+import { isFavoritePath, toggleFavoriteInState } from "./favorites";
+import { createLocaleRuntime } from "./app/locale-runtime";
+import { hasAppMetadataUnderPrefix, stripPathMetadata } from "./app/path-lifecycle";
+import { renderEmptyStateMarkup, renderErrorMarkup, renderLoadingMarkup } from "./app/content-state-view";
+import { swapShellHtml } from "./app/preview-stage";
+import { createShellCommandHandlers, favoriteMenuLabel, type CommandContext } from "./app/shell-commands";
 import { normalizePreviewTaskOutcomes, unwrapCommandResult } from "./ipc";
 import "./styles.css";
 import type {
@@ -215,13 +217,13 @@ import type {
   ReadyDocumentTab,
   SidebarView,
   TaskOutcome,
-  ThemeMode,
   WorkspaceEntry,
   WorkspaceRoot,
 } from "./types";
-import type {
-  TaskOutcome as NativeTaskOutcome,
-  WorkspaceEntry as NativeWorkspaceEntry,
+import {
+  commands,
+  type TaskOutcome as NativeTaskOutcome,
+  type WorkspaceEntry as NativeWorkspaceEntry,
 } from "./generated/tauri-bindings";
 
 function normalizeWorkspaceEntry(entry: NativeWorkspaceEntry): WorkspaceEntry {
@@ -273,14 +275,6 @@ const DARK_MERMAID_THEMES: ReadonlyArray<MermaidDarkTheme> = [
   "redux-dark",
   "redux-dark-color",
 ];
-const PAGE_WIDTH_OPTIONS: ReadonlyArray<{ value: PageWidth; label: string }> = [
-  { value: "default", label: "Default (860px)" },
-  { value: "narrow", label: "Narrow (680px)" },
-  { value: "comfortable", label: "Comfortable (760px)" },
-  { value: "wide", label: "Wide (1040px)" },
-  { value: "extra-wide", label: "Extra wide (1200px)" },
-  { value: "full", label: "Full width" },
-];
 const PAGE_WIDTHS: Record<Exclude<PageWidth, "default">, string> = {
   narrow: "680px",
   comfortable: "760px",
@@ -288,22 +282,6 @@ const PAGE_WIDTHS: Record<Exclude<PageWidth, "default">, string> = {
   "extra-wide": "1200px",
   full: "100%",
 };
-const COLOR_THEME_OPTIONS: ReadonlyArray<{
-  value: ColorTheme;
-  label: string;
-  description: string;
-}> = [
-  { value: "default", label: "Default", description: "Neutral blue" },
-  { value: "solarized", label: "Solarized", description: "Warm, low-contrast" },
-  { value: "nord", label: "Nord", description: "Cool Arctic" },
-  { value: "gruvbox", label: "Gruvbox", description: "Warm retro" },
-  { value: "catppuccin", label: "Catppuccin", description: "Soft pastel" },
-  {
-    value: "high-contrast",
-    label: "High Contrast",
-    description: "Accessible black and white",
-  },
-];
 const UI = {
   frame: "h-full grid bg-window",
   titlebar:
@@ -510,6 +488,7 @@ const lastFreshnessCheckAt = new Map<string, number>();
 const externalChangeNotices = new Map<string, ExternalChangeNotice>();
 const ignoredExternalChangeSignatures = new Map<string, string>();
 let documentFindView: DocumentFindView | null = null;
+let preservePreviewDom = false;
 
 const persistence = createPersistence({
   getStore: () => stateStore,
@@ -564,8 +543,42 @@ documentFindView = createDocumentFindView({
   beginDocumentSearchReveal: () => overlay.beginDocumentSearchReveal(),
   documentSearchRevealSequence: () => overlay.documentSearchRevealSequence(),
   onClose: closeDocumentSearch,
+  onAddHighlight: () => void addHighlightFromFind(),
   escapeAttribute,
   icon,
+  translator: () => localeRuntime.translator(),
+});
+
+const annotations = createAnnotationShell({
+  runtime,
+  translator: () => localeRuntime.translator(),
+  escapeHtml,
+  escapeAttribute,
+  openStore: () => load(ANNOTATION_STORE_FILENAME, { autoSave: 150 }),
+  onNotice: (notice, options) => {
+    showGlobalNotice(notice, options);
+    render();
+  },
+  onChange: () => {
+    state = runtime.getState();
+    const current = activeTab(state);
+    preservePreviewDom = Boolean(
+      current && current.kind !== "settings" && current.status === "ready",
+    );
+    render();
+  },
+  captureActiveScroll: () => captureActiveScroll(),
+  setPendingAnchor: (key, fragment) => {
+    pendingAnchors.set(key, fragment);
+  },
+  restoreScroll: (scrollTop) => {
+    const current = activeTab(runtime.getState());
+    if (!current || current.kind === "settings") return;
+    runtime.commit(updateScroll(runtime.getState(), current.key, scrollTop));
+    state = runtime.getState();
+    const scroller = root.querySelector<HTMLElement>(".document-scroll");
+    if (scroller) scroller.scrollTop = scrollTop;
+  },
 });
 
 let exportNotice: string | null = null;
@@ -635,17 +648,69 @@ const externalApps = createExternalAppController({
 });
 const externalMenuFocusSession = createShellFocusRestoreSession();
 
-interface CommandContext {
-  state: AppState;
-  current: AppTab | null;
-}
-
-const commandCatalog = createCommandCatalog<CommandContext>({
-  availability: commandAvailability,
-  execute: executeCommand,
+const commandHandlers = createShellCommandHandlers({
+  chooseDocuments: () => chooseDocuments(),
+  addWorkspaceRoot: () => addWorkspaceRoot(),
+  openQuickSwitcher: (scope) => openQuickSwitcher(scope),
+  openExportModal: () => openExportModal(),
+  reloadActiveDocument: () => reloadActiveDocument(),
+  revealItemInDir,
+  openPreferredExternalApplication: () => openPreferredExternalApplication(),
+  openExternalApplicationPicker: () => openExternalApplicationPicker(),
+  closeActiveTab: () => closeActiveTab(),
+  reopenLastClosedTab: () => void reopenLastClosedTab(),
+  selectRelativeTab: (direction) => selectRelativeTab(direction),
+  moveTabByOffset: (key, offset) => {
+    tabViewController?.moveTabByOffset(key, offset);
+  },
+  toggleFocusMode: () => toggleFocusMode(),
+  setCommandPreferences: (preferences) => setCommandPreferences(preferences),
+  showSettings: () => showSettings(),
+  copyDiagnosticsReport: () => copyDiagnosticsReport(),
+  toggleFavorite: () => toggleActiveFavorite(),
+  addBookmark: () => {
+    overlay.hideSearchOverlays();
+    annotations.addBookmark();
+  },
+  showBookmarks: () => openAnnotationOverlay("bookmarks"),
+  highlightFindMatch: () => void addHighlightFromFind(),
+  addNote: () => {
+    overlay.hideSearchOverlays();
+    annotations.addNote();
+  },
+  manageAnnotations: () => openAnnotationOverlay("bookmarks"),
+  externalOpenPath,
+  externalReadyPath,
+  canHighlightFindMatch: () => {
+    const current = activeTab(runtime.getState());
+    return Boolean(
+      current &&
+        current.kind === "document" &&
+        current.status === "ready" &&
+        documentSearch.visible &&
+        documentSearch.mode === "highlight" &&
+        documentSearch.matches.length > 0 &&
+        documentSearch.activeIndex >= 0,
+    );
+  },
 });
+const localeRuntime = createLocaleRuntime<CommandContext>({
+  getPreference: () => runtime.getState().uiLocale,
+  handlers: commandHandlers,
+  onResolvedChange: (locale) => {
+    void commands.setUiLocale(locale);
+    const current = activeTab(runtime.getState());
+    preservePreviewDom = Boolean(
+      current && current.kind !== "settings" && current.status === "ready",
+    );
+    render();
+  },
+});
+localeRuntime.bindSystemLanguageChange();
 const commandPalette = createCommandPaletteController<CommandContext>({
-  catalog: commandCatalog,
+  get catalog() {
+    return localeRuntime.catalog();
+  },
   getContext: () => ({ state: runtime.getState(), current: activeTab(runtime.getState()) }),
   render: () => {
     state = runtime.getState();
@@ -654,6 +719,7 @@ const commandPalette = createCommandPaletteController<CommandContext>({
   dismissCompetingOverlays: () => {
     dismissMediaViewer();
     overlay.hideSearchOverlays();
+    if (annotations.isVisible()) annotations.close();
     if (externalApps.model.visible) closeExternalApplicationPicker();
     if (exportController.isVisible()) closeExportModal();
     if (workspaceDialog) closeWorkspaceDialog();
@@ -734,10 +800,15 @@ async function bootstrap(): Promise<void> {
         dismissTitle: "Dismiss saved session notice",
       },
     );
+  } else if (session.status === "unsupported") {
+    showGlobalNotice(session.notice, SESSION_STORE_UNSUPPORTED_NOTICE_OPTIONS);
   }
   state = runtime.getState();
+  localeRuntime.refresh();
+  void commands.setUiLocale(localeRuntime.resolved());
   applyTheme();
   render();
+  await annotations.load();
   await registerNativeListeners();
   await persistence.syncRecentDocuments();
   await persistence.syncReopenClosedTabAvailability();
@@ -783,7 +854,7 @@ async function registerNativeListeners(): Promise<void> {
       void openDocumentPaths(event.payload);
     }),
     listen(MENU_OPEN_EVENT, () => void chooseDocuments()),
-    listen(MENU_QUICK_OPEN_EVENT, openQuickSwitcher),
+    listen(MENU_QUICK_OPEN_EVENT, () => openQuickSwitcher()),
     listen(MENU_COMMAND_PALETTE_EVENT, openCommandPalette),
     listen(MENU_FOCUS_MODE_EVENT, toggleFocusMode),
     listen(MENU_EXPORT_EVENT, openExportModal),
@@ -1236,7 +1307,73 @@ function closeTabAndLoadNext(key: string): void {
 }
 
 function reopenLastClosedTab(): void {
-  navigation.reopenLastClosedTab();
+  void navigation.reopenLastClosedTab();
+}
+
+function toggleActiveFavorite(): void {
+  const current = activeTab(runtime.getState());
+  if (!current) return;
+  toggleFavoriteForTab(current.key);
+}
+
+function toggleFavoriteForTab(key: string): void {
+  const tab = runtime.getState().tabs.find((candidate) => candidate.key === key);
+  if (!tab) return;
+  const next = toggleFavoriteInState(runtime.getState(), tab, Date.now());
+  if (!next) return;
+  runtime.commit(next);
+  state = runtime.getState();
+  render();
+  schedulePersist();
+}
+
+async function addHighlightFromFind(): Promise<void> {
+  const current = activeTab(runtime.getState());
+  if (!current || current.kind !== "document" || current.status !== "ready") return;
+  if (!documentSearch.visible) {
+    overlay.openDocumentSearch("highlight");
+    return;
+  }
+  const match = documentSearch.matches[documentSearch.activeIndex];
+  if (!match) return;
+  await annotations.addHighlightFromMatch(
+    current,
+    match,
+    documentSearch.highlightColor,
+  );
+  const stage = root.querySelector<HTMLElement>("#content-stage");
+  if (stage) annotations.applyDecorations(stage, current);
+}
+
+function maybeOfferMetadataRemoval(
+  _path: string,
+  kind: "favorite" | "history",
+): void {
+  const tab = activeTab(runtime.getState());
+  if (!tab || tab.kind === "settings" || tab.status !== "error") return;
+  const key = kind === "favorite" ? "notice.missingFavorite" : "notice.missingHistory";
+  showGlobalNotice(localeRuntime.translator().t(key), {
+    title: "Preview not opened.",
+    dismissTitle: "Dismiss preview notice",
+  });
+}
+
+function removePathMetadata(path: string): void {
+  runtime.commit(stripPathMetadata(runtime.getState(), path));
+  state = runtime.getState();
+  annotations.controller.removeUnderPrefix((candidate) => candidate === path);
+  render();
+  schedulePersist();
+  void persistence.syncReopenClosedTabAvailability();
+}
+
+function openAnnotationOverlay(
+  tab: "bookmarks" | "highlights" | "notes" = "bookmarks",
+): void {
+  overlay.hideSearchOverlays();
+  if (exportController.isVisible()) closeExportModal();
+  if (tab === "notes") annotations.addNote();
+  else annotations.open(tab);
 }
 
 function showSettings(): void {
@@ -1272,206 +1409,7 @@ function toggleFocusMode(): void {
 }
 
 function applyFocusModeToShell(): void {
-  const frame = root.querySelector<HTMLElement>(".app-frame");
-  if (!frame) return;
-  frame.classList.toggle("is-focus-mode", state.focusMode);
-  const transientStatusVisible = Boolean(
-    root.querySelector(".status-bar.is-alert"),
-  );
-  const shell = focusModeShellModel(state.focusMode, transientStatusVisible);
-  frame.classList.toggle(
-    "has-status-bar",
-    shell.statusBarVisible,
-  );
-  root
-    .querySelectorAll<HTMLElement>(
-      "[data-focus-chrome], .document-outline, .document-outline-resize",
-    )
-    .forEach((element) => {
-      element.inert = shell.chromeHidden;
-      element.setAttribute("aria-hidden", String(shell.chromeHidden));
-    });
-  const exit = root.querySelector<HTMLElement>("[data-action='toggle-focus-mode']");
-  if (exit) {
-    exit.hidden = !shell.exitControlVisible;
-    exit.inert = !shell.exitControlVisible;
-  }
-}
-
-function commandAvailability(
-  id: CommandId,
-  context: CommandContext,
-): CommandAvailability {
-  const { state: commandState, current } = context;
-  const currentIndex = current
-    ? commandState.tabs.findIndex((tab) => tab.key === current.key)
-    : -1;
-  const enabled: CommandAvailability = { state: "enabled" };
-  const disabled = (reason: string): CommandAvailability => ({
-    state: "disabled",
-    reason,
-  });
-  const hidden: CommandAvailability = { state: "hidden" };
-
-  switch (id) {
-    case "file.open-preview-files":
-    case "workspace.add-folder":
-    case "file.quick-open":
-    case "view.toggle-focus-mode":
-    case "appearance.system":
-    case "appearance.light":
-    case "appearance.dark":
-    case "appearance.palette.default":
-    case "appearance.palette.solarized":
-    case "appearance.palette.nord":
-    case "appearance.palette.gruvbox":
-    case "appearance.palette.catppuccin":
-    case "appearance.palette.high-contrast":
-    case "application.settings":
-      return enabled;
-    case "application.copy-diagnostics":
-      return current?.kind === "settings"
-        ? enabled
-        : disabled("Open Settings to copy diagnostics");
-    case "file.export-document":
-      return current?.kind === "document" && current.status === "ready"
-        ? enabled
-        : disabled("Open a ready Markdown document first");
-    case "file.reload-document":
-      return current && current.kind !== "settings"
-        ? enabled
-        : disabled("No preview is active");
-    case "file.reveal-in-finder":
-      return externalOpenPath(current)
-        ? enabled
-        : disabled("No local text preview is active");
-    case "external.open-preferred":
-      return externalReadyPath(current)
-        ? enabled
-        : disabled("Open a Markdown or Mermaid file first");
-    case "external.choose-application":
-      return externalReadyPath(current)
-        ? enabled
-        : disabled("Open a Markdown or Mermaid file first");
-    case "tabs.close":
-      return current ? enabled : disabled("No tab is active");
-    case "tabs.reopen-closed":
-      return commandState.closedTabsHistory.length > 0
-        ? enabled
-        : disabled("No recently closed tab");
-    case "tabs.next":
-    case "tabs.previous":
-      return commandState.tabs.length > 1
-        ? enabled
-        : disabled("Only one tab is open");
-    case "tabs.move-up":
-      return currentIndex > 0 ? enabled : disabled("Tab is already first");
-    case "tabs.move-down":
-      return currentIndex >= 0 && currentIndex < commandState.tabs.length - 1
-        ? enabled
-        : disabled("Tab is already last");
-    case "view.show-sidebar":
-      return commandState.leftSidebarVisible ? hidden : enabled;
-    case "view.hide-sidebar":
-      return commandState.leftSidebarVisible ? enabled : hidden;
-    case "view.show-outline":
-      if (current?.kind !== "document" || current.status !== "ready") {
-        return disabled("Open a ready Markdown document first");
-      }
-      return commandState.tableOfContentsVisible ? hidden : enabled;
-    case "view.hide-outline":
-      if (current?.kind !== "document" || current.status !== "ready") {
-        return disabled("Open a ready Markdown document first");
-      }
-      return commandState.tableOfContentsVisible ? enabled : hidden;
-  }
-}
-
-async function executeCommand(
-  id: CommandId,
-  context: CommandContext,
-): Promise<void> {
-  switch (id) {
-    case "file.open-preview-files":
-      await chooseDocuments();
-      return;
-    case "workspace.add-folder":
-      await addWorkspaceRoot();
-      return;
-    case "file.quick-open":
-      openQuickSwitcher();
-      return;
-    case "file.export-document":
-      openExportModal();
-      return;
-    case "file.reload-document":
-      await reloadActiveDocument();
-      return;
-    case "file.reveal-in-finder": {
-      const path = externalOpenPath(context.current);
-      if (path) await revealItemInDir(path);
-      return;
-    }
-    case "external.open-preferred":
-      await openPreferredExternalApplication();
-      return;
-    case "external.choose-application":
-      await openExternalApplicationPicker();
-      return;
-    case "tabs.close":
-      closeActiveTab();
-      return;
-    case "tabs.reopen-closed":
-      reopenLastClosedTab();
-      return;
-    case "tabs.next":
-      selectRelativeTab(1);
-      return;
-    case "tabs.previous":
-      selectRelativeTab(-1);
-      return;
-    case "tabs.move-up":
-      if (context.current) tabViewController?.moveTabByOffset(context.current.key, -1);
-      return;
-    case "tabs.move-down":
-      if (context.current) tabViewController?.moveTabByOffset(context.current.key, 1);
-      return;
-    case "view.toggle-focus-mode":
-      toggleFocusMode();
-      return;
-    case "view.show-sidebar":
-      setCommandPreferences({ leftSidebarVisible: true });
-      return;
-    case "view.hide-sidebar":
-      setCommandPreferences({ leftSidebarVisible: false });
-      return;
-    case "view.show-outline":
-      setCommandPreferences({ tableOfContentsVisible: true });
-      return;
-    case "view.hide-outline":
-      setCommandPreferences({ tableOfContentsVisible: false });
-      return;
-    case "appearance.system":
-    case "appearance.light":
-    case "appearance.dark":
-      setCommandPreferences({ theme: id.slice("appearance.".length) as ThemeMode });
-      return;
-    case "appearance.palette.default":
-    case "appearance.palette.solarized":
-    case "appearance.palette.nord":
-    case "appearance.palette.gruvbox":
-    case "appearance.palette.catppuccin":
-    case "appearance.palette.high-contrast":
-      setCommandPreferences({
-        colorTheme: id.slice("appearance.palette.".length) as ColorTheme,
-      });
-      return;
-    case "application.settings":
-      showSettings();
-      return;
-    case "application.copy-diagnostics":
-      await copyDiagnosticsReport();
-  }
+  applyFocusModeDom(root, state.focusMode);
 }
 
 function setCommandPreferences(
@@ -1693,6 +1631,7 @@ function render(): void {
     externalApps.model.visible ||
     quickSwitcher.visible ||
     exportController.isVisible() ||
+    annotations.isVisible() ||
     Boolean(workspaceDialog);
   let focusToRestore: FocusKey | null = null;
   if (pendingFocusKey) {
@@ -1703,6 +1642,7 @@ function render(): void {
   }
   suppressFocusRestore = false;
   const current = activeTab(state);
+  const t = localeRuntime.translator();
   const currentExternalPath = externalReadyPath(current);
   externalApps.syncActivePath(currentExternalPath);
   if (
@@ -1719,9 +1659,9 @@ function render(): void {
   const tableOfContentsWidth = clampTableOfContentsWidth(
     state.tableOfContentsWidth,
   );
-  const sidebarToggle = `<button class="icon-button ${UI.iconButton}" type="button" data-action="toggle-left-sidebar" title="${state.leftSidebarVisible ? "Hide" : "Show"} sidebar" aria-label="${state.leftSidebarVisible ? "Hide" : "Show"} sidebar" aria-pressed="${state.leftSidebarVisible}">
+  const sidebarToggle = `<button class="icon-button ${UI.iconButton}" type="button" data-action="toggle-left-sidebar" title="${state.leftSidebarVisible ? t.t("chrome.hideSidebar") : t.t("chrome.showSidebar")}" aria-label="${state.leftSidebarVisible ? t.t("chrome.hideSidebar") : t.t("chrome.showSidebar")}" aria-pressed="${state.leftSidebarVisible}">
           ${icon(state.leftSidebarVisible ? "panel-left-close" : "panel-left-open")}
-          <span class="sr-only">${state.leftSidebarVisible ? "Hide" : "Show"} sidebar</span>
+          <span class="sr-only">${state.leftSidebarVisible ? t.t("chrome.hideSidebar") : t.t("chrome.showSidebar")}</span>
         </button>`;
   const navState = computeNavigationControlState(state);
   const navButtons = navState.isDocument
@@ -1736,9 +1676,9 @@ function render(): void {
     : "";
   const outlineToggle =
     current?.kind === "document" && current.status === "ready"
-      ? `<button class="icon-button ${UI.iconButton}" type="button" data-action="toggle-outline" title="${state.tableOfContentsVisible ? "Hide" : "Show"} document outline" aria-label="${state.tableOfContentsVisible ? "Hide" : "Show"} document outline" aria-pressed="${state.tableOfContentsVisible}">
+      ? `<button class="icon-button ${UI.iconButton}" type="button" data-action="toggle-outline" title="${state.tableOfContentsVisible ? t.t("chrome.hideOutline") : t.t("chrome.showOutline")}" aria-label="${state.tableOfContentsVisible ? t.t("chrome.hideOutline") : t.t("chrome.showOutline")}" aria-pressed="${state.tableOfContentsVisible}">
           ${icon(state.tableOfContentsVisible ? "panel-right-close" : "panel-right-open")}
-          <span class="sr-only">${state.tableOfContentsVisible ? "Hide" : "Show"} document outline</span>
+          <span class="sr-only">${state.tableOfContentsVisible ? t.t("chrome.hideOutline") : t.t("chrome.showOutline")}</span>
         </button>`
       : "";
   const status = buildStatusBar(current, {
@@ -1752,11 +1692,13 @@ function render(): void {
   });
   const showStatusBar =
     !state.focusMode || Boolean(status.alert || exportNotice || globalNotice);
-  const focusModeExit = `<button class="secondary-button compact focus-mode-exit ${UI.secondaryButton}" type="button" data-action="toggle-focus-mode" title="Exit Focus Mode (⌘⇧F)" ${state.focusMode ? "" : "hidden inert"}>
-          Exit Focus Mode
+  const focusModeExit = `<button class="secondary-button compact focus-mode-exit ${UI.secondaryButton}" type="button" data-action="toggle-focus-mode" title="${t.t("chrome.exitFocusShortcut")}" ${state.focusMode ? "" : "hidden inert"}>
+          ${t.t("chrome.exitFocus")}
         </button>`;
 
-  root.innerHTML = `
+  const { stage, preserved } = swapShellHtml(
+    root,
+    `
     <div
       class="app-frame ${state.focusMode ? "is-focus-mode" : ""} ${showStatusBar ? "has-status-bar" : ""} ${status.alert ? "is-status-alert" : ""} ${UI.frame}"
       style="--sidebar-width: ${sidebarWidth}px; --table-of-contents-width: ${tableOfContentsWidth}px"
@@ -1764,17 +1706,17 @@ function render(): void {
       <header class="titlebar ${UI.titlebar}" data-tauri-drag-region>
         <div class="titlebar-leading ${UI.titlebarLeading} gap-1.5" data-focus-chrome>${sidebarToggle}${navButtons}</div>
         <div class="titlebar-title ${UI.title}" data-tauri-drag-region title="${escapeAttribute(windowTitle(current))}">${title}</div>
-        <nav class="titlebar-actions ${UI.titlebarActions}" aria-label="Application actions">
+        <nav class="titlebar-actions ${UI.titlebarActions}" aria-label="${t.t("chrome.applicationActions")}">
           <div class="titlebar-ordinary-actions" data-focus-chrome>
-            <button class="icon-button ${UI.iconButton}" type="button" data-action="open" title="Open preview files (⌘O)">
+            <button class="icon-button ${UI.iconButton}" type="button" data-action="open" title="${t.t("chrome.openShortcut")}">
                   ${icon("folder-open")}
-                  <span class="sr-only">Open Markdown, Mermaid, or image files</span>
+                  <span class="sr-only">${t.t("chrome.openFiles")}</span>
                 </button>
                 ${outlineToggle}
                 ${currentExternalPath ? renderExternalOpenControlView(externalOpenViewDeps()) : ""}
-                <button class="icon-button ${UI.iconButton}" type="button" data-action="settings" title="Settings" aria-label="Settings">
+                <button class="icon-button ${UI.iconButton}" type="button" data-action="settings" title="${t.t("chrome.settings")}" aria-label="${t.t("chrome.settings")}">
                   ${icon("settings")}
-                  <span class="sr-only">Settings</span>
+                  <span class="sr-only">${t.t("chrome.settings")}</span>
                 </button>
           </div>
           ${focusModeExit}
@@ -1783,8 +1725,8 @@ function render(): void {
       <div class="workspace ${UI.workspace}">
         ${
           state.leftSidebarVisible
-            ? `<aside class="sidebar ${UI.sidebar}" aria-label="Workspace sidebar" data-focus-chrome>
-                ${renderSidebarChromeView(state.sidebarView)}
+            ? `<aside class="sidebar ${UI.sidebar}" aria-label="${t.t("chrome.workspaceSidebar")}" data-focus-chrome>
+                ${renderSidebarChromeView(state.sidebarView, t)}
                 <div class="sidebar-body" id="sidebar-panel" role="tabpanel" aria-labelledby="${state.sidebarView === "files" ? "sidebar-tab-files" : "sidebar-tab-tabs"}">
                   ${
                     state.sidebarView === "files"
@@ -1795,15 +1737,16 @@ function render(): void {
                           labels: disambiguatedTabLabels(state.tabs),
                           escapeHtml,
                           escapeAttribute,
+                          translator: t,
                         })
                   }
                 </div>
-                <div class="sidebar-resize" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" aria-valuemin="${MIN_SIDEBAR_WIDTH}" aria-valuemax="${MAX_SIDEBAR_WIDTH}" aria-valuenow="${sidebarWidth}" tabindex="0"></div>
+                <div class="sidebar-resize" role="separator" aria-orientation="vertical" aria-label="${t.t("chrome.resizeSidebar")}" aria-valuemin="${MIN_SIDEBAR_WIDTH}" aria-valuemax="${MAX_SIDEBAR_WIDTH}" aria-valuenow="${sidebarWidth}" tabindex="0"></div>
               </aside>`
             : ""
         }
         <div class="sr-only" id="status-announcer" role="status" aria-live="polite" aria-atomic="true">${escapeHtml(statusAnnouncement)}</div>
-        <main class="content-stage ${UI.contentStage}" id="content-stage" role="tabpanel" aria-label="Document preview" tabindex="-1"></main>
+        <main class="content-stage ${UI.contentStage}" id="content-stage" role="tabpanel" aria-label="${t.t("chrome.documentPreview")}" tabindex="-1"></main>
       </div>
       ${renderStatusBarView({
         status,
@@ -1815,11 +1758,12 @@ function render(): void {
         escapeHtml,
         escapeAttribute,
         icon,
+        translator: t,
       })}
       <div class="drop-overlay ${UI.dropOverlay}" aria-hidden="true">
         <div class="drop-message ${UI.dropMessage}">
-          <strong class="text-lg">Drop preview files here</strong>
-          <span class="text-[13px] text-app-secondary">Markdown, Mermaid, and images open in their own tabs.</span>
+          <strong class="text-lg">${t.t("chrome.dropTitle")}</strong>
+          <span class="text-[13px] text-app-secondary">${t.t("chrome.dropCopy")}</span>
         </div>
       </div>
       ${documentSearch.visible ? documentFindView?.render() ?? "" : ""}
@@ -1828,19 +1772,25 @@ function render(): void {
         controller: commandPalette,
         escapeHtml,
         escapeAttribute,
+        translator: t,
       }) : ""}
       ${quickSwitcher.visible ? renderQuickSwitcher() : ""}
       ${workspaceDialog ? renderWorkspaceDialogView(workspaceDialog, workspaceViewModel()) : ""}
       ${exportController.isVisible() ? renderExportModal() : ""}
+      ${annotations.isVisible() ? annotations.renderMarkup() : ""}
     </div>
-  `;
+  `,
+    preservePreviewDom,
+  );
+  preservePreviewDom = false;
 
   bindShellInteractions();
   bindWorkspaceInteractions();
-  renderContent(
-    root.querySelector<HTMLElement>("#content-stage"),
-    current,
-  );
+  if (!preserved) {
+    renderContent(stage, current);
+  } else if (stage) {
+    annotations.applyDecorations(stage, current);
+  }
   applyFocusModeToShell();
   documentFindView?.bind();
   bindExternalOpenMenuView(externalOpenViewDeps());
@@ -1848,9 +1798,11 @@ function render(): void {
     controller: commandPalette,
     escapeHtml,
     escapeAttribute,
+    translator: localeRuntime.translator(),
   });
   bindQuickSwitcher();
   bindExportModal();
+  annotations.bind(root);
   renderIcons(root);
   restoreShellFocus(focusToRestore);
   if (documentSearch.visible && documentSearch.query) {
@@ -1897,11 +1849,15 @@ function restoreShellFocus(key: FocusKey | null): void {
 }
 
 function renderQuickSwitcher(): string {
+  const t = localeRuntime.translator();
   return renderQuickOpenView({
     model: quickSwitcher,
     build: quickSwitcherBuild(),
     workspaceRootCount: state.workspaceRoots.length,
     secondaryButtonClass: UI.secondaryButton,
+    translator: t,
+    scopeLabel: t.t("quickOpen.scopeFavorites"),
+    clearScopeLabel: t.t("quickOpen.clearScope"),
   });
 }
 
@@ -1913,6 +1869,8 @@ function quickSwitcherBuild() {
     {
       workspaceEntries: quickSwitcher.index?.entries ?? [],
       workspaceRoots: state.workspaceRoots,
+      favorites: state.favorites,
+      scope: quickSwitcher.scope,
     },
   );
 }
@@ -1943,6 +1901,7 @@ function bindQuickSwitcher(): void {
         : buildActionableState({ kind: "quick-open-truncated" });
       void copyActionableDetails(model);
     },
+    onClearScope: () => overlay.clearQuickSwitcherScope(),
   });
 }
 
@@ -1997,10 +1956,11 @@ function bindExportModal(): void {
   });
 }
 
-function openQuickSwitcher(): void {
+function openQuickSwitcher(scope: "all" | "favorites" = "all"): void {
   commandPalette.close();
   if (externalApps.model.visible) closeExternalApplicationPicker();
-  overlay.openQuickSwitcher();
+  if (annotations.isVisible()) annotations.close();
+  overlay.openQuickSwitcher(scope);
 }
 
 function openCommandPalette(): void {
@@ -2098,8 +2058,9 @@ async function activateQuickSwitcherItem(item: QuickSwitcherItem): Promise<void>
     state = runtime.getState();
     return;
   }
-  if ((item.kind === "recent" || item.kind === "workspace") && item.path) {
+  if ((item.kind === "recent" || item.kind === "workspace" || item.kind === "favorite") && item.path) {
     await openDocumentPaths([item.path]);
+    maybeOfferMetadataRemoval(item.path, item.kind === "favorite" ? "favorite" : "history");
   }
 }
 
@@ -2132,6 +2093,7 @@ function workspaceViewModel() {
     revealTargets,
     escapeHtml,
     escapeAttribute,
+    translator: localeRuntime.translator(),
     styles: {
       buttonRow: UI.buttonRow,
       primaryButton: UI.primaryButton,
@@ -2360,6 +2322,14 @@ async function runWorkspaceAction(
     case "trash": {
       const name = canonicalPath.split("/").filter(Boolean).at(-1) ?? "";
       const isDirectory = kind === "directory";
+      const hasMetadata = hasAppMetadataUnderPrefix(
+        state,
+        annotations.controller.getStore(),
+        canonicalPath,
+      );
+      const metadataWarning = hasMetadata
+        ? ` ${localeRuntime.translator().t("notice.trashHasMetadata")}`
+        : "";
       openWorkspaceDialog({
         kind: "confirm-trash",
         rootId,
@@ -2369,8 +2339,8 @@ async function runWorkspaceAction(
         initialValue: "",
         confirmLabel: "Move to Trash",
         message: isDirectory
-          ? "This folder and its contents will be moved to Trash."
-          : undefined,
+          ? `This folder and its contents will be moved to Trash.${metadataWarning}`
+          : metadataWarning || undefined,
       });
       break;
     }
@@ -2462,6 +2432,9 @@ async function confirmWorkspaceDialog(): Promise<void> {
       if (mutation.removedPathPrefix) {
         runtime.commit(applyWorkspaceTrash(state, mutation.removedPathPrefix));
         state = runtime.getState();
+        annotations.controller.removeUnderPrefix((path) =>
+          isPathPrefix(path, mutation.removedPathPrefix ?? ""),
+        );
         void syncReopenClosedTabAvailability();
       }
       invalidateWorkspaceCache(dialog.rootId, [parentRelativePath(dialog.relativePath)]);
@@ -2513,6 +2486,23 @@ async function confirmWorkspaceDialog(): Promise<void> {
         relativePath: entry.relativePath,
       };
     } else if (dialog.kind === "rename") {
+      const currentPath = workspaceCanonicalPath(dialog.rootId, dialog.relativePath);
+      if (!currentPath) {
+        workspaceNotice = "That item is no longer available.";
+        closeWorkspaceDialog();
+        return;
+      }
+      const nextPath = currentPath.replace(/[^/]+$/, name);
+      const rewrite = (path: string) => rewritePathPrefix(path, currentPath, nextPath);
+      const preflight = preflightAnnotationRewrite(
+        annotations.controller.getStore(),
+        rewrite,
+      );
+      if (preflight.conflict || preflight.overCap) {
+        workspaceNotice = localeRuntime.translator().t("notice.renameConflict");
+        closeWorkspaceDialog();
+        return;
+      }
       const mutation = unwrapCommandResult(
         await commands.renameWorkspaceItem(
           dialog.rootId,
@@ -2523,6 +2513,15 @@ async function confirmWorkspaceDialog(): Promise<void> {
       if (mutation.oldPath && mutation.newPath) {
         runtime.commit(applyWorkspaceRename(state, mutation.oldPath, mutation.newPath));
         state = runtime.getState();
+        const rewritten = annotations.controller.rewritePaths((path) =>
+          rewritePathPrefix(path, mutation.oldPath ?? "", mutation.newPath ?? ""),
+        );
+        if (rewritten.conflict) {
+          showGlobalNotice(localeRuntime.translator().t("notice.renameConflict"), {
+            title: "Rename metadata conflict.",
+            dismissTitle: "Dismiss rename notice",
+          });
+        }
       }
       invalidateWorkspaceCache(dialog.rootId, [
         parentRelativePath(dialog.relativePath),
@@ -2648,6 +2647,17 @@ function bindShellInteractions(): void {
     openExternalApplicationPicker,
     copyText,
     revealItemInDir,
+    onToggleFavorite: (key) => toggleFavoriteForTab(key),
+    favoriteLabel: (tab) => {
+      const t = localeRuntime.translator();
+      return favoriteMenuLabel(
+        runtime.getState(),
+        tab,
+        t.t("favorite.add"),
+        t.t("favorite.remove"),
+      );
+    },
+    translator: localeRuntime.translator(),
     onSuppressTabClick: (key, until) => {
       suppressTabClickKey = key;
       suppressTabClickUntil = until;
@@ -3062,28 +3072,16 @@ function renderContent(
 }
 
 function renderEmptyState(container: HTMLElement): void {
-  const model = buildActionableState({
-    kind: "empty",
-    hasWorkspaceRoots: state.workspaceRoots.length > 0,
-  });
-  container.innerHTML = `
-    <section class="empty-state ${UI.centeredState}">
-      <div class="empty-copy ${UI.emptyCopy}">
-        <span class="empty-mark ${UI.emptyMark}" aria-hidden="true">M</span>
-        <h1 id="empty-state-heading" class="${UI.displayHeading}" tabindex="-1">Preview local documents in a workspace.</h1>
-        <p class="${UI.displayCopy}">Pin folders in the sidebar, or open Markdown, Mermaid, and image files directly as tabs.</p>
-        <div class="button-row ${UI.buttonRow}">
-          ${model.actions
-            .map(
-              (candidate) =>
-                `<button class="${candidate.primary ? `primary-button ${UI.primaryButton}` : `secondary-button ${UI.secondaryButton}`}" type="button" data-empty-action="${candidate.id}">${candidate.label}</button>`,
-            )
-            .join("")}
-        </div>
-        <span class="shortcut-hint ${UI.shortcutHint}">⌘O or drag preview files into this window</span>
-      </div>
-    </section>
-  `;
+  const t = localeRuntime.translator();
+  container.innerHTML = renderEmptyStateMarkup(
+    state.workspaceRoots.length > 0,
+    UI,
+    {
+      heading: t.t("empty.heading"),
+      body: t.t("empty.copy"),
+      shortcut: t.t("empty.shortcut"),
+    },
+  );
   container.querySelectorAll<HTMLElement>("[data-empty-action]").forEach((button) => {
     button.addEventListener("click", () => {
       switch (button.dataset.emptyAction) {
@@ -3105,17 +3103,7 @@ function renderEmptyState(container: HTMLElement): void {
 }
 
 function renderLoading(container: HTMLElement, tab: PreviewTab): void {
-  container.innerHTML = `
-    <section class="loading-state ${UI.centeredState}" aria-label="Loading ${escapeAttribute(tab.displayName)}">
-      <div class="document-skeleton w-[min(720px,80%)]">
-        <span class="skeleton-line skeleton-title"></span>
-        <span class="skeleton-line"></span>
-        <span class="skeleton-line skeleton-short"></span>
-        <span class="skeleton-line"></span>
-        <span class="skeleton-line skeleton-medium"></span>
-      </div>
-    </section>
-  `;
+  container.innerHTML = renderLoadingMarkup(tab, UI, escapeAttribute, localeRuntime.translator());
 }
 
 function renderError(container: HTMLElement, tab: PreviewTab): void {
@@ -3128,25 +3116,14 @@ function renderError(container: HTMLElement, tab: PreviewTab): void {
     kind: "preview-error",
     code: tab.code,
     canReveal: Boolean(revealPath && revealTargets.isAvailable(revealPath)),
+    canRemoveMetadata: Boolean(
+      revealPath &&
+        (isFavoritePath(state.favorites, revealPath) ||
+          state.documentVisitHistory.some((entry) => entry.path === revealPath) ||
+          state.closedTabsHistory.some((entry) => entry.path === revealPath)),
+    ),
   });
-  container.innerHTML = `
-    <section class="error-state ${UI.centeredState}">
-      <div class="error-panel ${UI.errorPanel}">
-        <span class="error-code ${UI.errorCode}">${escapeHtml(tab.code.replaceAll("_", " "))}</span>
-        <h1 class="${UI.displayHeading}">${escapeHtml(tab.displayName)}</h1>
-        <p class="${UI.displayCopy}">${escapeHtml(tab.message)}</p>
-        <div class="error-path ${UI.errorPath}">${escapeHtml(tab.canonicalPath ?? tab.requestedPath)}</div>
-        <div class="button-row ${UI.buttonRow}">
-          ${model.actions
-            .map(
-              (candidate) =>
-                `<button class="${candidate.primary ? `primary-button ${UI.primaryButton}` : `secondary-button ${UI.secondaryButton}`}" type="button" data-error-action="${candidate.id}">${candidate.label}</button>`,
-            )
-            .join("")}
-        </div>
-      </div>
-    </section>
-  `;
+  container.innerHTML = renderErrorMarkup(tab, model, UI, escapeHtml);
   container.querySelectorAll<HTMLElement>("[data-error-action]").forEach((button) => {
     button.addEventListener("click", () => {
       switch (button.dataset.errorAction) {
@@ -3159,6 +3136,9 @@ function renderError(container: HTMLElement, tab: PreviewTab): void {
           break;
         case "open-another":
           void chooseDocuments();
+          break;
+        case "remove-metadata":
+          if (revealPath) removePathMetadata(revealPath);
           break;
         case "copy-details":
           void copyActionableDetails(model);
@@ -3330,6 +3310,8 @@ function renderDocument(
   enhanceCodeBlocks(article);
   enhanceDiagramViewers(article);
   enhanceMath(article);
+  annotations.applyDecorations(scroller, tab);
+  void annotations.reanchorDocument(tab);
 
   scroller.append(header, article);
   const outline = state.tableOfContentsVisible
@@ -3686,38 +3668,17 @@ async function copyDiagnosticsReport(): Promise<void> {
 }
 
 function settingsViewDeps(): SettingsViewDeps {
+  const translator = localeRuntime.translator();
   return {
     state,
     ui: UI,
-    themeOptions: [
-      { value: "system", label: "System" },
-      { value: "light", label: "Light" },
-      { value: "dark", label: "Dark" },
-    ],
-    colorThemeOptions: COLOR_THEME_OPTIONS,
+    translator,
+    ...localizedSettingsControlOptions(state, translator),
     lightMermaidThemes: LIGHT_MERMAID_THEMES,
     darkMermaidThemes: DARK_MERMAID_THEMES,
-    fontOptions: [
-      {
-        kind: "text-font",
-        title: "Text font",
-        description:
-          "Used for Markdown prose. Enter a comma-separated font stack; leave empty to inherit the app theme font.",
-        value: state.textFont,
-        placeholder: "e.g. Georgia, Songti SC, serif",
-        label: "Text font",
-      },
-      {
-        kind: "code-font",
-        title: "Code font",
-        description:
-          "Used for inline code, fenced code blocks, and Mermaid source. Enter a comma-separated font stack; leave empty for the built-in monospace stack.",
-        value: state.codeFont,
-        placeholder: "e.g. 'Maple Mono NF CN', 'Fira Code', Menlo, monospace",
-        label: "Code font",
-      },
-    ],
-    pageWidthOptions: PAGE_WIDTH_OPTIONS,
+    onLocaleChange: () => {
+      localeRuntime.refresh();
+    },
     copy: copyDiagnosticsReport,
     capture: captureActiveScroll,
     commit: (nextState) => {

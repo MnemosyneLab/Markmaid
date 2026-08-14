@@ -45,6 +45,19 @@ pub(crate) fn sync_reopen_closed_tab_availability(
     Ok(())
 }
 
+#[tauri::command]
+#[specta::specta]
+pub(crate) fn set_ui_locale(
+    app: AppHandle,
+    state: State<'_, super::UiLocaleState>,
+    locale: super::menu_locale::NativeUiLocale,
+) -> Result<(), String> {
+    *state.0.lock().expect("ui locale lock poisoned") = locale;
+    let menu = super::build_menu(&app).map_err(|error| error.to_string())?;
+    app.set_menu(menu).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 /// The single command registry used by the runtime and the generated bindings.
 pub fn command_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new().commands(collect_commands![
@@ -61,6 +74,7 @@ pub fn command_builder() -> Builder<tauri::Wry> {
         take_pending_open_paths,
         sync_recent_documents,
         sync_reopen_closed_tab_availability,
+        set_ui_locale,
         register_workspace_root,
         unregister_workspace_root,
         list_workspace_children,
