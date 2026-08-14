@@ -527,6 +527,7 @@ export function searchCommands<TContext>(
     const recommended = [
       ...(options.recommendedCommandIds ?? DEFAULT_RECOMMENDED_COMMAND_IDS),
       ...(options.contextualCommandId ? [options.contextualCommandId] : []),
+      ...catalog.map((command) => command.id),
     ];
     const seen = new Set<CommandId>();
     const byId = new Map(

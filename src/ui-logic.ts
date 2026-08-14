@@ -165,10 +165,16 @@ export function buildQuickSwitcherItems(
     });
   }
 
+  const scope = options.scope ?? "all";
   const favoriteItems: QuickSwitcherItem[] = [];
   const favoritePaths = new Set<string>();
   for (const favorite of options.favorites ?? []) {
-    if (openPaths.has(favorite.path) || favoritePaths.has(favorite.path)) continue;
+    if (
+      (scope !== "favorites" && openPaths.has(favorite.path)) ||
+      favoritePaths.has(favorite.path)
+    ) {
+      continue;
+    }
     favoritePaths.add(favorite.path);
     favoriteItems.push({
       id: `favorite:${favorite.path}`,
@@ -193,7 +199,6 @@ export function buildQuickSwitcherItems(
   const filteredRecent = filterItems(recentItems).filter(
     (item) => !item.path || !favoritePaths.has(item.path),
   );
-  const scope = options.scope ?? "all";
 
   if (scope === "favorites") {
     return {

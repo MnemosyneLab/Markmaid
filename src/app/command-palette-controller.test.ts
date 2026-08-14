@@ -87,14 +87,17 @@ describe("command palette controller", () => {
       query: "",
       selectedCommandId: "view.toggle-focus-mode",
     });
-    expect(
-      harness.controller.results().map((result) => result.command.id),
-    ).toEqual([
+    const results = harness.controller.results();
+    expect(results.slice(0, 4).map((result) => result.command.id)).toEqual([
       "view.toggle-focus-mode",
       "file.open-preview-files",
       "file.quick-open",
       "file.export-document",
     ]);
+    expect(results.length).toBeGreaterThan(4);
+    expect(results.map((result) => result.command.id)).toContain(
+      "annotations.add-bookmark",
+    );
     harness.frames[0]?.(0);
     expect(harness.focusInput).toHaveBeenCalledOnce();
   });

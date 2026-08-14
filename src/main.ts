@@ -548,6 +548,7 @@ documentFindView = createDocumentFindView({
   beginDocumentSearchReveal: () => overlay.beginDocumentSearchReveal(),
   documentSearchRevealSequence: () => overlay.documentSearchRevealSequence(),
   onClose: closeDocumentSearch,
+  onOpenHighlightMode: () => overlay.openDocumentSearch("highlight"),
   onAddHighlight: () => void addHighlightFromFind(),
   escapeAttribute,
   icon,

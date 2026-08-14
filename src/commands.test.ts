@@ -111,18 +111,41 @@ describe("command search", () => {
     expect(searchCommands(catalog(), context, "reload")).toEqual([]);
   });
 
-  it("shows a deterministic recommended subset and appends one contextual action", () => {
+  it("shows recommended commands first and keeps all visible commands available", () => {
     const context: TestContext = { availability: {} };
-    expect(
-      searchCommands(catalog(), context, "", {
-        contextualCommandId: "file.export-document",
-      }).map((result) => result.command.id),
-    ).toEqual([
+    const results = searchCommands(catalog(), context, "", {
+      contextualCommandId: "file.export-document",
+    });
+    expect(results.slice(0, 4).map((result) => result.command.id)).toEqual([
       "view.toggle-focus-mode",
       "file.open-preview-files",
       "file.quick-open",
       "file.export-document",
     ]);
+    expect(results).toHaveLength(COMMAND_CATALOG_METADATA.length);
+    expect(results.map((result) => result.command.id)).toContain(
+      "annotations.add-bookmark",
+    );
+  });
+
+  it("shows disabled commands in the default list without making them executable", () => {
+    const context: TestContext = {
+      availability: {
+        "annotations.add-note": {
+          state: "disabled",
+          reason: "Open a preview first.",
+        },
+      },
+    };
+    expect(searchCommands(catalog(), context, "")).toContainEqual(
+      expect.objectContaining({
+        command: expect.objectContaining({ id: "annotations.add-note" }),
+        availability: {
+          state: "disabled",
+          reason: "Open a preview first.",
+        },
+      }),
+    );
   });
 
   it("uses catalog order as the stable tie-breaker and caps results", () => {

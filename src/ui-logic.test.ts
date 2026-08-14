@@ -177,17 +177,27 @@ describe("quick switcher", () => {
     ).toEqual(["favorite"]);
   });
 
-  it("limits favorites scope to favorite items", () => {
+  it("shows all favorites in favorites scope, including open tabs", () => {
     const { items } = buildQuickSwitcherItems(
       tabs,
       ["/notes/design.md"],
       "",
       {
-        favorites: [{ path: "/notes/favorite.md", kind: "document" }],
+        favorites: [
+          { path: "/work/MarkMaid/README.md", kind: "document" },
+          { path: "/notes/favorite.md", kind: "document" },
+        ],
         scope: "favorites",
       },
     );
     expect(items).toEqual([
+      {
+        id: "favorite:/work/MarkMaid/README.md",
+        kind: "favorite",
+        label: "README.md",
+        detail: "/work/MarkMaid/README.md",
+        path: "/work/MarkMaid/README.md",
+      },
       {
         id: "favorite:/notes/favorite.md",
         kind: "favorite",

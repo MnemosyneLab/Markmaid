@@ -1,5 +1,6 @@
 [package]
 name = "markmaid"
+default-run = "markmaid"
 version = "0.1.9"
 description = "A native macOS Markdown reader"
 authors = ["Walt Wang"]

@@ -86,6 +86,20 @@ run the same command against that `.app` path instead.
 | `⌘,` | Open Settings |
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous tab |
 
+### Favorites and annotations
+
+Open a ready Markdown or Mermaid preview first. To favorite the current file,
+right-click its tab and choose **Add to Favorites**, or open the Command Palette
+(`⇧⌘P`) and run **Toggle Favorite**. Use Quick Open (`⌘P`) to search favorites,
+or run **Open Favorites** from the Command Palette for a favorites-only view.
+
+Use the Command Palette (`⇧⌘P`) to run **Add Bookmark**, **Add Note**, or
+**Manage Annotations**. Bookmarks and notes are stored as app-local metadata and
+never modify the Markdown source. For highlights, open Find (`⌘F`), enter a
+query, choose the `H` highlight mode button, select a color, and press `H` to
+enter the mode and click `H` again to save the active match. Highlights are available for Markdown documents only;
+they can be reviewed or removed from **Manage Annotations**.
+
 In Find: `Enter` / `Shift+Enter` cycle matches; `Esc` closes the bar. Matches in
 collapsed code blocks expand when you navigate to them. In Quick Open: `↑` /
 `↓` move, `Enter` opens, `Esc` closes. Quick Open matches file names and paths

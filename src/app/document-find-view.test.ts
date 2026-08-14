@@ -83,6 +83,7 @@ function createDeps(
         .replaceAll(">", "&gt;"),
     icon: (name) => `<span data-test-icon="${name}"></span>`,
     onClose: vi.fn(),
+    onOpenHighlightMode: vi.fn(),
   };
 }
 
@@ -116,6 +117,7 @@ describe("document find view", () => {
     expect(root.querySelector("[data-document-search-input]")).not.toBeNull();
     expect(root.querySelector("[data-search-previous]")).not.toBeNull();
     expect(root.querySelector("[data-search-next]")).not.toBeNull();
+    expect(root.querySelector("[data-enter-highlight-mode]")).not.toBeNull();
     expect(root.querySelector("[data-search-close]")).not.toBeNull();
     expect(model.matches).toHaveLength(2);
     expect(model.activeIndex).toBe(0);
@@ -140,6 +142,8 @@ describe("document find view", () => {
       inline: "nearest",
     });
 
+    root.querySelector<HTMLElement>('[data-enter-highlight-mode]')?.click();
+    expect(deps.onOpenHighlightMode).toHaveBeenCalledOnce();
     root.querySelector<HTMLElement>('[data-search-close]')?.click();
     expect(deps.onClose).toHaveBeenCalledOnce();
   });

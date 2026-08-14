@@ -65,6 +65,7 @@ export interface DocumentFindViewDeps extends DocumentFindViewRenderHelpers {
   beginDocumentSearchReveal: () => number;
   documentSearchRevealSequence: () => number;
   onClose: () => void;
+  onOpenHighlightMode?: () => void;
   onAddHighlight?: () => void;
   onHighlightColorChange?: (color: DocumentSearchModel["highlightColor"]) => void;
 }
@@ -125,7 +126,7 @@ export function renderDocumentSearch(
                   `<button class="document-search-color is-${token}${color === token ? " is-selected" : ""}" type="button" data-highlight-color="${token}" title="${deps.escapeAttribute(t(colorKeys[token]))}" aria-label="${deps.escapeAttribute(t(colorKeys[token]))}" aria-pressed="${color === token}"></button>`,
               )
               .join("")}</div><button class="document-search-button" type="button" data-add-highlight ${hasMatch ? "" : "disabled"} title="${deps.escapeAttribute(t("find.addHighlight"))}" aria-label="${deps.escapeAttribute(t("find.addHighlight"))}">H</button>`
-          : ""
+          : `<button class="document-search-button" type="button" data-enter-highlight-mode title="${deps.escapeAttribute(t("find.highlightMode"))}" aria-label="${deps.escapeAttribute(t("find.highlightMode"))}">H</button>`
       }
       <button class="document-search-button" type="button" data-search-close title="${deps.escapeAttribute(t("find.close"))}" aria-label="${deps.escapeAttribute(t("find.close"))}">${deps.icon("x")}</button>
     </div>
@@ -155,6 +156,9 @@ export function createDocumentFindView(
     deps.root
       .querySelector<HTMLElement>("[data-search-close]")
       ?.addEventListener("click", deps.onClose);
+    deps.root
+      .querySelector<HTMLElement>("[data-enter-highlight-mode]")
+      ?.addEventListener("click", () => deps.onOpenHighlightMode?.());
     deps.root
       .querySelector<HTMLElement>("[data-add-highlight]")
       ?.addEventListener("click", () => deps.onAddHighlight?.());
