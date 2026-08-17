@@ -1,0 +1,33 @@
+{
+  "servers": {
+    "typescript-language-server": {
+      "command": "typescript-language-server",
+      "args": ["--stdio"],
+      "initOptions": {
+        "tsserver": {
+          "path": "./node_modules/typescript-lsp/lib/tsserver.js"
+        }
+      },
+      "fileTypes": [
+        ".ts",
+        ".tsx",
+        ".mts",
+        ".cts",
+        ".js",
+        ".jsx",
+        ".mjs",
+        ".cjs"
+      ],
+      "rootMarkers": [
+        "tsconfig.json",
+        "jsconfig.json",
+        "package.json"
+      ]
+    },
+    "rust-analyzer": {
+      "command": "rust-analyzer",
+      "fileTypes": [".rs"],
+      "rootMarkers": ["Cargo.toml", "rust-toolchain.toml"]
+    }
+  }
+}
